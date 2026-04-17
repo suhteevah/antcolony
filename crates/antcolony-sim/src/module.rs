@@ -96,6 +96,13 @@ pub struct Module {
     /// Per-module cooldown counter. Used by e.g. FeedingDish for refill
     /// timing. Decremented each tick; behavior-specific systems check it.
     pub tick_cooldown: u32,
+    /// Per-cell temperature in °C (K3). Row-major, same indexing as
+    /// pheromone grids. Initialized to 20.0 and drifts each tick toward
+    /// `ambient_target`.
+    pub temperature: Vec<f32>,
+    /// Target temperature the grid is drifting toward. Set by
+    /// `Simulation::temperature_tick` based on module kind + ambient.
+    pub ambient_target: f32,
 }
 
 impl Module {
@@ -107,6 +114,7 @@ impl Module {
         formicarium_origin: Vec2,
         label: impl Into<String>,
     ) -> Self {
+        let n = width * height;
         Self {
             id,
             kind,
@@ -116,7 +124,18 @@ impl Module {
             ports: Vec::new(),
             label: label.into(),
             tick_cooldown: 0,
+            temperature: vec![20.0; n],
+            ambient_target: 20.0,
         }
+    }
+
+    /// Nearest-cell temperature lookup (K3).
+    pub fn temp_at(&self, pos: Vec2) -> f32 {
+        let w = self.width();
+        let h = self.height();
+        let x = (pos.x.floor() as i64).clamp(0, w as i64 - 1) as usize;
+        let y = (pos.y.floor() as i64).clamp(0, h as i64 - 1) as usize;
+        self.temperature[y * w + x]
     }
 
     pub fn with_ports(mut self, ports: Vec<PortPos>) -> Self {

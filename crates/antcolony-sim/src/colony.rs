@@ -98,6 +98,15 @@ pub struct ColonyState {
     pub last_population_milestone: u32,
     /// Was the queen alive last tick? Detects queen-death events.
     pub queen_alive_last_tick: bool,
+    /// K3: whole in-game days this year spent in colony-wide diapause.
+    pub days_in_diapause_this_year: u32,
+    /// K3: fractional-day accumulator feeding `days_in_diapause_this_year`.
+    /// Stored in *in-game seconds*, rolled over at 86400.
+    pub diapause_seconds_this_year: f32,
+    /// K3: last `sim.in_game_year()` we evaluated the fertility gate for.
+    pub last_year_evaluated: u32,
+    /// K3: queen won't lay eggs this year (missed hibernation requirement).
+    pub fertility_suppressed: bool,
 }
 
 impl ColonyState {
@@ -120,6 +129,10 @@ impl ColonyState {
             has_laid_egg: false,
             last_population_milestone: 0,
             queen_alive_last_tick: true,
+            days_in_diapause_this_year: 0,
+            diapause_seconds_this_year: 0.0,
+            last_year_evaluated: 0,
+            fertility_suppressed: false,
         }
     }
 

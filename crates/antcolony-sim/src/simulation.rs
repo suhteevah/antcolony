@@ -16,6 +16,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::ant::{Ant, AntCaste, AntState, choose_direction};
 use crate::colony::{Brood, BroodStage, CasteRatio, ColonyState};
 use crate::config::SimConfig;
+use crate::environment::{Climate, Environment, Season};
 use crate::module::{ModuleId, ModuleKind, PortPos};
 use crate::pheromone::{PheromoneGrid, PheromoneLayer};
 use crate::topology::Topology;
@@ -25,6 +26,13 @@ use crate::world::{Terrain, WorldGrid};
 /// Fraction of per-layer pheromone that equilibrates across a tube each tick.
 /// 0.0 = isolated modules (no scent leaks). 1.0 = instant average.
 const PORT_BLEED_RATE: f32 = 0.35;
+
+/// K3: per-tick relaxation rate of a cell toward its `ambient_target`.
+const TEMP_DRIFT_RATE: f32 = 0.01;
+
+/// K3: how many in-game days in diapause are required per year for a
+/// species marked `hibernation_required` to keep queen fertility.
+const MIN_DIAPAUSE_DAYS: u32 = 60;
 
 #[derive(Debug, Clone)]
 pub struct Simulation {
@@ -36,6 +44,11 @@ pub struct Simulation {
     pub rng: ChaCha8Rng,
     /// Monotonic id generator for newly spawned ants.
     next_ant_id: u32,
+    /// K3: annual climate knobs driving ambient temperature.
+    pub climate: Climate,
+    /// K3: in-game seconds elapsed per sim tick. Default 1.0; set by
+    /// `set_environment` to `time_scale.multiplier() / tick_rate_hz`.
+    pub in_game_seconds_per_tick: f32,
 }
 
 impl Simulation {
@@ -105,7 +118,61 @@ impl Simulation {
             tick: 0,
             rng,
             next_ant_id,
+            climate: Climate::default(),
+            in_game_seconds_per_tick: 1.0,
         }
+    }
+
+    // ---- K3 seasonal clock ----
+
+    /// Fold an `Environment` into the per-tick time stride used by the
+    /// seasonal clock. Call this once after construction if the sim should
+    /// age faster than 1 in-game second per tick.
+    pub fn set_environment(&mut self, env: &Environment) {
+        let tick_rate = env.tick_rate_hz.max(0.01);
+        let scale = env.time_scale.multiplier().max(0.001);
+        // Derivation: in_game_seconds_per_tick = scale / tick_rate
+        // (so in N real seconds at `tick_rate` Hz we advance
+        //  N*tick_rate ticks = N*scale in-game seconds).
+        self.in_game_seconds_per_tick = scale / tick_rate;
+        tracing::info!(
+            scale,
+            tick_rate,
+            seconds_per_tick = self.in_game_seconds_per_tick,
+            "Simulation::set_environment folded env → in_game_seconds_per_tick"
+        );
+    }
+
+    /// Total in-game days elapsed since tick 0.
+    #[inline]
+    pub fn in_game_total_days(&self) -> u32 {
+        let secs = self.tick as f64 * self.in_game_seconds_per_tick as f64;
+        (secs / 86_400.0).floor() as u32
+    }
+
+    /// Current day-of-year in [0, 365), starting from `climate.starting_day_of_year`.
+    #[inline]
+    pub fn day_of_year(&self) -> u32 {
+        (self.climate.starting_day_of_year + self.in_game_total_days()) % 365
+    }
+
+    /// Full years elapsed since start (uses starting_day_of_year as offset).
+    #[inline]
+    pub fn in_game_year(&self) -> u32 {
+        (self.climate.starting_day_of_year + self.in_game_total_days()) / 365
+    }
+
+    pub fn season(&self) -> Season {
+        Season::from_day_of_year(self.day_of_year())
+    }
+
+    /// Sinusoidal ambient temperature. Peaks at `climate.peak_day`.
+    /// `T(d) = mid + amp * cos(2π * (d - peak) / 365)`
+    pub fn ambient_temp_c(&self) -> f32 {
+        let d = self.day_of_year() as f32;
+        let phase = (d - self.climate.peak_day as f32) / 365.0;
+        self.climate.seasonal_mid_c
+            + self.climate.seasonal_amplitude_c * (2.0 * std::f32::consts::PI * phase).cos()
     }
 
     // ---- Convenience accessors for pre-K2 callers ----
@@ -270,6 +337,7 @@ impl Simulation {
     pub fn tick(&mut self) {
         let _span = tracing::debug_span!("tick", n = self.tick).entered();
 
+        self.temperature_tick();
         self.sense_and_decide();
         self.movement();
         self.deposit_and_interact();
@@ -317,6 +385,8 @@ impl Simulation {
     fn sense_and_decide(&mut self) {
         let cfg = &self.config;
         let topology = &self.topology;
+        let cold_t = cfg.ant.hibernation_cold_threshold_c;
+        let warm_t = cfg.ant.hibernation_warm_threshold_c;
         let mut new_headings = Vec::with_capacity(self.ants.len());
         let mut new_states: Vec<Option<AntState>> = Vec::with_capacity(self.ants.len());
 
@@ -327,6 +397,27 @@ impl Simulation {
                 continue;
             }
             let module = topology.module(ant.module_id);
+            // K3 diapause override: combat/flee states are preserved, but
+            // every other state can flip to/from Diapause based on local temp.
+            let temp = module.temp_at(ant.position);
+            let preserve_combat = matches!(ant.state, AntState::Fighting | AntState::Fleeing);
+            if !preserve_combat {
+                if ant.state != AntState::Diapause && temp < cold_t {
+                    new_headings.push(ant.heading);
+                    new_states.push(Some(AntState::Diapause));
+                    continue;
+                }
+                if ant.state == AntState::Diapause {
+                    if temp > warm_t {
+                        new_headings.push(ant.heading);
+                        new_states.push(Some(AntState::Exploring));
+                    } else {
+                        new_headings.push(ant.heading);
+                        new_states.push(None);
+                    }
+                    continue;
+                }
+            }
             let h = choose_direction(ant, &module.pheromones, &cfg.ant, &mut self.rng);
             new_headings.push(h);
             let next = decide_next_state(ant, &module.world, &module.pheromones, cfg);
@@ -503,6 +594,7 @@ impl Simulation {
             }
             let (ux, uy) = (gx as usize, gy as usize);
             let layered = match ant.state {
+                AntState::Diapause => None,
                 AntState::ReturningHome => Some((PheromoneLayer::FoodTrail, pcfg.deposit_food_trail)),
                 AntState::Exploring | AntState::FollowingTrail => {
                     Some((PheromoneLayer::HomeTrail, pcfg.deposit_home_trail))
@@ -643,19 +735,126 @@ impl Simulation {
         }
     }
 
+    /// K3: update per-module temperature grids. Each module has a target
+    /// temperature determined by its kind (HeatChamber 28°C, HibernationChamber
+    /// 5°C, else ambient). Every cell relaxes toward that target by
+    /// `TEMP_DRIFT_RATE` each tick. Every 8 ticks, a 5-point Laplacian
+    /// diffusion spreads the scalar field between neighboring cells.
+    pub fn temperature_tick(&mut self) {
+        let ambient = self.ambient_temp_c();
+        for module in self.topology.modules.iter_mut() {
+            let target = match module.kind {
+                ModuleKind::HeatChamber => 28.0,
+                ModuleKind::HibernationChamber => 5.0,
+                _ => ambient,
+            };
+            module.ambient_target = target;
+            for v in module.temperature.iter_mut() {
+                *v += (target - *v) * TEMP_DRIFT_RATE;
+            }
+        }
+
+        if self.tick % 8 == 0 {
+            for module in self.topology.modules.iter_mut() {
+                diffuse_scalar_grid(
+                    &mut module.temperature,
+                    module.width(),
+                    module.height(),
+                    0.1,
+                );
+            }
+        }
+    }
+
     /// Run one economy step for every colony: consume food, age brood,
     /// lay eggs, mature pupae into new `Ant`s, apply starvation deaths.
     pub fn colony_economy_tick(&mut self) {
         let ccfg = self.config.colony.clone();
         let worker_health = self.config.combat.worker_health;
         let soldier_health = self.config.combat.soldier_health;
+        let cold_t = self.config.ant.hibernation_cold_threshold_c;
+        let hibernation_required = self.config.ant.hibernation_required;
+        let seconds_per_tick = self.in_game_seconds_per_tick;
+        let current_year = self.in_game_year();
         const MAX_EGGS_PER_TICK: u32 = 10;
+
+        // Determine diapause status per colony — nest entrance 0 on module 0.
+        // Simplest authoritative check: temp at that cell < cold threshold.
+        let mut colony_diapause: Vec<(u8, bool)> = Vec::with_capacity(self.colonies.len());
+        for c in &self.colonies {
+            let in_diapause = if let Some(ne) = c.nest_entrance_positions.first() {
+                let m = self.topology.module(0);
+                m.temp_at(*ne) < cold_t
+            } else {
+                false
+            };
+            colony_diapause.push((c.id, in_diapause));
+        }
 
         let mut to_spawn: Vec<(u8, AntCaste, Vec2)> = Vec::new();
         let mut starve: Vec<(u8, u32)> = Vec::new();
 
         for colony in self.colonies.iter_mut() {
             let _span = tracing::debug_span!("colony_tick", colony_id = colony.id).entered();
+
+            let in_diapause = colony_diapause
+                .iter()
+                .find(|(cid, _)| *cid == colony.id)
+                .map(|(_, b)| *b)
+                .unwrap_or(false);
+
+            // --- K3 diapause accumulator (for fertility-gate bookkeeping) ---
+            if in_diapause {
+                colony.diapause_seconds_this_year += seconds_per_tick;
+                while colony.diapause_seconds_this_year >= 86_400.0 {
+                    colony.diapause_seconds_this_year -= 86_400.0;
+                    colony.days_in_diapause_this_year =
+                        colony.days_in_diapause_this_year.saturating_add(1);
+                }
+            }
+
+            // --- K3 fertility gate: evaluated on year rollover ---
+            if current_year > colony.last_year_evaluated {
+                // Boot safety: year 0 → first rollover we never suppress,
+                // just snapshot + reset. After year 1 onward, check.
+                if colony.last_year_evaluated == 0 && current_year == 1 {
+                    // First real rollover — check only if hibernation required.
+                    if hibernation_required {
+                        let ok = colony.days_in_diapause_this_year >= MIN_DIAPAUSE_DAYS;
+                        let newly_suppressed = !ok && !colony.fertility_suppressed;
+                        colony.fertility_suppressed = !ok;
+                        if newly_suppressed {
+                            tracing::info!(
+                                colony_id = colony.id,
+                                year = current_year,
+                                diapause_days = colony.days_in_diapause_this_year,
+                                required = MIN_DIAPAUSE_DAYS,
+                                "missed winter — queen fertility suppressed"
+                            );
+                        }
+                    } else {
+                        colony.fertility_suppressed = false;
+                    }
+                } else if hibernation_required {
+                    let ok = colony.days_in_diapause_this_year >= MIN_DIAPAUSE_DAYS;
+                    let newly_suppressed = !ok && !colony.fertility_suppressed;
+                    colony.fertility_suppressed = !ok;
+                    if newly_suppressed {
+                        tracing::info!(
+                            colony_id = colony.id,
+                            year = current_year,
+                            diapause_days = colony.days_in_diapause_this_year,
+                            required = MIN_DIAPAUSE_DAYS,
+                            "missed winter — queen fertility suppressed"
+                        );
+                    }
+                } else {
+                    colony.fertility_suppressed = false;
+                }
+                colony.days_in_diapause_this_year = 0;
+                colony.diapause_seconds_this_year = 0.0;
+                colony.last_year_evaluated = current_year;
+            }
 
             let adult_total = colony.adult_total();
             let worker_breeder_cnt = colony.population.workers + colony.population.breeders;
@@ -851,6 +1050,27 @@ impl Simulation {
     }
 }
 
+/// Generic scalar 5-point Laplacian diffusion with a scratch copy. Used by
+/// the K3 temperature grid; reuses the same stencil as `PheromoneGrid::diffuse`
+/// but operates on a single layer and does not clamp.
+fn diffuse_scalar_grid(data: &mut Vec<f32>, width: usize, height: usize, rate: f32) {
+    if data.is_empty() || width == 0 || height == 0 {
+        return;
+    }
+    let src: Vec<f32> = data.clone();
+    for y in 0..height {
+        for x in 0..width {
+            let i = y * width + x;
+            let c = src[i];
+            let up = if y > 0 { src[i - width] } else { c };
+            let dn = if y + 1 < height { src[i + width] } else { c };
+            let lf = if x > 0 { src[i - 1] } else { c };
+            let rt = if x + 1 < width { src[i + 1] } else { c };
+            data[i] = c * (1.0 - 4.0 * rate) + rate * (up + dn + lf + rt);
+        }
+    }
+}
+
 fn decide_next_state(
     ant: &Ant,
     world: &WorldGrid,
@@ -908,6 +1128,7 @@ fn decide_next_state(
                 None
             }
         }
+        AntState::Diapause => None,
         _ => None,
     }
 }

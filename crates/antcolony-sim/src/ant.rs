@@ -24,6 +24,9 @@ pub enum AntState {
     Fleeing,
     Nursing,
     Digging,
+    /// Winter diapause (K3): the ant is immobile and non-depositing until
+    /// ambient temperature rises above the warm threshold.
+    Diapause,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

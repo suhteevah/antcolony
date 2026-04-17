@@ -179,6 +179,9 @@ impl Species {
             initial_count: self.growth.initial_workers as usize,
             worker_size_mm: self.appearance.size_mm,
             polymorphic: self.biology.polymorphic,
+            hibernation_cold_threshold_c: 10.0,
+            hibernation_warm_threshold_c: 12.0,
+            hibernation_required: self.biology.hibernation_required,
         };
 
         // queen_egg_rate is fraction-of-egg-per-tick.

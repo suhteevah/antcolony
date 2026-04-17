@@ -52,6 +52,68 @@ impl TimeScale {
     }
 }
 
+/// Annual climate knobs (K3). Drives ambient temperature over a 365-day
+/// cycle. The sim's current day-of-year is derived from tick count and
+/// `Environment.time_scale` — climate itself is scale-agnostic.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Climate {
+    /// Annual-mean ambient temperature in °C.
+    pub seasonal_mid_c: f32,
+    /// Peak-to-mid amplitude in °C. Summer peak = mid + amp, winter trough = mid - amp.
+    pub seasonal_amplitude_c: f32,
+    /// Day-of-year (0..365) at which ambient reaches its summer peak.
+    pub peak_day: u32,
+    /// Day-of-year the simulation starts on.
+    pub starting_day_of_year: u32,
+}
+
+impl Default for Climate {
+    fn default() -> Self {
+        Self {
+            seasonal_mid_c: 15.0,
+            seasonal_amplitude_c: 18.0,
+            peak_day: 180,
+            starting_day_of_year: 60,
+        }
+    }
+}
+
+/// Seasonal bucket of the year. Winter 0-78 / Spring 79-171 / Summer 172-264 /
+/// Autumn 265-354 / Winter 355+.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Season {
+    Winter,
+    Spring,
+    Summer,
+    Autumn,
+}
+
+impl Season {
+    pub fn from_day_of_year(doy: u32) -> Self {
+        let d = doy % 365;
+        if d < 79 {
+            Season::Winter
+        } else if d < 172 {
+            Season::Spring
+        } else if d < 265 {
+            Season::Summer
+        } else if d < 355 {
+            Season::Autumn
+        } else {
+            Season::Winter
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Season::Winter => "Winter",
+            Season::Spring => "Spring",
+            Season::Summer => "Summer",
+            Season::Autumn => "Autumn",
+        }
+    }
+}
+
 /// Runtime environment shared by all colonies in a simulation instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Environment {

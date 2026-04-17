@@ -54,10 +54,27 @@ pub struct AntConfig {
     /// Species has a major caste (soldiers much bigger than workers).
     #[serde(default)]
     pub polymorphic: bool,
+    /// K3: local temp below this (°C) → ant enters Diapause.
+    #[serde(default = "default_cold_threshold")]
+    pub hibernation_cold_threshold_c: f32,
+    /// K3: local temp above this (°C) → a Diapause ant wakes up.
+    #[serde(default = "default_warm_threshold")]
+    pub hibernation_warm_threshold_c: f32,
+    /// K3: species requires a real winter diapause for queen fertility.
+    #[serde(default)]
+    pub hibernation_required: bool,
 }
 
 fn default_worker_size_mm() -> f32 {
     4.0
+}
+
+fn default_cold_threshold() -> f32 {
+    10.0
+}
+
+fn default_warm_threshold() -> f32 {
+    12.0
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -135,6 +152,9 @@ impl Default for AntConfig {
             initial_count: 20,
             worker_size_mm: 4.0,
             polymorphic: false,
+            hibernation_cold_threshold_c: 10.0,
+            hibernation_warm_threshold_c: 12.0,
+            hibernation_required: false,
         }
     }
 }
