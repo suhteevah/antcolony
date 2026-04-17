@@ -8,7 +8,9 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::config::AntConfig;
+use crate::module::ModuleId;
 use crate::pheromone::{PheromoneGrid, PheromoneLayer};
+use crate::tube::TubeTransit;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AntState {
@@ -44,6 +46,11 @@ pub struct Ant {
     pub food_carried: f32,
     pub age: u32,
     pub state_timer: u32,
+    /// Which module the ant is currently on (K2). Ignored and implicitly 0
+    /// for pre-K2 single-module sims.
+    pub module_id: ModuleId,
+    /// `Some` when the ant is inside a tube (K2), `None` on a grid.
+    pub transit: Option<TubeTransit>,
 }
 
 impl Ant {
@@ -70,7 +77,14 @@ impl Ant {
             food_carried: 0.0,
             age: 0,
             state_timer: 0,
+            module_id: 0,
+            transit: None,
         }
+    }
+
+    #[inline]
+    pub fn is_in_transit(&self) -> bool {
+        self.transit.is_some()
     }
 
     #[inline]

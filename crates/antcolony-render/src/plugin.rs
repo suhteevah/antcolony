@@ -1,5 +1,5 @@
 use antcolony_game::SimulationState;
-use antcolony_sim::{AntState, PheromoneLayer, Terrain};
+use antcolony_sim::{AntState, ModuleId, PheromoneLayer, Terrain};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 
@@ -12,11 +12,17 @@ pub struct RenderPlugin;
 #[derive(Component)]
 struct AntSprite(pub u32);
 
+/// Pheromone overlay for a specific module.
 #[derive(Component)]
-struct PheromoneOverlay;
+struct PheromoneOverlay(pub ModuleId);
 
+/// Texture handle for each module's pheromone overlay.
 #[derive(Resource)]
-struct PheromoneTexture(pub Handle<Image>);
+struct PheromoneTextures(pub Vec<(ModuleId, Handle<Image>)>);
+
+/// World-space (pixel) origin of each module's (0,0) corner, computed at setup.
+#[derive(Resource)]
+struct ModuleLayout(pub Vec<(ModuleId, Vec2)>);
 
 #[derive(Resource, Default)]
 struct OverlayState {
@@ -25,17 +31,17 @@ struct OverlayState {
 
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
-        app.init_state::<AppState>()
+        app.add_plugins(crate::ui::UiPlugin)
             .add_plugins(crate::picker::PickerPlugin)
-            .add_plugins(crate::ui::UiPlugin)
             .add_plugins(crate::encyclopedia::EncyclopediaPlugin)
+            .init_state::<AppState>()
             .insert_resource(OverlayState { visible: true })
             .add_systems(OnEnter(AppState::Running), setup)
             .add_systems(
                 Update,
                 (
                     sync_ant_sprites,
-                    update_pheromone_texture,
+                    update_pheromone_textures,
                     toggle_overlay_input,
                     camera_controls,
                 )
@@ -51,164 +57,316 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let w = sim.sim.world.width as u32;
-    let h = sim.sim.world.height as u32;
-    let world_w = sim.sim.world.width as f32 * TILE;
-    let world_h = sim.sim.world.height as f32 * TILE;
-
+    // Compute each module's world-space offset. Center the whole
+    // formicarium around the camera origin.
+    let (layout, centroid) = compute_layout(&sim);
     commands.spawn(Camera2d);
 
-    // Pheromone overlay texture.
-    let mut img = Image::new_fill(
-        Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &[0u8, 0, 0, 0],
-        TextureFormat::Rgba8UnormSrgb,
-        bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD
-            | bevy::render::render_asset::RenderAssetUsages::MAIN_WORLD,
-    );
-    img.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
-    let tex = images.add(img);
+    let mut textures: Vec<(ModuleId, Handle<Image>)> = Vec::new();
 
-    commands.spawn((
-        Sprite {
-            image: tex.clone(),
-            custom_size: Some(Vec2::new(world_w, world_h)),
-            color: Color::srgba(1.0, 1.0, 1.0, 0.7),
-            ..default()
-        },
-        Transform::from_xyz(0.0, 0.0, -1.0),
-        PheromoneOverlay,
-    ));
-
-    commands.insert_resource(PheromoneTexture(tex));
-
-    // Ant color from species appearance.
-    let ant_color = crate::picker::parse_hex(&sim.species.appearance.color_hex);
-
-    // Render food + nest entrances as static quads (Phase 1 MVP).
     let nest_mat = materials.add(Color::srgb(0.55, 0.35, 0.15));
     let food_mat = materials.add(Color::srgb(0.15, 0.85, 0.2));
-    let tile_mesh = meshes.add(Rectangle::new(TILE * 1.5, TILE * 1.5));
+    let module_border_mat = materials.add(Color::srgba(0.25, 0.25, 0.28, 0.35));
 
-    for y in 0..sim.sim.world.height {
-        for x in 0..sim.sim.world.width {
-            let t = sim.sim.world.get(x, y);
-            let world_pos = cell_to_world(x, y, sim.sim.world.width, sim.sim.world.height);
-            match t {
-                Terrain::Food(_) => {
-                    commands.spawn((
-                        Mesh2d(tile_mesh.clone()),
-                        MeshMaterial2d(food_mat.clone()),
-                        Transform::from_translation(world_pos.extend(0.0)),
-                    ));
+    for module in &sim.sim.topology.modules {
+        let mid = module.id;
+        let (_, origin) = layout.iter().find(|(id, _)| *id == mid).copied().unwrap();
+        let origin = origin - centroid;
+        let mw = module.width() as u32;
+        let mh = module.height() as u32;
+        let mww = module.width() as f32 * TILE;
+        let mhh = module.height() as f32 * TILE;
+
+        // Module background panel (so the player can see where modules are).
+        commands.spawn((
+            Sprite {
+                color: Color::srgba(0.12, 0.12, 0.15, 1.0),
+                custom_size: Some(Vec2::new(mww, mhh)),
+                ..default()
+            },
+            Transform::from_xyz(origin.x + mww * 0.5, origin.y + mhh * 0.5, -2.0),
+        ));
+
+        // Border frame.
+        let frame_thickness = 2.0;
+        for (w_size, h_size, dx, dy) in [
+            (mww, frame_thickness, 0.0, -mhh * 0.5),
+            (mww, frame_thickness, 0.0, mhh * 0.5),
+            (frame_thickness, mhh, -mww * 0.5, 0.0),
+            (frame_thickness, mhh, mww * 0.5, 0.0),
+        ] {
+            commands.spawn((
+                Sprite {
+                    color: Color::srgba(0.5, 0.5, 0.55, 1.0),
+                    custom_size: Some(Vec2::new(w_size, h_size)),
+                    ..default()
+                },
+                Transform::from_xyz(origin.x + mww * 0.5 + dx, origin.y + mhh * 0.5 + dy, -1.5),
+            ));
+            let _ = module_border_mat;
+        }
+
+        // Pheromone overlay texture.
+        let mut img = Image::new_fill(
+            Extent3d {
+                width: mw,
+                height: mh,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0u8, 0, 0, 0],
+            TextureFormat::Rgba8UnormSrgb,
+            bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD
+                | bevy::render::render_asset::RenderAssetUsages::MAIN_WORLD,
+        );
+        img.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+        let tex = images.add(img);
+
+        commands.spawn((
+            Sprite {
+                image: tex.clone(),
+                custom_size: Some(Vec2::new(mww, mhh)),
+                color: Color::srgba(1.0, 1.0, 1.0, 0.8),
+                ..default()
+            },
+            Transform::from_xyz(origin.x + mww * 0.5, origin.y + mhh * 0.5, -1.0),
+            PheromoneOverlay(mid),
+        ));
+
+        textures.push((mid, tex));
+
+        // Tile overlays: food + nest entrances.
+        let tile_mesh = meshes.add(Rectangle::new(TILE * 1.5, TILE * 1.5));
+        for y in 0..module.height() {
+            for x in 0..module.width() {
+                let t = module.world.get(x, y);
+                let world_pos = Vec2::new(
+                    origin.x + (x as f32 + 0.5) * TILE,
+                    origin.y + (y as f32 + 0.5) * TILE,
+                );
+                match t {
+                    Terrain::Food(_) => {
+                        commands.spawn((
+                            Mesh2d(tile_mesh.clone()),
+                            MeshMaterial2d(food_mat.clone()),
+                            Transform::from_translation(world_pos.extend(0.0)),
+                        ));
+                    }
+                    Terrain::NestEntrance(_) => {
+                        commands.spawn((
+                            Mesh2d(meshes.add(Circle::new(TILE * 2.5))),
+                            MeshMaterial2d(nest_mat.clone()),
+                            Transform::from_translation(world_pos.extend(0.5)),
+                        ));
+                    }
+                    _ => {}
                 }
-                Terrain::NestEntrance(_) => {
-                    commands.spawn((
-                        Mesh2d(meshes.add(Circle::new(TILE * 3.0))),
-                        MeshMaterial2d(nest_mat.clone()),
-                        Transform::from_translation(world_pos.extend(0.5)),
-                    ));
-                }
-                _ => {}
             }
+        }
+
+        // Port markers (tiny yellow dots on module borders).
+        let port_mat = materials.add(Color::srgb(0.95, 0.85, 0.2));
+        let port_mesh = meshes.add(Circle::new(TILE * 0.6));
+        for port in &module.ports {
+            let p = Vec2::new(
+                origin.x + (port.x as f32 + 0.5) * TILE,
+                origin.y + (port.y as f32 + 0.5) * TILE,
+            );
+            commands.spawn((
+                Mesh2d(port_mesh.clone()),
+                MeshMaterial2d(port_mat.clone()),
+                Transform::from_translation(p.extend(0.7)),
+            ));
         }
     }
 
-    // Spawn one sprite per ant.
+    // Draw tubes as rectangles connecting ports.
+    let tube_mat = materials.add(Color::srgb(0.7, 0.6, 0.4));
+    for tube in &sim.sim.topology.tubes {
+        let a_origin = layout
+            .iter()
+            .find(|(id, _)| *id == tube.from.module)
+            .map(|(_, o)| *o - centroid)
+            .unwrap_or(Vec2::ZERO);
+        let b_origin = layout
+            .iter()
+            .find(|(id, _)| *id == tube.to.module)
+            .map(|(_, o)| *o - centroid)
+            .unwrap_or(Vec2::ZERO);
+        let a = Vec2::new(
+            a_origin.x + (tube.from.port.x as f32 + 0.5) * TILE,
+            a_origin.y + (tube.from.port.y as f32 + 0.5) * TILE,
+        );
+        let b = Vec2::new(
+            b_origin.x + (tube.to.port.x as f32 + 0.5) * TILE,
+            b_origin.y + (tube.to.port.y as f32 + 0.5) * TILE,
+        );
+        let mid = (a + b) * 0.5;
+        let dir = b - a;
+        let length = dir.length().max(0.001);
+        let angle = dir.y.atan2(dir.x);
+        commands.spawn((
+            Sprite {
+                color: Color::srgb(0.7, 0.6, 0.4),
+                custom_size: Some(Vec2::new(length, TILE * 1.6)),
+                ..default()
+            },
+            Transform {
+                translation: mid.extend(-0.8),
+                rotation: Quat::from_rotation_z(angle),
+                ..default()
+            },
+        ));
+        let _ = tube_mat;
+    }
+
+    // Ant sprites.
+    let ant_color = crate::picker::parse_hex(&sim.species.appearance.color_hex);
     let ant_mesh = meshes.add(Circle::new(TILE * 0.4));
     let ant_mat = materials.add(ant_color);
-    for ant in &sim.sim.ants {
-        let pos = cell_to_world_f(ant.position.x, ant.position.y, sim.sim.world.width, sim.sim.world.height);
+    for (idx, ant) in sim.sim.ants.iter().enumerate() {
+        let (_, origin) = layout
+            .iter()
+            .find(|(id, _)| *id == ant.module_id)
+            .copied()
+            .unwrap_or((0, Vec2::ZERO));
+        let origin = origin - centroid;
+        let pos = Vec2::new(
+            origin.x + ant.position.x * TILE,
+            origin.y + ant.position.y * TILE,
+        );
         commands.spawn((
-            AntSprite(ant.id),
+            AntSprite(idx as u32),
             Mesh2d(ant_mesh.clone()),
             MeshMaterial2d(ant_mat.clone()),
             Transform::from_translation(pos.extend(1.0)),
         ));
     }
 
+    commands.insert_resource(PheromoneTextures(textures));
+    commands.insert_resource(ModuleLayout(layout.clone()));
+
     tracing::info!(
         ants = sim.sim.ants.len(),
-        tiles = sim.sim.world.width * sim.sim.world.height,
+        modules = sim.sim.topology.modules.len(),
+        tubes = sim.sim.topology.tubes.len(),
         species = %sim.species.id,
         "RenderPlugin setup complete (AppState::Running)"
     );
 }
 
-fn cell_to_world(x: usize, y: usize, w: usize, h: usize) -> Vec2 {
-    let cx = (x as f32 + 0.5 - w as f32 * 0.5) * TILE;
-    let cy = (y as f32 + 0.5 - h as f32 * 0.5) * TILE;
-    Vec2::new(cx, cy)
-}
-
-fn cell_to_world_f(x: f32, y: f32, w: usize, h: usize) -> Vec2 {
-    let cx = (x - w as f32 * 0.5) * TILE;
-    let cy = (y - h as f32 * 0.5) * TILE;
-    Vec2::new(cx, cy)
+/// Compute each module's world-space origin (in pixels) from its
+/// `formicarium_origin`, and return the centroid so we can recentre the
+/// camera to (0,0).
+fn compute_layout(sim: &SimulationState) -> (Vec<(ModuleId, Vec2)>, Vec2) {
+    let mut out = Vec::new();
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for m in &sim.sim.topology.modules {
+        let origin = m.formicarium_origin * TILE;
+        let far = origin + Vec2::new(m.width() as f32 * TILE, m.height() as f32 * TILE);
+        if origin.x < min.x {
+            min.x = origin.x;
+        }
+        if origin.y < min.y {
+            min.y = origin.y;
+        }
+        if far.x > max.x {
+            max.x = far.x;
+        }
+        if far.y > max.y {
+            max.y = far.y;
+        }
+        out.push((m.id, origin));
+    }
+    let centroid = (min + max) * 0.5;
+    (out, centroid)
 }
 
 fn sync_ant_sprites(
     sim: Res<SimulationState>,
-    mut q: Query<(&AntSprite, &mut Transform)>,
+    layout: Option<Res<ModuleLayout>>,
+    mut q: Query<(&AntSprite, &mut Transform, &mut Visibility)>,
 ) {
-    let w = sim.sim.world.width;
-    let h = sim.sim.world.height;
-    for (sprite, mut tf) in q.iter_mut() {
-        if let Some(ant) = sim.sim.ants.get(sprite.0 as usize) {
-            let p = cell_to_world_f(ant.position.x, ant.position.y, w, h);
-            tf.translation.x = p.x;
-            tf.translation.y = p.y;
-            let z = match ant.state {
-                AntState::ReturningHome | AntState::StoringFood => 1.2,
-                _ => 1.0,
-            };
-            tf.translation.z = z;
-            tf.rotation = Quat::from_rotation_z(ant.heading);
+    let Some(layout) = layout else {
+        return;
+    };
+    // Recompute centroid to match setup()'s transform convention.
+    let (_, centroid) = compute_layout(&sim);
+    for (sprite, mut tf, mut vis) in q.iter_mut() {
+        let Some(ant) = sim.sim.ants.get(sprite.0 as usize) else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+        if ant.is_in_transit() {
+            // Hide while in a tube (v2: interpolate along tube length).
+            *vis = Visibility::Hidden;
+            continue;
         }
+        *vis = Visibility::Visible;
+        let origin = layout
+            .0
+            .iter()
+            .find(|(id, _)| *id == ant.module_id)
+            .map(|(_, o)| *o)
+            .unwrap_or(Vec2::ZERO)
+            - centroid;
+        tf.translation.x = origin.x + ant.position.x * TILE;
+        tf.translation.y = origin.y + ant.position.y * TILE;
+        tf.translation.z = match ant.state {
+            AntState::ReturningHome | AntState::StoringFood => 1.2,
+            _ => 1.0,
+        };
+        tf.rotation = Quat::from_rotation_z(ant.heading);
     }
 }
 
-fn update_pheromone_texture(
+fn update_pheromone_textures(
     sim: Res<SimulationState>,
-    tex_handle: Res<PheromoneTexture>,
+    textures: Option<Res<PheromoneTextures>>,
     mut images: ResMut<Assets<Image>>,
     overlay: Res<OverlayState>,
     mut q: Query<&mut Visibility, With<PheromoneOverlay>>,
 ) {
     for mut v in q.iter_mut() {
-        *v = if overlay.visible { Visibility::Visible } else { Visibility::Hidden };
+        *v = if overlay.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
     }
     if !overlay.visible {
         return;
     }
-    let Some(img) = images.get_mut(&tex_handle.0) else {
+    let Some(textures) = textures else {
         return;
     };
-    let w = sim.sim.pheromones.width;
-    let h = sim.sim.pheromones.height;
-    let food = &sim.sim.pheromones.food_trail;
-    let home = &sim.sim.pheromones.home_trail;
-    let alarm = &sim.sim.pheromones.alarm;
     let max = sim.sim.config.pheromone.max_intensity.max(0.001);
-    let data = &mut img.data;
-    data.resize(w * h * 4, 0);
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            let r = (alarm[i] / max * 255.0).clamp(0.0, 255.0) as u8;
-            let g = (food[i] / max * 255.0).clamp(0.0, 255.0) as u8;
-            let b = (home[i] / max * 255.0).clamp(0.0, 255.0) as u8;
-            let a = r.max(g).max(b);
-            let o = i * 4;
-            data[o] = r;
-            data[o + 1] = g;
-            data[o + 2] = b;
-            data[o + 3] = a;
+    for (mid, handle) in &textures.0 {
+        let Some(img) = images.get_mut(handle) else {
+            continue;
+        };
+        let module = sim.sim.topology.module(*mid);
+        let w = module.pheromones.width;
+        let h = module.pheromones.height;
+        let food = &module.pheromones.food_trail;
+        let home = &module.pheromones.home_trail;
+        let alarm = &module.pheromones.alarm;
+        let data = &mut img.data;
+        data.resize(w * h * 4, 0);
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                let r = (alarm[i] / max * 255.0).clamp(0.0, 255.0) as u8;
+                let g = (food[i] / max * 255.0).clamp(0.0, 255.0) as u8;
+                let b = (home[i] / max * 255.0).clamp(0.0, 255.0) as u8;
+                let a = r.max(g).max(b);
+                let o = i * 4;
+                data[o] = r;
+                data[o + 1] = g;
+                data[o + 2] = b;
+                data[o + 3] = a;
+            }
         }
     }
 }

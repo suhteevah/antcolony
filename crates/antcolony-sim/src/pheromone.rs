@@ -80,6 +80,13 @@ impl PheromoneGrid {
         slice[i] = v;
     }
 
+    /// Direct overwrite of a cell. Used by port-scent bleed, which needs
+    /// to set absolute values rather than accumulate.
+    pub fn set_cell(&mut self, x: usize, y: usize, layer: PheromoneLayer, value: f32) {
+        let i = self.idx(x, y);
+        self.layer_slice_mut(layer)[i] = value;
+    }
+
     pub fn world_to_grid(&self, pos: Vec2) -> (i64, i64) {
         (pos.x.floor() as i64, pos.y.floor() as i64)
     }

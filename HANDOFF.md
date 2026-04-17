@@ -31,7 +31,30 @@ This document contains everything needed to implement the ant colony simulation 
 - Test count: 28 sim + 1 integration, all green.
 - Bevy feature `bevy_state` required for the state machine (added to root `Cargo.toml`).
 
-**Next Keeper phase: K2 — Modular formicarium topology.** Break the single-world assumption into `Vec<Module>` (TestTube, YTongNest, Outworld, etc.) connected by `Tube { from_port, to_port, bore_width }`. Ant position becomes `{ module_id, pos }` with an `InTube { tube_id, progress }` transit state. Module editor UI. This is the biggest sim refactor of the project.
+## Keeper Mode — Phase K2.1 COMPLETE
+
+**Modular formicarium topology core.** The single-world assumption is broken. `Simulation` now owns a `Topology { modules: Vec<Module>, tubes: Vec<Tube> }`. Each module has its own `WorldGrid` + `PheromoneGrid`.
+
+- `Module { id, kind: ModuleKind, world, pheromones, formicarium_origin, ports, label }` (`crates/antcolony-sim/src/module.rs`). `ModuleKind` covers TestTubeNest, Outworld, YTongNest, AcrylicNest, Hydration, HeatChamber, HibernationChamber, FeedingDish, Graveyard (only TestTubeNest + Outworld wired into gameplay for now).
+- `Tube { id, from, to, length_ticks, bore_width_mm }` (`crates/antcolony-sim/src/tube.rs`). `TubeTransit { tube, progress, going_forward }` on Ant.
+- `Ant` gains `module_id: u16` + `transit: Option<TubeTransit>`.
+- `Topology::single(...)` preserves pre-K2 behavior so all old tests pass unchanged.
+- `Topology::starter_formicarium((nest_w, nest_h), (out_w, out_h))` builds the Keeper Mode starter: TestTubeNest east-wall port ↔ Outworld west-wall port, 30-tick tube. Ants spawn on module 0; food lands on module 1.
+- Tick pipeline iterates modules. Tube transit: ants walking onto a port cell enter the attached tube, advance `progress` per tick based on speed / tube length, emerge on the far side with heading pointing into the destination module.
+- **Port-scent bleed:** after evaporation/diffusion, the two port cells on each tube equilibrate a fraction (`PORT_BLEED_RATE = 0.35`) of their pheromone intensities. Result: trails carry across tubes naturally.
+- `Simulation::world()` / `.pheromones()` accessor methods return module-0 grids for pre-K2 callers. New method `spawn_food_cluster_on(module_id, ...)` for multi-module seeding.
+- Render: multi-module. Each module rendered at its `formicarium_origin × TILE` offset with dark panel background, border frame, independent pheromone overlay texture, port markers (yellow dots), and tube drawn as a rotated rectangle between ports. Ants in tube transit are hidden (TODO v2: interpolate along the tube).
+- `SimulationState::from_species` builds a starter formicarium sized from `env.world_width/height` (nest ≈ 1/4 of world, outworld full size).
+- **Tests:** 34 sim unit + 1 integration, all green (+6 from K2: topology constructors, tube_at_port lookup, starter-formicarium build, ant-traverses-tube kinematics, pheromone-bleeds-across-tube, multi-module initial-ant placement).
+
+**Next Keeper phase: K2.2 — Module editor + variety.**
+- Drag/drop module-board view (zoomed-out formicarium layout, add/remove modules, draw tubes).
+- Additional module kinds with distinct gameplay properties (Hydration, FeedingDish, Graveyard).
+- Bore-width caste restrictions (majors refused by narrow tubes).
+- Tube transit interpolation in render (ant visible traveling along tube).
+- `E` encyclopedia + HUD already adapt to topology since they only read `ColonyState`.
+
+**Then K3:** thermoregulation + hibernation (temperature grids per module, annual clock, diapause-gated queen fertility for required species).
 
 ---
 
