@@ -111,7 +111,7 @@ fn setup_ui(mut commands: Commands) {
     // --- Bottom-right help text ---
     commands.spawn((
         Text::new(
-            "WASD/arrows pan | scroll zoom | P pheromone\n1/2/3/4 speed (30/60/150/300 Hz) | Space pause",
+            "WASD/arrows pan | scroll zoom | P pheromone | T temperature\n1/2/3/4 speed (30/60/150/300 Hz) | Space pause",
         ),
         TextFont {
             font_size: 11.0,
@@ -291,11 +291,35 @@ fn update_stats_text(
 
     let pause_tag = if paused.0 { " [PAUSED]" } else { "" };
 
+    // --- K3 season/temp/diapause HUD ---
+    let season = sim.sim.season().label();
+    let doy = sim.sim.day_of_year();
+    let year = sim.sim.in_game_year();
+    let ambient = sim.sim.ambient_temp_c();
+    let cold_t = sim.sim.config.ant.hibernation_cold_threshold_c;
+    let in_diapause = if let Some(ne) = colony.nest_entrance_positions.first() {
+        let m = sim.sim.topology.module(0);
+        m.temp_at(*ne) < cold_t
+    } else {
+        false
+    };
+    let fertility_line = if colony.fertility_suppressed {
+        "Fertility: SUPPRESSED  (!) Missed winter — no eggs this year"
+    } else {
+        "Fertility: ok"
+    };
+
     let text = format!(
-        "Tick: {}{}\nFPS: {:.0}\nAnts: {} (W {} / S {} / B {} / Q {})\nFood stored: {:.1}\nFood returned: {}\nBrood: eggs {} / larvae {} / pupae {}\nQueen HP: {:.1}",
+        "Tick: {}{}\nFPS: {:.0}\nSeason: {} (day {}/365, year {})\nAmbient: {:.1} °C\nDiapause: {}\n{}\nAnts: {} (W {} / S {} / B {} / Q {})\nFood stored: {:.1}\nFood returned: {}\nBrood: eggs {} / larvae {} / pupae {}\nQueen HP: {:.1}",
         sim.sim.tick,
         pause_tag,
         fps,
+        season,
+        doy,
+        year,
+        ambient,
+        if in_diapause { "ON" } else { "off" },
+        fertility_line,
         sim.sim.ants.len(),
         workers,
         soldiers,

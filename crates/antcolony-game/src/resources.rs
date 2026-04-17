@@ -34,6 +34,7 @@ impl SimulationState {
             (dish_w, dish_h),
         );
         let mut sim = Simulation::new_with_topology(cfg, topology, env.seed);
+        sim.set_environment(env);
 
         // Place food clusters across the outworld (module 1).
         let ow = out_w as i64;

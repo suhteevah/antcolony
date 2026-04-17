@@ -16,6 +16,10 @@ pub(crate) struct AntSprite(pub u32);
 #[derive(Component)]
 pub(crate) struct PheromoneOverlay(pub ModuleId);
 
+/// K3: temperature overlay for a specific module.
+#[derive(Component)]
+pub(crate) struct TemperatureOverlay(pub ModuleId);
+
 /// Marker tag on every entity spawned as part of the formicarium scene
 /// (modules, borders, food/nest tiles, port markers, tubes, ant sprites,
 /// pheromone overlays, editor selection gizmos). The editor despawns
@@ -59,12 +63,21 @@ pub(crate) struct TopologyDirty(pub bool);
 #[derive(Resource)]
 pub(crate) struct PheromoneTextures(pub Vec<(ModuleId, Handle<Image>)>);
 
+/// K3: texture handle for each module's temperature overlay.
+#[derive(Resource)]
+pub(crate) struct TemperatureTextures(pub Vec<(ModuleId, Handle<Image>)>);
+
 /// World-space (pixel) origin of each module's (0,0) corner, computed at setup.
 #[derive(Resource)]
 pub(crate) struct ModuleLayout(pub Vec<(ModuleId, Vec2)>);
 
 #[derive(Resource, Default)]
 struct OverlayState {
+    pub visible: bool,
+}
+
+#[derive(Resource, Default)]
+struct TempOverlayState {
     pub visible: bool,
 }
 
@@ -82,6 +95,7 @@ impl Plugin for RenderPlugin {
             .add_plugins(crate::editor::EditorPlugin)
             .init_state::<AppState>()
             .insert_resource(OverlayState { visible: true })
+            .insert_resource(TempOverlayState { visible: false })
             .insert_resource(OverviewState::default())
             .insert_resource(TopologyDirty::default())
             .add_systems(OnEnter(AppState::Running), setup)
@@ -91,7 +105,9 @@ impl Plugin for RenderPlugin {
                     rebuild_formicarium_if_dirty,
                     sync_ant_sprites,
                     update_pheromone_textures,
+                    update_temperature_textures,
                     toggle_overlay_input,
+                    toggle_temperature_input,
                     toggle_overview_input,
                     camera_controls,
                 )
@@ -150,6 +166,7 @@ pub(crate) fn spawn_formicarium(
     let (layout, centroid) = compute_layout(sim);
 
     let mut textures: Vec<(ModuleId, Handle<Image>)> = Vec::new();
+    let mut temp_textures: Vec<(ModuleId, Handle<Image>)> = Vec::new();
 
     let nest_mat = materials.add(Color::srgb(0.55, 0.35, 0.15));
     let food_mat = materials.add(Color::srgb(0.15, 0.85, 0.2));
@@ -225,6 +242,35 @@ pub(crate) fn spawn_formicarium(
         ));
 
         textures.push((mid, tex));
+
+        // K3 temperature overlay texture. Starts hidden; `T` toggles visibility.
+        let mut timg = Image::new_fill(
+            Extent3d {
+                width: mw,
+                height: mh,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0u8, 0, 0, 0],
+            TextureFormat::Rgba8UnormSrgb,
+            bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD
+                | bevy::render::render_asset::RenderAssetUsages::MAIN_WORLD,
+        );
+        timg.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+        let ttex = images.add(timg);
+        commands.spawn((
+            Sprite {
+                image: ttex.clone(),
+                custom_size: Some(Vec2::new(mww, mhh)),
+                color: Color::srgba(1.0, 1.0, 1.0, 0.65),
+                ..default()
+            },
+            Transform::from_xyz(origin.x + mww * 0.5, origin.y + mhh * 0.5, -0.5),
+            TemperatureOverlay(mid),
+            Visibility::Hidden,
+            FormicariumEntity,
+        ));
+        temp_textures.push((mid, ttex));
 
         // Tile overlays: food + nest entrances.
         let tile_mesh = meshes.add(Rectangle::new(TILE * 1.5, TILE * 1.5));
@@ -346,6 +392,7 @@ pub(crate) fn spawn_formicarium(
     }
 
     commands.insert_resource(PheromoneTextures(textures));
+    commands.insert_resource(TemperatureTextures(temp_textures));
     commands.insert_resource(ModuleLayout(layout.clone()));
 
     tracing::info!(
@@ -504,6 +551,89 @@ fn toggle_overlay_input(keys: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<Ove
     if keys.just_pressed(KeyCode::KeyP) {
         overlay.visible = !overlay.visible;
         tracing::info!(visible = overlay.visible, "pheromone overlay toggled");
+    }
+}
+
+/// K3: paint per-module temperature textures using a blue-white-red
+/// gradient centred on 20°C. 0°C → deep blue, 20°C → white/transparent,
+/// 40°C → deep red. Outside clamped. Visibility toggled by `T`.
+fn update_temperature_textures(
+    sim: Res<SimulationState>,
+    textures: Option<Res<TemperatureTextures>>,
+    mut images: ResMut<Assets<Image>>,
+    overlay: Res<TempOverlayState>,
+    mut q: Query<&mut Visibility, With<TemperatureOverlay>>,
+) {
+    for mut v in q.iter_mut() {
+        *v = if overlay.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    if !overlay.visible {
+        return;
+    }
+    let Some(textures) = textures else {
+        return;
+    };
+    for (mid, handle) in &textures.0 {
+        let Some(img) = images.get_mut(handle) else {
+            continue;
+        };
+        let module = sim.sim.topology.module(*mid);
+        let w = module.pheromones.width;
+        let h = module.pheromones.height;
+        let temps = &module.temperature;
+        let data = &mut img.data;
+        data.resize(w * h * 4, 0);
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                let t = temps[i];
+                // Map temp → (r,g,b,a). Midpoint 20°C.
+                let (r, g, b, a) = temp_color_ramp(t);
+                let o = i * 4;
+                data[o] = r;
+                data[o + 1] = g;
+                data[o + 2] = b;
+                data[o + 3] = a;
+            }
+        }
+    }
+}
+
+/// Blue (cold) → white (mid) → red (hot) gradient. 0°C deep blue,
+/// 20°C transparent white, 40°C deep red. Alpha scales with distance from 20.
+fn temp_color_ramp(t: f32) -> (u8, u8, u8, u8) {
+    let mid = 20.0f32;
+    let delta = t - mid;
+    let norm = (delta.abs() / 20.0).clamp(0.0, 1.0);
+    let alpha = (norm * 200.0) as u8;
+    if delta >= 0.0 {
+        // white → red
+        let k = norm;
+        let r = 255u8;
+        let g = ((1.0 - k) * 255.0) as u8;
+        let b = ((1.0 - k) * 255.0) as u8;
+        (r, g, b, alpha)
+    } else {
+        // white → blue
+        let k = norm;
+        let r = ((1.0 - k) * 255.0) as u8;
+        let g = ((1.0 - k) * 255.0) as u8;
+        let b = 255u8;
+        (r, g, b, alpha)
+    }
+}
+
+fn toggle_temperature_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut overlay: ResMut<TempOverlayState>,
+) {
+    if keys.just_pressed(KeyCode::KeyT) {
+        overlay.visible = !overlay.visible;
+        tracing::info!(visible = overlay.visible, "temperature overlay toggled");
     }
 }
 

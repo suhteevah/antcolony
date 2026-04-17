@@ -756,12 +756,9 @@ impl Simulation {
 
         if self.tick % 8 == 0 {
             for module in self.topology.modules.iter_mut() {
-                diffuse_scalar_grid(
-                    &mut module.temperature,
-                    module.width(),
-                    module.height(),
-                    0.1,
-                );
+                let w = module.width();
+                let h = module.height();
+                diffuse_scalar_grid(&mut module.temperature, w, h, 0.1);
             }
         }
     }
@@ -891,7 +888,7 @@ impl Simulation {
             }
             colony.queen_alive_last_tick = queen_alive;
 
-            if queen_alive && colony.food_stored >= ccfg.egg_cost {
+            if queen_alive && !colony.fertility_suppressed && colony.food_stored >= ccfg.egg_cost {
                 colony.egg_accumulator += ccfg.queen_egg_rate;
                 let mut laid_this_tick: u32 = 0;
                 while colony.egg_accumulator >= 1.0
@@ -916,6 +913,10 @@ impl Simulation {
             }
 
             let mut matured_indices: Vec<usize> = Vec::new();
+            if in_diapause {
+                // Brood development pauses entirely during colony diapause.
+                // Ages stay frozen until thaw.
+            } else {
             for (idx, b) in colony.brood.iter_mut().enumerate() {
                 b.age = b.age.saturating_add(1);
                 match b.stage {
@@ -945,6 +946,7 @@ impl Simulation {
                         }
                     }
                 }
+            }
             }
 
             if !matured_indices.is_empty() {
@@ -1530,6 +1532,138 @@ mod tests {
             .pheromones
             .read(out_port.x as usize, out_port.y as usize, PheromoneLayer::FoodTrail);
         assert!(leaked > 0.5, "pheromone did not bleed across tube: {}", leaked);
+    }
+
+    // ---- K3 thermoregulation + hibernation tests ----
+
+    #[test]
+    fn ambient_temp_varies_with_day() {
+        let cfg = small_config();
+        let mut sim = Simulation::new(cfg, 1);
+        sim.climate.peak_day = 180;
+        sim.climate.starting_day_of_year = 60;
+        // day 60 (start): winter-ish in a 180-peak climate.
+        let t_winter = sim.ambient_temp_c();
+        // Manually warp the clock to day 180 by advancing in_game_seconds_per_tick.
+        sim.climate.starting_day_of_year = 180;
+        let t_summer = sim.ambient_temp_c();
+        assert!(
+            t_summer > t_winter,
+            "summer not warmer than winter: summer={:.2} winter={:.2}",
+            t_summer,
+            t_winter
+        );
+    }
+
+    #[test]
+    fn module_temp_drifts_toward_ambient() {
+        let cfg = small_config();
+        let mut sim = Simulation::new(cfg, 2);
+        // Force ambient to 10°C by moving day-of-year to winter trough.
+        sim.climate.peak_day = 180;
+        sim.climate.seasonal_mid_c = 20.0;
+        sim.climate.seasonal_amplitude_c = 10.0;
+        sim.climate.starting_day_of_year = (180 + 365 / 2) as u32 % 365;
+        // Seed all cells at 20.0 (default), run 200 ticks.
+        for _ in 0..200 {
+            sim.temperature_tick();
+            sim.tick = sim.tick.wrapping_add(1);
+        }
+        let m = sim.topology.module(0);
+        let mean: f32 = m.temperature.iter().sum::<f32>() / m.temperature.len() as f32;
+        assert!(
+            mean < 19.0,
+            "mean temp did not drop toward cold ambient: {:.2}",
+            mean
+        );
+    }
+
+    #[test]
+    fn ant_enters_diapause_when_cold() {
+        let mut cfg = small_config();
+        cfg.ant.hibernation_cold_threshold_c = 10.0;
+        cfg.ant.hibernation_warm_threshold_c = 12.0;
+        let mut sim = Simulation::new(cfg, 3);
+        // Place a cold spot under the ant.
+        sim.ants.clear();
+        let mut probe = Ant::new_worker(42, 0, Vec2::new(5.5, 5.5), 0.0, 10.0);
+        probe.module_id = 0;
+        sim.ants.push(probe);
+        // Hammer the cell temperature to 5.0.
+        {
+            let m = sim.topology.module_mut(0);
+            for v in m.temperature.iter_mut() {
+                *v = 5.0;
+            }
+        }
+        // Freeze climate so temperature_tick doesn't immediately warm it.
+        sim.climate.seasonal_mid_c = 5.0;
+        sim.climate.seasonal_amplitude_c = 0.0;
+        sim.tick();
+        assert_eq!(
+            sim.ants[0].state,
+            AntState::Diapause,
+            "ant did not enter diapause in a 5°C cell"
+        );
+    }
+
+    #[test]
+    fn fertility_suppressed_if_no_winter() {
+        // Species requires hibernation but climate never dips below cold
+        // threshold. After 1 year, fertility must be suppressed.
+        let mut cfg = small_config();
+        cfg.ant.hibernation_required = true;
+        cfg.ant.hibernation_cold_threshold_c = 10.0;
+        cfg.ant.hibernation_warm_threshold_c = 12.0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        let mut sim = Simulation::new(cfg, 4);
+        // Force always-warm climate.
+        sim.climate.seasonal_mid_c = 25.0;
+        sim.climate.seasonal_amplitude_c = 0.0;
+        // 1 day per 2 ticks → 1 year = 730 ticks.
+        sim.in_game_seconds_per_tick = 86_400.0 / 2.0;
+        sim.run(800);
+        assert!(
+            sim.colonies[0].fertility_suppressed,
+            "fertility not suppressed after a missed winter (days_in_diapause={})",
+            sim.colonies[0].days_in_diapause_this_year
+        );
+    }
+
+    #[test]
+    fn fertility_ok_if_winter_observed() {
+        // Same species requiring hibernation but with a real winter climate;
+        // after a year fertility should NOT be suppressed.
+        let mut cfg = small_config();
+        cfg.ant.hibernation_required = true;
+        cfg.ant.hibernation_cold_threshold_c = 10.0;
+        cfg.ant.hibernation_warm_threshold_c = 12.0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        let mut sim = Simulation::new(cfg, 5);
+        // Cold climate: annual range -5 to 25. Winter trough is -5 → well below threshold.
+        sim.climate.seasonal_mid_c = 10.0;
+        sim.climate.seasonal_amplitude_c = 15.0;
+        sim.climate.peak_day = 180;
+        sim.climate.starting_day_of_year = 0; // winter at start
+        // Force all module temperatures to match ambient fast by nudging drift.
+        // 1 day per 2 ticks → 1 year = 730 ticks.
+        sim.in_game_seconds_per_tick = 86_400.0 / 2.0;
+        // Pre-cool the nest module to winter temp to avoid a 200-tick drift lag.
+        {
+            let winter_amb = sim.ambient_temp_c();
+            let m = sim.topology.module_mut(0);
+            for v in m.temperature.iter_mut() {
+                *v = winter_amb;
+            }
+        }
+        sim.run(800);
+        assert!(
+            !sim.colonies[0].fertility_suppressed,
+            "fertility suppressed even with a proper winter (days_in_diapause={})",
+            sim.colonies[0].days_in_diapause_this_year
+        );
     }
 
     #[test]

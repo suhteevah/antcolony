@@ -22,7 +22,7 @@ pub use colony::{BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, Po
 pub use config::{
     AntConfig, ColonyConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig,
 };
-pub use environment::{Environment, TimeScale};
+pub use environment::{Climate, Environment, Season, TimeScale};
 pub use error::SimError;
 pub use module::{Module, ModuleId, ModuleKind, PortPos};
 pub use pheromone::{PheromoneGrid, PheromoneLayer};

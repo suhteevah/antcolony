@@ -73,7 +73,10 @@ impl Default for Climate {
             seasonal_mid_c: 15.0,
             seasonal_amplitude_c: 18.0,
             peak_day: 180,
-            starting_day_of_year: 60,
+            // Default to mid-spring so pre-K3 tests don't accidentally
+            // start in sub-threshold cold. Keeper-mode sims can move this
+            // to 60 (early spring) via `set_environment`.
+            starting_day_of_year: 150,
         }
     }
 }
