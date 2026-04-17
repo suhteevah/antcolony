@@ -29,6 +29,12 @@ struct OverlayState {
     pub visible: bool,
 }
 
+/// M-key overview toggle. Stores the pre-overview camera so we can restore.
+#[derive(Resource, Default)]
+struct OverviewState {
+    pub saved: Option<(Vec3, f32)>,
+}
+
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(crate::ui::UiPlugin)
@@ -36,6 +42,7 @@ impl Plugin for RenderPlugin {
             .add_plugins(crate::encyclopedia::EncyclopediaPlugin)
             .init_state::<AppState>()
             .insert_resource(OverlayState { visible: true })
+            .insert_resource(OverviewState::default())
             .add_systems(OnEnter(AppState::Running), setup)
             .add_systems(
                 Update,
@@ -43,6 +50,7 @@ impl Plugin for RenderPlugin {
                     sync_ant_sprites,
                     update_pheromone_textures,
                     toggle_overlay_input,
+                    toggle_overview_input,
                     camera_controls,
                 )
                     .run_if(in_state(AppState::Running)),
@@ -298,12 +306,39 @@ fn sync_ant_sprites(
             *vis = Visibility::Hidden;
             continue;
         };
-        if ant.is_in_transit() {
-            // Hide while in a tube (v2: interpolate along tube length).
-            *vis = Visibility::Hidden;
+        *vis = Visibility::Visible;
+        if let Some(transit) = ant.transit {
+            // Interpolate along the tube between its two endpoint world-positions.
+            let tube = sim.sim.topology.tube(transit.tube);
+            let a_origin = layout
+                .0
+                .iter()
+                .find(|(id, _)| *id == tube.from.module)
+                .map(|(_, o)| *o - centroid)
+                .unwrap_or(Vec2::ZERO);
+            let b_origin = layout
+                .0
+                .iter()
+                .find(|(id, _)| *id == tube.to.module)
+                .map(|(_, o)| *o - centroid)
+                .unwrap_or(Vec2::ZERO);
+            let a = Vec2::new(
+                a_origin.x + (tube.from.port.x as f32 + 0.5) * TILE,
+                a_origin.y + (tube.from.port.y as f32 + 0.5) * TILE,
+            );
+            let b = Vec2::new(
+                b_origin.x + (tube.to.port.x as f32 + 0.5) * TILE,
+                b_origin.y + (tube.to.port.y as f32 + 0.5) * TILE,
+            );
+            let t = transit.progress.clamp(0.0, 1.0);
+            let p = a.lerp(b, t);
+            let dir = if transit.going_forward { b - a } else { a - b };
+            tf.translation.x = p.x;
+            tf.translation.y = p.y;
+            tf.translation.z = 1.1;
+            tf.rotation = Quat::from_rotation_z(dir.y.atan2(dir.x));
             continue;
         }
-        *vis = Visibility::Visible;
         let origin = layout
             .0
             .iter()
@@ -375,6 +410,62 @@ fn toggle_overlay_input(keys: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<Ove
     if keys.just_pressed(KeyCode::KeyP) {
         overlay.visible = !overlay.visible;
         tracing::info!(visible = overlay.visible, "pheromone overlay toggled");
+    }
+}
+
+/// M-key: snap camera to formicarium overview (fit all modules with a
+/// ~10% margin). Press again to restore the previous view.
+fn toggle_overview_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut overview: ResMut<OverviewState>,
+    sim: Res<SimulationState>,
+    windows: Query<&bevy::window::Window>,
+    mut q: Query<(&mut Transform, &mut OrthographicProjection), With<Camera2d>>,
+) {
+    if !keys.just_pressed(KeyCode::KeyM) {
+        return;
+    }
+    // Compute formicarium bounding box in world-space (same transform as setup()).
+    let (layout, centroid) = compute_layout(&sim);
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for m in &sim.sim.topology.modules {
+        let (_, origin) = layout.iter().find(|(id, _)| *id == m.id).copied().unwrap_or((0, Vec2::ZERO));
+        let origin = origin - centroid;
+        let far = origin + Vec2::new(m.width() as f32 * TILE, m.height() as f32 * TILE);
+        min = min.min(origin);
+        max = max.max(far);
+    }
+    if !min.x.is_finite() || !max.x.is_finite() {
+        return;
+    }
+    let size = max - min;
+    let center = (min + max) * 0.5;
+
+    // Viewport dims for fit calculation.
+    let (vw, vh) = windows
+        .iter()
+        .next()
+        .map(|w| (w.width(), w.height()))
+        .unwrap_or((1280.0, 720.0));
+
+    for (mut tf, mut proj) in q.iter_mut() {
+        if let Some((saved_pos, saved_scale)) = overview.saved.take() {
+            // Restore previous view.
+            tf.translation = saved_pos;
+            proj.scale = saved_scale;
+            tracing::info!("overview toggled OFF (restored view)");
+        } else {
+            overview.saved = Some((tf.translation, proj.scale));
+            // Fit: scale so formicarium_width * 1.1 fits the viewport width.
+            let sx = (size.x * 1.1) / vw.max(1.0);
+            let sy = (size.y * 1.1) / vh.max(1.0);
+            let fit = sx.max(sy).max(0.2);
+            proj.scale = fit;
+            tf.translation.x = center.x;
+            tf.translation.y = center.y;
+            tracing::info!(fit_scale = fit, "overview toggled ON (fit all modules)");
+        }
     }
 }
 

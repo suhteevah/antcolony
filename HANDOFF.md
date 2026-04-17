@@ -54,6 +54,21 @@ This document contains everything needed to implement the ant colony simulation 
 - Tube transit interpolation in render (ant visible traveling along tube).
 - `E` encyclopedia + HUD already adapt to topology since they only read `ColonyState`.
 
+## Keeper Mode — Phase K2.2 COMPLETE
+
+- **Tube transit interpolation:** `sync_ant_sprites` now lerps between the two port world-positions using `TubeTransit.progress`; ants stay visible while traveling and rotate to face the tube direction.
+- **Bore-width gate:** `AntConfig` gained `worker_size_mm` + `polymorphic` (populated by `Species::apply` from `appearance.size_mm` / `biology.polymorphic`). `Ant::body_size_mm(&AntConfig)` returns Worker/Breeder = base, Queen = 1.3×, Soldier = 1.6× if polymorphic else 1.15×. In `Simulation::movement`, port-entry is now conditional on `body_size_mm ≤ tube.bore_width_mm`; too-big ants reflect (trace-level log, no spam).
+- **FeedingDish auto-refill:** `Module` gained `tick_cooldown: u32`. `Simulation::feeding_dish_tick()` runs in the pipeline between `deposit_and_interact` and `colony_economy_tick`; refills each FeedingDish with a radius-2 / 8-unit cluster at the module center when terrain food < 5, then cooldown=600 ticks. Info log per refill event (not per tick).
+- **3-module starter:** `Topology::starter_formicarium_with_feeder(nest, outworld, dish)` adds an outworld-south ↔ dish-north tube (tube id 1, 20 ticks, 8mm). `SimulationState::from_species` now builds the 3-module version by default (dish ≈ 1/3 outworld size).
+- **`M` overview toggle:** Saves current camera + ortho scale, fits the full formicarium bounding box with 10% margin. Second press restores. Pan/zoom still works in overview.
+- Render: FeedingDish renders with the same dark module panel + border + ports as other modules (no special casing needed); tubes drawn the same way.
+- **Tests:** 36 sim unit (+2 new: `major_blocked_by_narrow_tube`, `feeding_dish_refills_food`). All green.
+
+**Next Keeper phase: K2.3 — Module editor UI.**
+- Drag/drop module-board view (zoomed-out formicarium layout, add/remove modules, draw tubes).
+- Wire additional kinds (Hydration, Graveyard) into gameplay.
+- Tube bore-width authoring UI (narrow-bore tubes = worker-only paths).
+
 **Then K3:** thermoregulation + hibernation (temperature grids per module, annual clock, diapause-gated queen fertility for required species).
 
 ---

@@ -155,6 +155,7 @@ impl Simulation {
         self.sense_and_decide();
         self.movement();
         self.deposit_and_interact();
+        self.feeding_dish_tick();
         self.colony_economy_tick();
 
         let evap_rate = self.config.pheromone.evaporation_rate;
@@ -306,6 +307,23 @@ impl Simulation {
                     if let Some((tid, going_forward)) =
                         topology.tube_at_port(ant.module_id, *port)
                     {
+                        // K2.2 bore-width gate: ants that are too big can't fit.
+                        let tube = topology.tube(tid);
+                        let size = ant.body_size_mm(&self.config.ant);
+                        if size > tube.bore_width_mm {
+                            // Reflect as if the port were a closed wall.
+                            tracing::trace!(
+                                ant = ant.id,
+                                caste = ?ant.caste,
+                                size_mm = size,
+                                bore_mm = tube.bore_width_mm,
+                                tube = tid,
+                                "tube refused ant (too large)"
+                            );
+                            ant.heading += std::f32::consts::PI;
+                            entered_tube = true; // reuse flag to skip bounds reflect + movement
+                            break;
+                        }
                         enter_tube.push((i, tid, going_forward));
                         entered_tube = true;
                         break;
@@ -457,6 +475,53 @@ impl Simulation {
                 self.topology.module_mut(ma).pheromones.set_cell(ax, ay, layer, new_a);
                 self.topology.module_mut(mb).pheromones.set_cell(bx, by, layer, new_b);
             }
+        }
+    }
+
+    /// FeedingDish auto-refill: any module of kind `FeedingDish` whose
+    /// food has dropped below the threshold regrows a small cluster at
+    /// its center after a cooldown. Keeps keeper-mode colonies from
+    /// fully starving if they exhaust the outworld food.
+    pub fn feeding_dish_tick(&mut self) {
+        const REFILL_THRESHOLD: u32 = 5;
+        const REFILL_RADIUS: i64 = 2;
+        const REFILL_UNITS: u32 = 8;
+        const REFILL_COOLDOWN: u32 = 600;
+
+        for mid in 0..self.topology.modules.len() {
+            let module = &mut self.topology.modules[mid];
+            if module.kind != ModuleKind::FeedingDish {
+                continue;
+            }
+            // Decrement cooldown.
+            if module.tick_cooldown > 0 {
+                module.tick_cooldown -= 1;
+                continue;
+            }
+            // Count total food units in terrain.
+            let mut total: u32 = 0;
+            for cell in module.world.cells.iter() {
+                if let Terrain::Food(n) = cell {
+                    total = total.saturating_add(*n);
+                }
+            }
+            if total >= REFILL_THRESHOLD {
+                continue;
+            }
+            // Refill at the module center.
+            let cx = (module.width() / 2) as i64;
+            let cy = (module.height() / 2) as i64;
+            let placed = module
+                .world
+                .place_food_cluster(cx, cy, REFILL_RADIUS, REFILL_UNITS);
+            module.tick_cooldown = REFILL_COOLDOWN;
+            tracing::info!(
+                module = mid,
+                tick = self.tick,
+                placed,
+                total_before = total,
+                "FeedingDish refilled"
+            );
         }
     }
 
@@ -978,6 +1043,124 @@ mod tests {
             ant.transit
         );
         assert_eq!(ant.module_id, 1, "ant did not emerge on module 1");
+    }
+
+    #[test]
+    fn major_blocked_by_narrow_tube() {
+        // Tube bore = 4mm; soldier on a polymorphic species with
+        // worker_size_mm=4 has body size = 4*1.6 = 6.4mm > 4 → refused.
+        let mut cfg = small_config();
+        cfg.ant.exploration_rate = 0.0;
+        cfg.ant.worker_size_mm = 4.0;
+        cfg.ant.polymorphic = true;
+
+        let mut topology = Topology::starter_formicarium((32, 24), (64, 64));
+        // Narrow the only tube.
+        topology.tubes[0].bore_width_mm = 4.0;
+
+        let mut sim = Simulation::new_with_topology(cfg, topology, 11);
+        sim.ants.clear();
+        let nest_port = sim.topology.module(0).ports[0];
+        let mut probe = Ant::new_with_caste(
+            2001,
+            0,
+            Vec2::new(nest_port.x as f32 - 0.5, nest_port.y as f32 + 0.5),
+            0.0, // east, into the port
+            25.0,
+            AntCaste::Soldier,
+        );
+        probe.state = AntState::Exploring;
+        probe.module_id = 0;
+        sim.ants.push(probe);
+
+        sim.run(80);
+        let ant = &sim.ants[0];
+        assert!(
+            !ant.is_in_transit(),
+            "oversized ant entered the tube (transit={:?})",
+            ant.transit
+        );
+        assert_eq!(ant.module_id, 0, "oversized ant left module 0");
+    }
+
+    #[test]
+    fn feeding_dish_refills_food() {
+        // Build a tiny 3-module formicarium with a FeedingDish; drain it
+        // and verify it refills after the cooldown.
+        let cfg = small_config();
+        let topology = Topology::starter_formicarium_with_feeder((24, 20), (48, 48), (20, 16));
+        let mut sim = Simulation::new_with_topology(cfg, topology, 3);
+
+        // Seed the dish so the *first* refill event is deterministic and
+        // then drain every cell.
+        sim.spawn_food_cluster_on(2, 10, 8, 2, 3);
+        let dish_idx = 2usize;
+        let (w, h) = {
+            let m = sim.topology.module(dish_idx as u16);
+            (m.width(), m.height())
+        };
+        // Empty all food in the dish.
+        for y in 0..h {
+            for x in 0..w {
+                let cur = sim.topology.module(dish_idx as u16).world.get(x, y);
+                if let Terrain::Food(n) = cur {
+                    for _ in 0..n {
+                        let _ = sim
+                            .topology
+                            .module_mut(dish_idx as u16)
+                            .world
+                            .take_food(x, y);
+                    }
+                }
+            }
+        }
+        // Also reset cooldown so the first empty tick can trigger refill.
+        sim.topology.module_mut(dish_idx as u16).tick_cooldown = 0;
+
+        let count_food = |sim: &Simulation| -> u32 {
+            let mut t = 0u32;
+            for c in sim.topology.module(dish_idx as u16).world.cells.iter() {
+                if let Terrain::Food(n) = c {
+                    t = t.saturating_add(*n);
+                }
+            }
+            t
+        };
+        let before = count_food(&sim);
+        assert_eq!(before, 0, "drain failed, dish still has food: {}", before);
+
+        // Next tick should refill (cooldown was 0 and food < threshold).
+        sim.run(1);
+        let after_one = count_food(&sim);
+        assert!(
+            after_one > 0,
+            "FeedingDish did not refill on first eligible tick: {}",
+            after_one
+        );
+
+        // Run past the cooldown to ensure repeat refills are possible.
+        // (Drain again, wait out cooldown, confirm another refill.)
+        for y in 0..h {
+            for x in 0..w {
+                let cur = sim.topology.module(dish_idx as u16).world.get(x, y);
+                if let Terrain::Food(n) = cur {
+                    for _ in 0..n {
+                        let _ = sim
+                            .topology
+                            .module_mut(dish_idx as u16)
+                            .world
+                            .take_food(x, y);
+                    }
+                }
+            }
+        }
+        sim.run(700); // > 600-tick cooldown
+        let after_cd = count_food(&sim);
+        assert!(
+            after_cd > 0,
+            "FeedingDish did not refill after cooldown: {}",
+            after_cd
+        );
     }
 
     #[test]

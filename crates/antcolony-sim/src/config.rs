@@ -48,6 +48,16 @@ pub struct AntConfig {
     pub beta: f32,
     pub food_capacity: f32,
     pub initial_count: usize,
+    /// Worker/base body length in mm. Used for tube-bore gating (K2.2).
+    #[serde(default = "default_worker_size_mm")]
+    pub worker_size_mm: f32,
+    /// Species has a major caste (soldiers much bigger than workers).
+    #[serde(default)]
+    pub polymorphic: bool,
+}
+
+fn default_worker_size_mm() -> f32 {
+    4.0
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,6 +133,8 @@ impl Default for AntConfig {
             beta: 2.0,
             food_capacity: 1.0,
             initial_count: 20,
+            worker_size_mm: 4.0,
+            polymorphic: false,
         }
     }
 }

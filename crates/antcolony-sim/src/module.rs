@@ -93,6 +93,9 @@ pub struct Module {
     /// has routed a tube to.
     pub ports: Vec<PortPos>,
     pub label: String,
+    /// Per-module cooldown counter. Used by e.g. FeedingDish for refill
+    /// timing. Decremented each tick; behavior-specific systems check it.
+    pub tick_cooldown: u32,
 }
 
 impl Module {
@@ -112,6 +115,7 @@ impl Module {
             formicarium_origin,
             ports: Vec::new(),
             label: label.into(),
+            tick_cooldown: 0,
         }
     }
 

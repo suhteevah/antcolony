@@ -25,7 +25,14 @@ impl SimulationState {
         let nest_h = (env.world_height / 3).max(20);
         let out_w = env.world_width;
         let out_h = env.world_height;
-        let topology = Topology::starter_formicarium((nest_w, nest_h), (out_w, out_h));
+        // K2.2: include an auto-refilling FeedingDish as a third module.
+        let dish_w = (out_w / 3).max(18);
+        let dish_h = (out_h / 3).max(14);
+        let topology = Topology::starter_formicarium_with_feeder(
+            (nest_w, nest_h),
+            (out_w, out_h),
+            (dish_w, dish_h),
+        );
         let mut sim = Simulation::new_with_topology(cfg, topology, env.seed);
 
         // Place food clusters across the outworld (module 1).

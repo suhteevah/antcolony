@@ -96,6 +96,103 @@ impl Topology {
         }
     }
 
+    /// Keeper-mode starter formicarium + auto-refilling FeedingDish.
+    /// Nest (module 0) east↔Outworld (module 1) west, plus a FeedingDish
+    /// (module 2) south of the outworld. Outworld's south-wall port
+    /// connects to the dish's north-wall port via a second tube.
+    pub fn starter_formicarium_with_feeder(
+        nest_dim: (usize, usize),
+        outworld_dim: (usize, usize),
+        dish_dim: (usize, usize),
+    ) -> Self {
+        let (nest_w, nest_h) = nest_dim;
+        let (out_w, out_h) = outworld_dim;
+        let (dish_w, dish_h) = dish_dim;
+
+        let gap = 24.0;
+        let nest_origin = Vec2::ZERO;
+        let outworld_origin = Vec2::new(nest_w as f32 + gap, 0.0);
+        // Dish sits below the outworld with a vertical gap.
+        let dish_origin = Vec2::new(
+            outworld_origin.x + (out_w as f32 - dish_w as f32) * 0.5,
+            -(dish_h as f32) - gap,
+        );
+
+        let nest_port = PortPos::new(nest_w - 1, nest_h / 2);
+        let outworld_port_w = PortPos::new(0, out_h / 2);
+        // Outworld south-wall port (y = 0), centered horizontally.
+        let outworld_port_s = PortPos::new(out_w / 2, 0);
+        // Dish north-wall port (y = dish_h - 1).
+        let dish_port_n = PortPos::new(dish_w / 2, dish_h - 1);
+
+        let nest = Module::new(
+            0,
+            ModuleKind::TestTubeNest,
+            nest_w,
+            nest_h,
+            nest_origin,
+            "Founding Nest",
+        )
+        .with_ports(vec![nest_port]);
+        let outworld = Module::new(
+            1,
+            ModuleKind::Outworld,
+            out_w,
+            out_h,
+            outworld_origin,
+            "Outworld",
+        )
+        .with_ports(vec![outworld_port_w, outworld_port_s]);
+        let dish = Module::new(
+            2,
+            ModuleKind::FeedingDish,
+            dish_w,
+            dish_h,
+            dish_origin,
+            "Feeding Dish",
+        )
+        .with_ports(vec![dish_port_n]);
+
+        let tube_nest_out = Tube {
+            id: 0,
+            from: TubeEnd {
+                module: 0,
+                port: nest_port,
+            },
+            to: TubeEnd {
+                module: 1,
+                port: outworld_port_w,
+            },
+            length_ticks: 30,
+            bore_width_mm: 8.0,
+        };
+        let tube_out_dish = Tube {
+            id: 1,
+            from: TubeEnd {
+                module: 1,
+                port: outworld_port_s,
+            },
+            to: TubeEnd {
+                module: 2,
+                port: dish_port_n,
+            },
+            length_ticks: 20,
+            bore_width_mm: 8.0,
+        };
+
+        tracing::info!(
+            nest_size = format!("{}x{}", nest_w, nest_h),
+            outworld_size = format!("{}x{}", out_w, out_h),
+            dish_size = format!("{}x{}", dish_w, dish_h),
+            "starter_formicarium_with_feeder built (3 modules, 2 tubes)"
+        );
+
+        Self {
+            modules: vec![nest, outworld, dish],
+            tubes: vec![tube_nest_out, tube_out_dish],
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.modules.len()
     }

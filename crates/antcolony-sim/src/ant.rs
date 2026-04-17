@@ -87,6 +87,24 @@ impl Ant {
         self.transit.is_some()
     }
 
+    /// Per-ant body size in mm, derived from the species' base size and
+    /// polymorphism, scaled by caste. Used by the tube-bore gate (K2.2).
+    #[inline]
+    pub fn body_size_mm(&self, cfg: &AntConfig) -> f32 {
+        let base = cfg.worker_size_mm;
+        match self.caste {
+            AntCaste::Worker | AntCaste::Breeder => base,
+            AntCaste::Queen => base * 1.3,
+            AntCaste::Soldier => {
+                if cfg.polymorphic {
+                    base * 1.6
+                } else {
+                    base * 1.15
+                }
+            }
+        }
+    }
+
     #[inline]
     pub fn speed(&self, cfg: &AntConfig) -> f32 {
         match self.caste {

@@ -177,6 +177,8 @@ impl Species {
             beta: 2.0,
             food_capacity: 1.0,
             initial_count: self.growth.initial_workers as usize,
+            worker_size_mm: self.appearance.size_mm,
+            polymorphic: self.biology.polymorphic,
         };
 
         // queen_egg_rate is fraction-of-egg-per-tick.
