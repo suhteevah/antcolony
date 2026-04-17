@@ -11,7 +11,7 @@ pub enum Terrain {
     NestEntrance(u8),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldGrid {
     pub width: usize,
     pub height: usize,

@@ -17,7 +17,9 @@ use crate::ant::{Ant, AntCaste, AntState, choose_direction};
 use crate::colony::{Brood, BroodStage, CasteRatio, ColonyState};
 use crate::config::SimConfig;
 use crate::environment::{Climate, Environment, Season};
+use crate::milestones::{Milestone, MilestoneKind};
 use crate::module::{ModuleId, ModuleKind, PortPos};
+use crate::persist::Snapshot;
 use crate::pheromone::{PheromoneGrid, PheromoneLayer};
 use crate::topology::Topology;
 use crate::tube::{TubeId, TubeTransit};
@@ -120,6 +122,172 @@ impl Simulation {
             next_ant_id,
             climate: Climate::default(),
             in_game_seconds_per_tick: 1.0,
+        }
+    }
+
+    /// Expose the internal ant-id counter for snapshotting.
+    #[inline]
+    pub fn next_ant_id_value(&self) -> u32 {
+        self.next_ant_id
+    }
+
+    // ---- K4 save/load ----
+
+    /// Reconstruct a simulation from a snapshot. `cfg` is the `SimConfig`
+    /// built by `Species::apply(&env)` (or a plain `SimConfig::default()`
+    /// for tests). The sim's RNG is reseeded from `snapshot.environment.seed`.
+    pub fn from_snapshot_raw(snapshot: Snapshot, cfg: SimConfig) -> anyhow::Result<Self> {
+        let Snapshot {
+            format_version: _,
+            species_id: _,
+            environment,
+            climate,
+            tick,
+            in_game_seconds_per_tick,
+            next_ant_id,
+            mut topology,
+            ants,
+            colonies,
+            saved_at_unix_secs: _,
+        } = snapshot;
+
+        // Rebuild pheromone scratch buffers (not serialized).
+        for m in topology.modules.iter_mut() {
+            m.pheromones.rebuild_scratch();
+        }
+
+        let rng = ChaCha8Rng::seed_from_u64(environment.seed);
+        let sim = Self {
+            config: cfg,
+            topology,
+            ants,
+            colonies,
+            tick,
+            rng,
+            next_ant_id,
+            climate,
+            in_game_seconds_per_tick,
+        };
+        tracing::info!(
+            tick = sim.tick,
+            ants = sim.ants.len(),
+            modules = sim.topology.modules.len(),
+            seed = environment.seed,
+            "Simulation::from_snapshot_raw restored"
+        );
+        Ok(sim)
+    }
+
+    /// Reconstruct a simulation from a snapshot, resolving species via a
+    /// user-supplied lookup so biology is folded back into the config.
+    /// Falls back to `SimConfig::default()` if the species resolver returns
+    /// `None` (with a warn log).
+    pub fn from_snapshot(
+        snapshot: Snapshot,
+        resolver: impl Fn(&str) -> Option<crate::species::Species>,
+    ) -> anyhow::Result<Self> {
+        let cfg = match resolver(&snapshot.species_id) {
+            Some(species) => species.apply(&snapshot.environment),
+            None => {
+                tracing::warn!(
+                    species = %snapshot.species_id,
+                    "from_snapshot: species not resolvable — using default SimConfig"
+                );
+                SimConfig::default()
+            }
+        };
+        Self::from_snapshot_raw(snapshot, cfg)
+    }
+
+    /// Advance the simulation by `ticks` steps. Used for offline catch-up
+    /// after a save-load; suppresses per-500-tick heartbeat log spam by
+    /// doing nothing special — the heartbeat will still fire, but on a
+    /// dedicated catch-up run that's expected.
+    pub fn catch_up(&mut self, ticks: u64) {
+        let before = self.tick;
+        for _ in 0..ticks {
+            self.tick();
+        }
+        tracing::info!(
+            from_tick = before,
+            to_tick = self.tick,
+            added = ticks,
+            "catch_up complete"
+        );
+    }
+
+    // ---- K4 progression helpers ----
+
+    /// Is the given module kind currently unlocked for this simulation?
+    /// Bases the decision on colony 0's population + in-game days elapsed.
+    pub fn module_kind_unlocked(&self, kind: ModuleKind) -> bool {
+        let days = self.in_game_total_days();
+        let pop = self
+            .colonies
+            .first()
+            .map(|c| c.adult_total())
+            .unwrap_or(0);
+        crate::unlocks::module_kind_unlocked(kind, days, pop)
+    }
+
+    /// Evaluate K4 milestones for each colony and append any newly earned
+    /// ones to `colony.milestones`. Safe to call every tick.
+    pub fn evaluate_milestones(&mut self) {
+        let tick = self.tick;
+        let day = self.in_game_total_days();
+        let total_days = day;
+        let season_idx = season_to_idx(self.season());
+        let polymorphic = self.config.ant.polymorphic;
+        for colony in self.colonies.iter_mut() {
+            let push = |colony: &mut ColonyState, kind: MilestoneKind| {
+                if colony.has_milestone(kind) {
+                    return;
+                }
+                colony.milestones.push(Milestone {
+                    kind,
+                    tick_awarded: tick,
+                    in_game_day: day,
+                });
+                tracing::info!(
+                    colony_id = colony.id,
+                    tick,
+                    day,
+                    kind = ?kind,
+                    "milestone awarded"
+                );
+            };
+
+            if colony.has_laid_egg {
+                push(colony, MilestoneKind::FirstEgg);
+            }
+
+            if polymorphic && colony.population.soldiers > 0 {
+                push(colony, MilestoneKind::FirstMajor);
+            }
+
+            let total = colony.adult_total();
+            if total >= 10 {
+                push(colony, MilestoneKind::PopulationTen);
+            }
+            if total >= 50 {
+                push(colony, MilestoneKind::PopulationFifty);
+            }
+            if total >= 100 {
+                push(colony, MilestoneKind::PopulationOneHundred);
+            }
+            if total >= 500 {
+                push(colony, MilestoneKind::PopulationFiveHundred);
+            }
+            if total_days >= 365 {
+                push(colony, MilestoneKind::FirstColonyAnniversary);
+            }
+
+            // Winter→Spring transition with live adults.
+            let last = colony.last_season_idx;
+            if last == 0 /* winter */ && season_idx == 1 /* spring */ && total > 0 {
+                push(colony, MilestoneKind::SurvivedFirstWinter);
+            }
+            colony.last_season_idx = season_idx;
         }
     }
 
@@ -360,6 +528,8 @@ impl Simulation {
         }
 
         self.port_bleed();
+
+        self.evaluate_milestones();
 
         self.tick += 1;
         if self.tick % 500 == 0 {
@@ -1052,6 +1222,16 @@ impl Simulation {
     }
 }
 
+#[inline]
+fn season_to_idx(s: Season) -> u8 {
+    match s {
+        Season::Winter => 0,
+        Season::Spring => 1,
+        Season::Summer => 2,
+        Season::Autumn => 3,
+    }
+}
+
 /// Generic scalar 5-point Laplacian diffusion with a scratch copy. Used by
 /// the K3 temperature grid; reuses the same stencil as `PheromoneGrid::diffuse`
 /// but operates on a single layer and does not clamp.
@@ -1715,5 +1895,68 @@ mod tests {
             sim.topology.tubes.iter().all(|t| t.from.module != new_id && t.to.module != new_id),
             "tube touching removed module still present"
         );
+    }
+
+    // ---- K4 milestone tests ----
+
+    #[test]
+    fn first_egg_milestone_awarded() {
+        let mut cfg = small_config();
+        cfg.colony.initial_food = 100_000.0;
+        cfg.colony.queen_egg_rate = 1.0;
+        cfg.colony.egg_cost = 1.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        let mut sim = Simulation::new(cfg, 42);
+        for _ in 0..300 {
+            sim.tick();
+            if sim.colonies[0].has_laid_egg {
+                break;
+            }
+        }
+        assert!(
+            sim.colonies[0]
+                .milestones
+                .iter()
+                .any(|m| m.kind == MilestoneKind::FirstEgg),
+            "FirstEgg milestone missing: {:?}",
+            sim.colonies[0].milestones
+        );
+    }
+
+    #[test]
+    fn population_ten_awarded_once() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 15; // start above 10 so pop10 fires immediately
+        let mut sim = Simulation::new(cfg, 7);
+        sim.tick();
+        let count_pop10 = sim.colonies[0]
+            .milestones
+            .iter()
+            .filter(|m| m.kind == MilestoneKind::PopulationTen)
+            .count();
+        assert_eq!(count_pop10, 1, "pop10 should fire once");
+        // Now simulate an oscillation: population dropping and rising again.
+        sim.ants.truncate(5);
+        sim.colonies[0].population.workers = 5;
+        sim.tick();
+        sim.tick();
+        // Push it back up past 10.
+        while sim.colonies[0].adult_total() < 12 {
+            sim.ants.push(Ant::new_worker(
+                9000 + sim.ants.len() as u32,
+                0,
+                Vec2::new(5.0, 5.0),
+                0.0,
+                10.0,
+            ));
+            sim.colonies[0].population.workers += 1;
+        }
+        sim.tick();
+        let count_pop10 = sim.colonies[0]
+            .milestones
+            .iter()
+            .filter(|m| m.kind == MilestoneKind::PopulationTen)
+            .count();
+        assert_eq!(count_pop10, 1, "pop10 should only fire once across oscillation");
     }
 }

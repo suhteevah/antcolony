@@ -16,7 +16,7 @@ impl Plugin for EncyclopediaPlugin {
             .add_systems(OnEnter(AppState::Running), setup_encyclopedia)
             .add_systems(
                 Update,
-                (toggle_encyclopedia, apply_encyclopedia_visibility)
+                (toggle_encyclopedia, apply_encyclopedia_visibility, update_milestone_list)
                     .run_if(in_state(AppState::Running)),
             );
     }
@@ -27,6 +27,9 @@ struct EncyclopediaVisible(pub bool);
 
 #[derive(Component)]
 struct EncyclopediaPanel;
+
+#[derive(Component)]
+struct MilestoneList;
 
 fn setup_encyclopedia(mut commands: Commands, sim: Res<SimulationState>) {
     let sp = &sim.species;
@@ -126,6 +129,13 @@ fn setup_encyclopedia(mut commands: Commands, sim: Res<SimulationState>) {
                     TextColor(Color::srgb(0.95, 0.82, 0.62)),
                 ));
             }
+            // Milestones (K4) — live-updated.
+            p.spawn((
+                Text::new("Milestones:\n  (none yet)"),
+                TextFont { font_size: 12.0, ..default() },
+                TextColor(Color::srgb(1.0, 0.85, 0.4)),
+                MilestoneList,
+            ));
             p.spawn((
                 Text::new("(press E to close)"),
                 TextFont { font_size: 10.0, ..default() },
@@ -141,6 +151,31 @@ fn toggle_encyclopedia(
     if keys.just_pressed(KeyCode::KeyE) {
         vis.0 = !vis.0;
         tracing::info!(visible = vis.0, "Encyclopedia: toggle");
+    }
+}
+
+fn update_milestone_list(
+    sim: Res<SimulationState>,
+    mut q: Query<&mut Text, With<MilestoneList>>,
+) {
+    let Some(colony) = sim.sim.colonies.first() else {
+        return;
+    };
+    let mut s = String::from("Milestones:\n");
+    if colony.milestones.is_empty() {
+        s.push_str("  (none yet)");
+    } else {
+        for m in &colony.milestones {
+            s.push_str(&format!(
+                "  - {} (day {}, tick {})\n",
+                m.kind.label(),
+                m.in_game_day,
+                m.tick_awarded
+            ));
+        }
+    }
+    for mut t in q.iter_mut() {
+        **t = s.clone();
     }
 }
 

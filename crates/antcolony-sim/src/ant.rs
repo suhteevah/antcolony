@@ -37,7 +37,7 @@ pub enum AntCaste {
     Breeder,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ant {
     pub id: u32,
     pub position: Vec2,

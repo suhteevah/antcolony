@@ -8,13 +8,16 @@ pub mod colony;
 pub mod config;
 pub mod environment;
 pub mod error;
+pub mod milestones;
 pub mod module;
+pub mod persist;
 pub mod pheromone;
 pub mod simulation;
 pub mod spatial;
 pub mod species;
 pub mod topology;
 pub mod tube;
+pub mod unlocks;
 pub mod world;
 
 pub use ant::{Ant, AntCaste, AntState};
@@ -32,6 +35,12 @@ pub use species::{
     Appearance, Biology, CombatProfile, Diet, Difficulty, Encyclopedia, FoundingType, Growth,
     Species, load_species_dir,
 };
+pub use milestones::{Milestone, MilestoneKind};
+pub use persist::{
+    Snapshot, compute_catchup_ticks, load_snapshot, now_unix_secs, save_snapshot,
+    SNAPSHOT_FORMAT_VERSION,
+};
 pub use topology::Topology;
 pub use tube::{Tube, TubeEnd, TubeId, TubeTransit};
+pub use unlocks::{module_kind_unlocked, unlock_hint};
 pub use world::{Terrain, WorldGrid};

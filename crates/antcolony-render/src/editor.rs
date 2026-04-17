@@ -14,7 +14,7 @@
 //! the scene. It's brute-force but the scales are tiny (<30 modules).
 
 use antcolony_game::SimulationState;
-use antcolony_sim::{ModuleId, ModuleKind, PortPos, TubeId};
+use antcolony_sim::{ModuleId, ModuleKind, PortPos, TubeId, unlock_hint};
 use bevy::prelude::*;
 
 use crate::AppState;
@@ -37,6 +37,7 @@ impl Plugin for EditorPlugin {
                     editor_delete_keys,
                     sync_editor_visibility,
                     sync_selection_gizmos,
+                    sync_palette_unlocks,
                 )
                     .run_if(in_state(AppState::Running)),
             );
@@ -251,14 +252,20 @@ fn sync_editor_visibility(
 
 fn palette_button_system(
     mut editor: ResMut<EditorState>,
+    sim: Res<SimulationState>,
     mut q: Query<
         (&Interaction, &PaletteButton, &mut BorderColor),
         (Changed<Interaction>, With<Button>),
     >,
 ) {
     for (interaction, btn, mut border) in q.iter_mut() {
+        let unlocked = sim.sim.module_kind_unlocked(btn.0);
         match *interaction {
             Interaction::Pressed => {
+                if !unlocked {
+                    tracing::trace!(kind = ?btn.0, hint = unlock_hint(btn.0), "palette: locked kind click ignored");
+                    continue;
+                }
                 editor.placing = Some(btn.0);
                 editor.selection = Selection::None;
                 editor.tube_start = None;
@@ -271,6 +278,24 @@ fn palette_button_system(
             Interaction::None => {
                 border.0 = Color::srgba(0.0, 0.0, 0.0, 0.5);
             }
+        }
+    }
+}
+
+/// Grey out locked palette buttons based on current progression.
+fn sync_palette_unlocks(
+    sim: Res<SimulationState>,
+    mut q: Query<(&PaletteButton, &mut BackgroundColor)>,
+) {
+    for (btn, mut bg) in q.iter_mut() {
+        let unlocked = sim.sim.module_kind_unlocked(btn.0);
+        let base = kind_color(btn.0);
+        if unlocked {
+            bg.0 = base;
+        } else {
+            // 50% opacity on black — visually greyed.
+            let srgba = base.to_srgba();
+            bg.0 = Color::srgba(srgba.red * 0.4, srgba.green * 0.4, srgba.blue * 0.4, 0.5);
         }
     }
 }

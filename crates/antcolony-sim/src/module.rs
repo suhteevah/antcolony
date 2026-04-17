@@ -80,7 +80,7 @@ impl PortPos {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Module {
     pub id: ModuleId,
     pub kind: ModuleKind,

@@ -4,6 +4,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::ant::AntCaste;
+use crate::milestones::Milestone;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BroodStage {
@@ -71,7 +72,7 @@ pub struct PopulationCounts {
     pub breeders: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColonyState {
     pub id: u8,
     pub food_stored: f32,
@@ -107,6 +108,12 @@ pub struct ColonyState {
     pub last_year_evaluated: u32,
     /// K3: queen won't lay eggs this year (missed hibernation requirement).
     pub fertility_suppressed: bool,
+    /// K4: awarded milestones in order they fired.
+    #[serde(default)]
+    pub milestones: Vec<Milestone>,
+    /// K4: last observed season, used for Winter→Spring transition detection.
+    #[serde(default)]
+    pub last_season_idx: u8,
 }
 
 impl ColonyState {
@@ -133,7 +140,14 @@ impl ColonyState {
             diapause_seconds_this_year: 0.0,
             last_year_evaluated: 0,
             fertility_suppressed: false,
+            milestones: Vec::new(),
+            last_season_idx: u8::MAX, // sentinel "unset"
         }
+    }
+
+    /// Was this milestone already awarded?
+    pub fn has_milestone(&self, kind: crate::milestones::MilestoneKind) -> bool {
+        self.milestones.iter().any(|m| m.kind == kind)
     }
 
     pub fn accept_food(&mut self, amount: f32) {

@@ -93,6 +93,7 @@ impl Plugin for RenderPlugin {
             .add_plugins(crate::picker::PickerPlugin)
             .add_plugins(crate::encyclopedia::EncyclopediaPlugin)
             .add_plugins(crate::editor::EditorPlugin)
+            .add_plugins(crate::save_ui::SaveUiPlugin)
             .init_state::<AppState>()
             .insert_resource(OverlayState { visible: true })
             .insert_resource(TempOverlayState { visible: false })

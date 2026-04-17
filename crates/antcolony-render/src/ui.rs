@@ -111,7 +111,7 @@ fn setup_ui(mut commands: Commands) {
     // --- Bottom-right help text ---
     commands.spawn((
         Text::new(
-            "WASD/arrows pan | scroll zoom | P pheromone | T temperature\n1/2/3/4 speed (30/60/150/300 Hz) | Space pause",
+            "WASD/arrows pan | scroll zoom | P pheromone | T temperature\n1/2/3/4 speed (30/60/150/300 Hz) | Space pause | Ctrl+S save / Ctrl+L load | B editor | E encyclopedia",
         ),
         TextFont {
             font_size: 11.0,

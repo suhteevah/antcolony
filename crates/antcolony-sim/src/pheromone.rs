@@ -4,8 +4,9 @@
 //! Diffusion uses a scratch buffer for the 5-point Laplacian stencil.
 
 use glam::Vec2;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PheromoneLayer {
     FoodTrail,
     HomeTrail,
@@ -13,7 +14,11 @@ pub enum PheromoneLayer {
     ColonyScent,
 }
 
-#[derive(Debug, Clone)]
+fn default_scratch() -> Vec<f32> {
+    Vec::new()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PheromoneGrid {
     pub width: usize,
     pub height: usize,
@@ -21,7 +26,18 @@ pub struct PheromoneGrid {
     pub home_trail: Vec<f32>,
     pub alarm: Vec<f32>,
     pub colony_scent: Vec<f32>,
+    #[serde(skip, default = "default_scratch")]
     scratch: Vec<f32>,
+}
+
+impl PheromoneGrid {
+    /// Rebuild the diffusion scratch buffer after deserialization.
+    pub fn rebuild_scratch(&mut self) {
+        let n = self.width * self.height;
+        if self.scratch.len() != n {
+            self.scratch = vec![0.0; n];
+        }
+    }
 }
 
 impl PheromoneGrid {

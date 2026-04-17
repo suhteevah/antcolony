@@ -7,11 +7,12 @@
 //! topology that looks and behaves exactly like the old single-grid sim.
 
 use glam::Vec2;
+use serde::{Deserialize, Serialize};
 
 use crate::module::{Module, ModuleId, ModuleKind, PortPos};
 use crate::tube::{Tube, TubeEnd, TubeId};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Topology {
     pub modules: Vec<Module>,
     pub tubes: Vec<Tube>,

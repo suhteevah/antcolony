@@ -4,6 +4,7 @@ pub mod editor;
 pub mod encyclopedia;
 pub mod picker;
 pub mod plugin;
+pub mod save_ui;
 pub mod ui;
 
 use bevy::prelude::States;
@@ -12,6 +13,7 @@ pub use editor::EditorPlugin;
 pub use encyclopedia::EncyclopediaPlugin;
 pub use picker::PickerPlugin;
 pub use plugin::RenderPlugin;
+pub use save_ui::SaveUiPlugin;
 pub use ui::UiPlugin;
 
 /// Top-level app flow: the player picks a species in `Picker`, then the
