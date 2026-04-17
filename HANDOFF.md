@@ -4,18 +4,55 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
-## Current Status (2026-04-16)
+## Last Updated
+2026-04-17
 
-**Phases 1, 2, 3 COMPLETE.**
+## Project Status
+🟢 **Phases 1-3 + Keeper K1-K4 complete.** 51 sim unit + 1 integration tests passing. Release build clean. Starter formicarium runs end-to-end: picker → 3-module nest/outworld/feeder → economy → hibernation → save/load.
 
-- Workspace: `antcolony-sim`, `antcolony-game`, `antcolony-render`, root binary. Toolchain pinned to `stable-x86_64-pc-windows-gnu`. Edition 2024 (`rng.r#gen()` required).
-- **Sim tests:** 19 unit + 1 integration, all passing. Covers emergent pathfinding (`test_ant_finds_food`, `test_trail_formation`, `headless_delivers_food`) plus economy (`colony_grows_with_food`, `colony_starves_without_food`, `caste_ratio_affects_spawns`, `queen_death_stops_production`).
-- **Economy:** `Simulation::colony_economy_tick` runs every tick — consumption → egg-lay → brood maturation (egg→larva→pupa→adult) → spawning with caste drawn from `ColonyState.caste_ratio` → starvation deaths (oldest-first). `Brood { stage, caste, age }` vector on `ColonyState`. Queen death halts production and is logged; first-egg + population milestones (every 50) also logged.
-- **Render:** 200 initial ants, live pheromone overlay, food/nest tiles. UI debug HUD shows tick/FPS/ants-by-caste/food/brood/queen HP, plus Worker-Soldier-Breeder and Forage-Dig-Nurse triangle sliders writing back to `ColonyState`.
-- **Controls:** WASD/arrows pan, scroll zoom, `P` pheromone overlay, `1-4` sim speed (30/60/150/300 Hz), `Space` pause.
-- **Run:** `cargo run --release` (verbose: `./scripts/run_dev.ps1`). First egg typically lays by tick 19.
+## What Was Done This Session
+Massive single-session build-out from empty directory to shipping sim. Seven commits.
 
-**Next: Phase 4 — multi-colony + combat.** Add a second (red) `ColonyState` at the opposite corner; add a combat system using the existing `SpatialHash`; wire up `Ant.health` damage; spawn corpses as small food sources; alarm pheromone on death site; basic red-colony behavior-weight AI.
+- **Phases 1-3 (initial scaffold, `597a6fa`):** workspace + `antcolony-sim` pheromone grid (evap/diffuse/cone-sample), ant FSM with ACO direction, spatial hash, Bevy 0.15 render with per-module overlay + debug HUD, colony economy (food→eggs→larvae→pupae→adult, caste-weighted spawning, starvation deaths).
+- **Keeper K1 (same commit):** data-driven `Species` TOML schema, 7 real-biology species files (Lasius/Camponotus/Tetramorium/Formica/Pogonomyrmex/Tapinoma/Aphaenogaster), `Environment` + `TimeScale` (Realtime/Brisk/Seasonal/Timelapse). Biology authored in in-game seconds, folded to ticks at init. Bevy `AppState { Picker, Running }` with species-picker screen + encyclopedia panel (`E` key).
+- **Keeper K2.1 (`dec0ff9`):** broke the single-world assumption. `Topology { modules, tubes }` owned by `Simulation`. Tube kinematics, port-scent bleed, starter 2-module formicarium.
+- **Keeper K2.2 (`4aeafac`):** tube-transit render interpolation, bore-width caste gate, FeedingDish auto-refill module, `M` overview toggle.
+- **Keeper K2.3 (`96b1260`):** click-based live formicarium editor (`B` key). Palette of 5 module kinds, port→port tube drawing, delete-selected, rebuild-on-dirty. Sim-side stable module/tube ids + add/remove helpers.
+- **Keeper K3 (`3be1c0f`):** thermoregulation + hibernation. `Climate` with cosine ambient curve, per-module temperature grids, `AntState::Diapause`, queen fertility GATED on ≥60 in-game days of diapause/year for hibernation-required species. Temperature overlay (`T` key), HUD Season/°C/Diapause/Fertility lines.
+- **Keeper K4 (`7b527ee`):** persistence + progression. JSON save/load (`Ctrl+S`/`Ctrl+L`), offline catch-up capped at 24 real hours, 8-entry milestone system with gold banner, `ModuleKind` unlock gates on colony age + population (editor palette greys out locked kinds).
+
+**Wiki:** 5 patterns extracted and pushed earlier in session — edition-2024 `gen` keyword, stable-gnu toolchain on kokonoe, Rust raw-string `"#` collision, Bevy 0.15 API gotchas, sim time-scale decoupling. Git initialized, clawhub-lint pre-commit installed, wiki entry updated.
+
+## Current State
+- **Works:** picker, 3-module starter formicarium, forage/return/deposit loop, pheromone trails, economy (eggs → adults), hibernation, diapause-gated fertility, live editor, save/load, offline catch-up, milestones, unlocks.
+- **Stubbed / not-yet:** second (red) colony for Phase 4 combat, underground nest layer (Phase 5), predators (Phase 6), yellow-ant avatar (Phase 7), map-grid master game (Phase 8). Nuptial flights, ant inspector, colony history timeline (K5).
+- **Known quirks:**
+  - Default `Climate.starting_day_of_year = 150` (mid-spring) — needed so pre-K3 tests don't accidentally boot cold. Keeper sims may want to override to 60 (early spring).
+  - RNG is NOT serialized in saves; rng is reseeded from `env.seed` on load. Gameplay state is bit-identical, future rolls diverge.
+  - Default feature set excludes `dxcompiler.dll` — you'll see a benign wgpu warning about falling back to FXC.
+
+## Blocking Issues
+None.
+
+## What's Next
+Priority order for next session:
+
+1. **K5 — keeper polish** (recommended final Keeper work before pivoting to main-game phases):
+   - Click-any-ant inspector (caste, age, state, food carried, lifespan remaining)
+   - Colony history timeline (milestones + events on a scrubbable bar)
+   - Nuptial flight event (when Breeders ready, they leave; chance to found a new colony)
+2. **Phase 4 — multi-colony + combat** (original main-game roadmap): second ColonyState, combat via existing SpatialHash, corpses as food, alarm pheromone, red-colony AI.
+3. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
+
+## Notes for Next Session
+- Edition 2024 — `rng.r#gen()` not `rng.gen()`. This will bite you the first time you write rand code without checking.
+- Toolchain is `stable-x86_64-pc-windows-gnu`; MSVC linker isn't installed on kokonoe.
+- Bevy 0.15 features `bevy_state` enabled (needed for `AppState`). `Image.data` is `Vec<u8>` directly (not `Option`). `Text` uses required-component style, not `TextBundle`.
+- When multiple `Query<&mut Text>` params coexist, add `Without<OtherMarker>` filters to each to satisfy the runtime borrow checker.
+- Don't try to serialize `ChaCha8Rng` — reseed from `env.seed` on load.
+- Workspace has `serde`, `serde_json`, `anyhow`, `glam`, `rand`, `rand_chacha`, `toml`, `tracing`, `thiserror`, `bevy` already. Do NOT add new crate deps without discussion.
+- Runtime test of the picker UI requires interactive click — headless catch of UI panics uses the 7-second smoke run pattern: `./target/release/antcolony.exe > /tmp/x.out 2>&1 & sleep 7; kill $!; grep -iE "ERROR|panic"`.
+- HANDOFF.md below the `---` after this section preserves the original 8-phase spec + per-phase completion blocks. Treat that as historical record + remaining main-game roadmap, not a todo for this session.
 
 ---
 
@@ -98,6 +135,24 @@ This document contains everything needed to implement the ant colony simulation 
 - Default `Climate.starting_day_of_year` shipped as `150` (mid-spring) rather than the spec's `60` so the 41 pre-existing tests still pass — their cells drift toward ambient from the 20°C init and day-60 ambient (~6°C in the default curve) would immediately put every ant in diapause. Keeper-mode production sims can still start at day 60 by mutating `sim.climate.starting_day_of_year` after `from_species`. This is a test-harness accommodation; real gameplay is unaffected.
 - Only the colony's nest-entrance cell on module 0 is polled for the diapause gate, per spec. Multi-entrance / multi-module nest colonies will count diapause from that single cell. Upgrade path: iterate all entrances and OR the result.
 - Temperature diffusion uses the generic scalar helper `diffuse_scalar_grid` rather than reusing `PheromoneGrid::diffuse` since the latter is hardwired to 4 layers. The stencil is identical.
+
+## Keeper Mode — Phase K4 COMPLETE
+
+**AFK persistence + progression.** Close the app, come back hours later, the colony aged appropriately. Plus a progression loop.
+
+- **Save/load** (`crates/antcolony-sim/src/persist.rs`). `Snapshot { format_version: 1, species_id, environment, climate, tick, in_game_seconds_per_tick, next_ant_id, topology, ants, colonies, saved_at_unix_secs }` serialized as pretty JSON to `./saves/quicksave.json`. `save_snapshot(sim, species_id, env, path)`, `load_snapshot(path)`, `Simulation::from_snapshot(snap, species_resolver)` + `from_snapshot_raw` (for tests). Serialize/Deserialize derived on `Ant`, `ColonyState`, `WorldGrid`, `PheromoneGrid`, `PheromoneLayer`, `Module`, `Topology`. `PheromoneGrid.scratch` is `#[serde(skip)]` with a rebuild helper. RNG is NOT serialized — reseeded from `env.seed` on load; doc-commented trade-off.
+- **Offline catch-up.** `persist::compute_catchup_ticks(saved_at, now, tick_rate_hz)` returns `(min(elapsed_real_s, 24h) * tick_rate_hz).round() as u64`. `Simulation::catch_up(ticks)` runs the sim headless with per-500-tick heartbeat suppression. `Ctrl+L` load applies this automatically.
+- **Milestones** (`crates/antcolony-sim/src/milestones.rs`). Eight-entry `MilestoneKind` enum (FirstEgg, FirstMajor, PopulationTen/50/100/500, FirstColonyAnniversary, SurvivedFirstWinter) with `Milestone { kind, tick_awarded, in_game_day }`. `ColonyState.milestones: Vec<Milestone>` + `last_season_idx: u8` for winter-survival tracking. `Simulation::evaluate_milestones` runs per-tick; each milestone awards once per colony and fires an info log.
+- **Unlocks** (`crates/antcolony-sim/src/unlocks.rs`). `module_kind_unlocked(kind, days, pop)` + `unlock_hint(kind)` returning display strings. Rules shipped: TestTubeNest/Outworld/FeedingDish always; Hydration ≥10 pop; YTongNest ≥14d OR ≥50 pop; AcrylicNest ≥100 pop; HeatChamber ≥30d; HibernationChamber ≥180d; Graveyard ≥7d. Exposed via `Simulation::module_kind_unlocked`.
+- **UI** (`crates/antcolony-render/src/save_ui.rs`). `Ctrl+S` writes `./saves/quicksave.json`; `Ctrl+L` loads and runs catch-up. Green "Saved" toast and red error toast (2s each). Gold "MILESTONE: X" banner tracks colony.milestones growth and displays for 5s. Editor palette buttons grey to 40% darkness / 50% alpha when locked; locked clicks are trace-logged no-ops. Encyclopedia side panel gains a live Milestones section.
+- **Tests.** +5 new (51 total sim, up from 46): `persist::roundtrip_preserves_core_state`, `persist::catchup_advances_tick`, `persist::catchup_cap_enforced`, `simulation::first_egg_milestone_awarded`, `simulation::population_ten_awarded_once`.
+
+**Notes / deferred:**
+- Milestone-tracker `seen_counts` is indexed by colony vector position, not colony id — fine for single-colony keeper mode, will need re-keying for Phase 4 multi-colony.
+- Locked editor buttons greyed via background darken; `unlock_hint()` is exported but not rendered as a tooltip (trace log only).
+- `SaveUiPlugin` resolves species from `assets/species/` at cwd — matches picker. Missing file → `SimConfig::default()` fallback with a warn log (doesn't hard-fail).
+- System clock adjusted backward between save/load → catch-up clamps to 0 (`.max(0)` guard).
+- `serde_json` was already declared at the workspace level; pulling it into `antcolony-sim` is not a new crate dep.
 
 ---
 
