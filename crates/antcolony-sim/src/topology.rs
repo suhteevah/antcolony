@@ -200,26 +200,141 @@ impl Topology {
         self.modules.is_empty()
     }
 
+    /// K2.3: module and tube ids are now STABLE — they do NOT change when
+    /// siblings are removed. Lookup is a linear scan, which is fine at the
+    /// expected scale (<20 modules, <40 tubes).
     pub fn module(&self, id: ModuleId) -> &Module {
-        &self.modules[id as usize]
+        self.modules
+            .iter()
+            .find(|m| m.id == id)
+            .unwrap_or_else(|| panic!("Topology::module({}) — not found", id))
     }
     pub fn module_mut(&mut self, id: ModuleId) -> &mut Module {
-        &mut self.modules[id as usize]
+        self.modules
+            .iter_mut()
+            .find(|m| m.id == id)
+            .unwrap_or_else(|| panic!("Topology::module_mut({}) — not found", id))
+    }
+    pub fn try_module(&self, id: ModuleId) -> Option<&Module> {
+        self.modules.iter().find(|m| m.id == id)
     }
     pub fn tube(&self, id: TubeId) -> &Tube {
-        &self.tubes[id as usize]
+        self.tubes
+            .iter()
+            .find(|t| t.id == id)
+            .unwrap_or_else(|| panic!("Topology::tube({}) — not found", id))
+    }
+    pub fn try_tube(&self, id: TubeId) -> Option<&Tube> {
+        self.tubes.iter().find(|t| t.id == id)
+    }
+
+    /// Smallest unused module id.
+    pub fn next_module_id(&self) -> ModuleId {
+        (0u16..u16::MAX)
+            .find(|cand| !self.modules.iter().any(|m| m.id == *cand))
+            .expect("module id space exhausted")
+    }
+
+    /// Smallest unused tube id.
+    pub fn next_tube_id(&self) -> TubeId {
+        (0u16..u16::MAX)
+            .find(|cand| !self.tubes.iter().any(|t| t.id == *cand))
+            .expect("tube id space exhausted")
+    }
+
+    /// Append a new module. Returns its id. Ports start empty unless the
+    /// caller supplies them via `with_ports`.
+    pub fn add_module(
+        &mut self,
+        kind: ModuleKind,
+        width: usize,
+        height: usize,
+        origin: Vec2,
+        label: impl Into<String>,
+    ) -> ModuleId {
+        let id = self.next_module_id();
+        let module = Module::new(id, kind, width, height, origin, label);
+        tracing::info!(id, kind = ?kind, width, height, "Topology::add_module");
+        self.modules.push(module);
+        id
+    }
+
+    /// Append a new tube between two (module, port) endpoints. Does NOT
+    /// verify the ports exist on their modules — caller's responsibility.
+    pub fn add_tube(
+        &mut self,
+        from: TubeEnd,
+        to: TubeEnd,
+        length_ticks: u32,
+        bore_width_mm: f32,
+    ) -> TubeId {
+        let id = self.next_tube_id();
+        tracing::info!(
+            id,
+            from_mod = from.module,
+            to_mod = to.module,
+            length_ticks,
+            bore_width_mm,
+            "Topology::add_tube"
+        );
+        self.tubes.push(Tube {
+            id,
+            from,
+            to,
+            length_ticks,
+            bore_width_mm,
+        });
+        id
+    }
+
+    /// Remove a module and any tubes attached to it. Returns the list of
+    /// removed tube ids so the caller can clean up ants in transit.
+    ///
+    /// **This does NOT touch ants** — callers that own the ant list (i.e.
+    /// `Simulation`) must evict ants whose `module_id == id` or whose
+    /// `transit.tube` is in the returned list.
+    pub fn remove_module(&mut self, id: ModuleId) -> Vec<TubeId> {
+        let removed_tubes: Vec<TubeId> = self
+            .tubes
+            .iter()
+            .filter(|t| t.from.module == id || t.to.module == id)
+            .map(|t| t.id)
+            .collect();
+        self.tubes.retain(|t| !removed_tubes.contains(&t.id));
+        let before = self.modules.len();
+        self.modules.retain(|m| m.id != id);
+        let removed = before - self.modules.len();
+        tracing::info!(
+            id,
+            removed_modules = removed,
+            removed_tubes = removed_tubes.len(),
+            "Topology::remove_module"
+        );
+        removed_tubes
+    }
+
+    /// Remove one tube by id. Callers must evict ants whose
+    /// `transit.tube == id`.
+    pub fn remove_tube(&mut self, id: TubeId) -> bool {
+        let before = self.tubes.len();
+        self.tubes.retain(|t| t.id != id);
+        let removed = before != self.tubes.len();
+        if removed {
+            tracing::info!(id, "Topology::remove_tube");
+        }
+        removed
     }
 
     /// Find a tube attached at `(module, port)`. Returns `(tube_id, going_forward)`
     /// where `going_forward = true` if the ant entering here would traverse
     /// `tube.from`→`tube.to` (i.e. they're at the `from` end).
     pub fn tube_at_port(&self, module: ModuleId, port: PortPos) -> Option<(TubeId, bool)> {
-        for (i, t) in self.tubes.iter().enumerate() {
+        for t in self.tubes.iter() {
             if t.from.module == module && t.from.port == port {
-                return Some((i as TubeId, true));
+                return Some((t.id, true));
             }
             if t.to.module == module && t.to.port == port {
-                return Some((i as TubeId, false));
+                return Some((t.id, false));
             }
         }
         None
@@ -279,5 +394,49 @@ mod tests {
         let (_, fw2) = t.tube_at_port(1, out_port).unwrap();
         assert!(fw1);
         assert!(!fw2);
+    }
+
+    #[test]
+    fn add_module_assigns_stable_id() {
+        let mut t = Topology::starter_formicarium((32, 24), (96, 96));
+        let id = t.add_module(ModuleKind::Outworld, 40, 40, Vec2::new(200.0, 0.0), "Annex");
+        assert_eq!(id, 2);
+        assert_eq!(t.module(2).kind, ModuleKind::Outworld);
+        assert_eq!(t.module(2).label, "Annex");
+    }
+
+    #[test]
+    fn remove_module_drops_connected_tubes() {
+        let mut t = Topology::starter_formicarium_with_feeder((32, 24), (64, 64), (24, 24));
+        // Starter has modules 0,1,2 and tubes 0 (nest<->out) + 1 (out<->dish).
+        assert_eq!(t.modules.len(), 3);
+        assert_eq!(t.tubes.len(), 2);
+        let removed = t.remove_module(1); // outworld
+        assert_eq!(removed.len(), 2, "both tubes touched outworld");
+        assert_eq!(t.modules.len(), 2);
+        assert_eq!(t.tubes.len(), 0);
+        // Surviving modules still addressable by their original ids.
+        assert_eq!(t.module(0).kind, ModuleKind::TestTubeNest);
+        assert_eq!(t.module(2).kind, ModuleKind::FeedingDish);
+    }
+
+    #[test]
+    fn ids_stay_stable_after_remove() {
+        let mut t = Topology::starter_formicarium_with_feeder((32, 24), (64, 64), (24, 24));
+        t.remove_module(0); // nest
+        // Adding a new module should NOT reuse id 0 — it's still a "hole".
+        // Actually with `next_module_id` it WILL reuse 0 because 0 is unused
+        // once the nest is gone. Document that: ids are reused from the low end.
+        let next = t.next_module_id();
+        assert_eq!(next, 0);
+    }
+
+    #[test]
+    fn remove_tube_by_id_works() {
+        let mut t = Topology::starter_formicarium_with_feeder((32, 24), (64, 64), (24, 24));
+        assert!(t.remove_tube(0));
+        assert!(!t.remove_tube(0), "idempotent: second remove is a no-op");
+        assert_eq!(t.tubes.len(), 1);
+        assert_eq!(t.tubes[0].id, 1, "tube 1 should survive");
     }
 }

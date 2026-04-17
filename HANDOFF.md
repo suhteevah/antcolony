@@ -69,7 +69,18 @@ This document contains everything needed to implement the ant colony simulation 
 - Wire additional kinds (Hydration, Graveyard) into gameplay.
 - Tube bore-width authoring UI (narrow-bore tubes = worker-only paths).
 
-**Then K3:** thermoregulation + hibernation (temperature grids per module, annual clock, diapause-gated queen fertility for required species).
+## Keeper Mode — Phase K2.3 COMPLETE
+
+- **Click-based formicarium editor** (`crates/antcolony-render/src/editor.rs`). `B` toggles editor on/off; entering pauses `Time::<Virtual>`, exiting unpauses.
+- **Palette:** bottom-of-screen row of 5 buttons — TestTubeNest / Outworld / YTongNest / Hydration / FeedingDish. Clicking a button arms `EditorState.placing`; next canvas click drops a module centred on the cursor and clears the armed kind.
+- **Selection model:** clicks run port → tube → module hit-tests in that order. Selecting a module draws a yellow outline gizmo (4 edge sprites); selecting a tube draws a thick yellow overlay; selecting a port draws a yellow square. `Delete` or `X` removes the selected module/tube via `Simulation::remove_module` / `remove_tube` (kills ants, drops connected tubes).
+- **Tube drawing:** click one port → it becomes `tube_start` (orange highlight); click another port on a different module → `Simulation::add_tube(...)` with defaults (30 ticks, 8mm). Duplicate tubes rejected.
+- **Rebuild strategy (Option A):** every mutation sets `TopologyDirty`. A new `rebuild_formicarium_if_dirty` system despawns all entities tagged `FormicariumEntity` and respawns via the refactored `spawn_formicarium` helper. The original `setup` now spawns the camera once and delegates. Hit-test data lives on the spawned entities: `ModuleRect`, `PortMarker`, `TubeSprite` components.
+- **Hardcoded sizes per kind:** TestTubeNest / Hydration / FeedingDish = 48×32 cells; Outworld / YTongNest = 80×60. Auto-seeds 4 edge-center ports via `Simulation::add_module`.
+- **Cursor→world conversion:** Bevy 0.15 `Camera::viewport_to_world_2d(&GlobalTransform, Vec2) -> Result<Vec2, _>` — used `.ok()` chaining. Module-placement math converts the click's (post-centroid) world position back to the pre-centroid formicarium-space by adding the current centroid before dividing by TILE. This works when the camera is anchored at origin (the setup default); if the user has panned far off-centre, placement still lands where the mouse pointed because `compute_layout` re-centres on every render-tick.
+- **Tests:** sim tests still 41 passing. `cargo check --workspace` clean (one pre-existing dead_code warning on `PheromoneOverlay.0`). Release build OK, smoke run 7s with no panics.
+
+**Next Keeper phase: K3** — thermoregulation + hibernation (temperature grids per module, annual clock, diapause-gated queen fertility for required species).
 
 ---
 

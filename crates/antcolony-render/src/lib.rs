@@ -1,5 +1,6 @@
 //! Rendering plugin for the ant colony simulation.
 
+pub mod editor;
 pub mod encyclopedia;
 pub mod picker;
 pub mod plugin;
@@ -7,6 +8,7 @@ pub mod ui;
 
 use bevy::prelude::States;
 
+pub use editor::EditorPlugin;
 pub use encyclopedia::EncyclopediaPlugin;
 pub use picker::PickerPlugin;
 pub use plugin::RenderPlugin;

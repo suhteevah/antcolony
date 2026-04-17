@@ -5,24 +5,63 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 
 use crate::AppState;
 
-const TILE: f32 = 4.0;
+pub(crate) const TILE: f32 = 4.0;
 
 pub struct RenderPlugin;
 
 #[derive(Component)]
-struct AntSprite(pub u32);
+pub(crate) struct AntSprite(pub u32);
 
 /// Pheromone overlay for a specific module.
 #[derive(Component)]
-struct PheromoneOverlay(pub ModuleId);
+pub(crate) struct PheromoneOverlay(pub ModuleId);
+
+/// Marker tag on every entity spawned as part of the formicarium scene
+/// (modules, borders, food/nest tiles, port markers, tubes, ant sprites,
+/// pheromone overlays, editor selection gizmos). The editor despawns
+/// everything with this tag when the topology mutates, then rebuilds.
+#[derive(Component)]
+pub(crate) struct FormicariumEntity;
+
+/// Hit-test data attached to each module's background panel. `min`/`max`
+/// are in world-space pixels (post-centroid) so editor input can check if
+/// a cursor click landed inside a module.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct ModuleRect {
+    pub id: ModuleId,
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+/// Hit-test data for port markers.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct PortMarker {
+    pub module: ModuleId,
+    pub port: antcolony_sim::PortPos,
+    pub world_pos: Vec2,
+}
+
+/// Hit-test data for tube sprites.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct TubeSprite {
+    pub id: antcolony_sim::TubeId,
+    pub a: Vec2,
+    pub b: Vec2,
+}
+
+/// Flipped by the editor whenever topology (modules/tubes) changes. The
+/// rebuild system consumes the flag, despawns all `FormicariumEntity`,
+/// and respawns the scene.
+#[derive(Resource, Default)]
+pub(crate) struct TopologyDirty(pub bool);
 
 /// Texture handle for each module's pheromone overlay.
 #[derive(Resource)]
-struct PheromoneTextures(pub Vec<(ModuleId, Handle<Image>)>);
+pub(crate) struct PheromoneTextures(pub Vec<(ModuleId, Handle<Image>)>);
 
 /// World-space (pixel) origin of each module's (0,0) corner, computed at setup.
 #[derive(Resource)]
-struct ModuleLayout(pub Vec<(ModuleId, Vec2)>);
+pub(crate) struct ModuleLayout(pub Vec<(ModuleId, Vec2)>);
 
 #[derive(Resource, Default)]
 struct OverlayState {
@@ -40,19 +79,23 @@ impl Plugin for RenderPlugin {
         app.add_plugins(crate::ui::UiPlugin)
             .add_plugins(crate::picker::PickerPlugin)
             .add_plugins(crate::encyclopedia::EncyclopediaPlugin)
+            .add_plugins(crate::editor::EditorPlugin)
             .init_state::<AppState>()
             .insert_resource(OverlayState { visible: true })
             .insert_resource(OverviewState::default())
+            .insert_resource(TopologyDirty::default())
             .add_systems(OnEnter(AppState::Running), setup)
             .add_systems(
                 Update,
                 (
+                    rebuild_formicarium_if_dirty,
                     sync_ant_sprites,
                     update_pheromone_textures,
                     toggle_overlay_input,
                     toggle_overview_input,
                     camera_controls,
                 )
+                    .chain()
                     .run_if(in_state(AppState::Running)),
             );
     }
@@ -65,10 +108,46 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    commands.spawn(Camera2d);
+    spawn_formicarium(&mut commands, &sim, &mut images, &mut meshes, &mut materials);
+}
+
+/// Rebuild system: when topology has mutated, despawn all formicarium
+/// entities and respawn from the current sim state.
+fn rebuild_formicarium_if_dirty(
+    mut commands: Commands,
+    mut dirty: ResMut<TopologyDirty>,
+    sim: Res<SimulationState>,
+    q: Query<Entity, With<FormicariumEntity>>,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    if !dirty.0 {
+        return;
+    }
+    let n = q.iter().count();
+    for e in q.iter() {
+        commands.entity(e).despawn();
+    }
+    tracing::info!(despawned = n, "rebuild_formicarium: topology dirty — respawning");
+    spawn_formicarium(&mut commands, &sim, &mut images, &mut meshes, &mut materials);
+    dirty.0 = false;
+}
+
+/// Spawn everything that depends on the current topology. Every entity
+/// spawned here gets a `FormicariumEntity` tag so the rebuild system can
+/// wipe them on topology change.
+pub(crate) fn spawn_formicarium(
+    commands: &mut Commands,
+    sim: &SimulationState,
+    images: &mut Assets<Image>,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+) {
     // Compute each module's world-space offset. Center the whole
     // formicarium around the camera origin.
-    let (layout, centroid) = compute_layout(&sim);
-    commands.spawn(Camera2d);
+    let (layout, centroid) = compute_layout(sim);
 
     let mut textures: Vec<(ModuleId, Handle<Image>)> = Vec::new();
 
@@ -93,6 +172,8 @@ fn setup(
                 ..default()
             },
             Transform::from_xyz(origin.x + mww * 0.5, origin.y + mhh * 0.5, -2.0),
+            FormicariumEntity,
+            ModuleRect { id: mid, min: Vec2::new(origin.x, origin.y), max: Vec2::new(origin.x + mww, origin.y + mhh) },
         ));
 
         // Border frame.
@@ -110,6 +191,7 @@ fn setup(
                     ..default()
                 },
                 Transform::from_xyz(origin.x + mww * 0.5 + dx, origin.y + mhh * 0.5 + dy, -1.5),
+                FormicariumEntity,
             ));
             let _ = module_border_mat;
         }
@@ -139,6 +221,7 @@ fn setup(
             },
             Transform::from_xyz(origin.x + mww * 0.5, origin.y + mhh * 0.5, -1.0),
             PheromoneOverlay(mid),
+            FormicariumEntity,
         ));
 
         textures.push((mid, tex));
@@ -158,6 +241,7 @@ fn setup(
                             Mesh2d(tile_mesh.clone()),
                             MeshMaterial2d(food_mat.clone()),
                             Transform::from_translation(world_pos.extend(0.0)),
+                            FormicariumEntity,
                         ));
                     }
                     Terrain::NestEntrance(_) => {
@@ -165,6 +249,7 @@ fn setup(
                             Mesh2d(meshes.add(Circle::new(TILE * 2.5))),
                             MeshMaterial2d(nest_mat.clone()),
                             Transform::from_translation(world_pos.extend(0.5)),
+                            FormicariumEntity,
                         ));
                     }
                     _ => {}
@@ -184,6 +269,12 @@ fn setup(
                 Mesh2d(port_mesh.clone()),
                 MeshMaterial2d(port_mat.clone()),
                 Transform::from_translation(p.extend(0.7)),
+                FormicariumEntity,
+                PortMarker {
+                    module: mid,
+                    port: *port,
+                    world_pos: p,
+                },
             ));
         }
     }
@@ -224,6 +315,8 @@ fn setup(
                 rotation: Quat::from_rotation_z(angle),
                 ..default()
             },
+            FormicariumEntity,
+            TubeSprite { id: tube.id, a, b },
         ));
         let _ = tube_mat;
     }
@@ -248,6 +341,7 @@ fn setup(
             Mesh2d(ant_mesh.clone()),
             MeshMaterial2d(ant_mat.clone()),
             Transform::from_translation(pos.extend(1.0)),
+            FormicariumEntity,
         ));
     }
 

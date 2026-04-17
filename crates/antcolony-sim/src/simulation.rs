@@ -148,6 +148,124 @@ impl Simulation {
         self.topology.module_mut(module).world.place_food_cluster(cx, cy, radius, units)
     }
 
+    // ---- K2.3 live topology mutation helpers ----
+
+    /// Add a new module to the live topology. Auto-seeds four edge-center
+    /// ports (E/W/N/S) so the editor can draw tubes immediately without a
+    /// separate port-placement step.
+    pub fn add_module(
+        &mut self,
+        kind: crate::module::ModuleKind,
+        width: usize,
+        height: usize,
+        origin: Vec2,
+        label: impl Into<String>,
+    ) -> ModuleId {
+        let id = self.topology.add_module(kind, width, height, origin, label);
+        // Default ports: one in the middle of each edge.
+        let ports = vec![
+            PortPos::new(width - 1, height / 2), // east
+            PortPos::new(0, height / 2),         // west
+            PortPos::new(width / 2, 0),          // south
+            PortPos::new(width / 2, height - 1), // north
+        ];
+        self.topology.module_mut(id).ports = ports;
+        id
+    }
+
+    /// Add a tube between two existing ports. Returns its id. Callers are
+    /// responsible for ensuring the target ports actually exist on their
+    /// modules.
+    pub fn add_tube(
+        &mut self,
+        from_mod: ModuleId,
+        from_port: PortPos,
+        to_mod: ModuleId,
+        to_port: PortPos,
+        length_ticks: u32,
+        bore_width_mm: f32,
+    ) -> TubeId {
+        use crate::tube::TubeEnd;
+        self.topology.add_tube(
+            TubeEnd {
+                module: from_mod,
+                port: from_port,
+            },
+            TubeEnd {
+                module: to_mod,
+                port: to_port,
+            },
+            length_ticks,
+            bore_width_mm,
+        )
+    }
+
+    /// Remove a module + all tubes connected to it. Evicts any ant whose
+    /// `module_id` matched OR whose transit was on one of the removed tubes.
+    /// Population counts are decremented accordingly. Returns the number of
+    /// ants killed.
+    pub fn remove_module(&mut self, id: ModuleId) -> usize {
+        let removed_tubes = self.topology.remove_module(id);
+        let removed_before = self.ants.len();
+        let removed_tubes_set = removed_tubes.clone();
+        self.ants.retain(|a| {
+            let module_gone = a.module_id == id;
+            let transit_gone = a
+                .transit
+                .as_ref()
+                .map(|t| removed_tubes_set.contains(&t.tube))
+                .unwrap_or(false);
+            let kill = module_gone || transit_gone;
+            if kill {
+                // Decrement population counts inline.
+                // (We can't capture self.colonies mutably in the closure —
+                // we re-scan below.)
+            }
+            !kill
+        });
+        let killed = removed_before - self.ants.len();
+        self.rebuild_population_counts();
+        tracing::info!(module_id = id, killed, "Simulation::remove_module");
+        killed
+    }
+
+    /// Remove a tube. Evicts any ant currently in transit on it. Returns
+    /// the number of ants killed.
+    pub fn remove_tube(&mut self, id: TubeId) -> usize {
+        if !self.topology.remove_tube(id) {
+            return 0;
+        }
+        let before = self.ants.len();
+        self.ants.retain(|a| {
+            a.transit
+                .as_ref()
+                .map(|t| t.tube != id)
+                .unwrap_or(true)
+        });
+        let killed = before - self.ants.len();
+        self.rebuild_population_counts();
+        tracing::info!(tube_id = id, killed, "Simulation::remove_tube");
+        killed
+    }
+
+    /// Recount `colony.population` from the current `self.ants`. Used after
+    /// live topology edits kill ants.
+    fn rebuild_population_counts(&mut self) {
+        for c in self.colonies.iter_mut() {
+            c.population = crate::colony::PopulationCounts::default();
+        }
+        for a in &self.ants {
+            if let Some(c) = self.colonies.iter_mut().find(|c| c.id == a.colony_id) {
+                match a.caste {
+                    AntCaste::Worker => c.population.workers += 1,
+                    AntCaste::Soldier => c.population.soldiers += 1,
+                    AntCaste::Breeder => c.population.breeders += 1,
+                    AntCaste::Queen => {}
+                }
+            }
+        }
+    }
+
     /// Advance the simulation by one tick.
     pub fn tick(&mut self) {
         let _span = tracing::debug_span!("tick", n = self.tick).entered();
@@ -1191,5 +1309,56 @@ mod tests {
             .pheromones
             .read(out_port.x as usize, out_port.y as usize, PheromoneLayer::FoodTrail);
         assert!(leaked > 0.5, "pheromone did not bleed across tube: {}", leaked);
+    }
+
+    #[test]
+    fn live_add_module_tube_round_trip() {
+        // K2.3: the editor adds+removes modules + tubes at runtime. Verify
+        // that add/remove is symmetrical and ants are cleaned up.
+        let cfg = small_config();
+        let topology = Topology::starter_formicarium((32, 24), (64, 64));
+        let mut sim = Simulation::new_with_topology(cfg, topology, 1);
+        assert_eq!(sim.topology.modules.len(), 2);
+
+        let new_id = sim.add_module(
+            ModuleKind::Hydration,
+            24,
+            24,
+            Vec2::new(200.0, 0.0),
+            "Test Hydration",
+        );
+        assert_eq!(sim.topology.modules.len(), 3);
+        assert_eq!(sim.topology.module(new_id).ports.len(), 4, "auto-seeded 4 ports");
+
+        // Place an ant on the new module, then remove it. Ant must be killed.
+        let ants_before = sim.ants.len();
+        let east_port = sim.topology.module(new_id).ports[0];
+        let _tube_id = sim.add_tube(
+            1, // outworld (has a west port)
+            sim.topology.module(1).ports[0],
+            new_id,
+            east_port,
+            20,
+            8.0,
+        );
+        // Put an ant directly on the new module.
+        sim.ants.push(Ant::new_worker(
+            9_999,
+            0,
+            Vec2::new(5.0, 5.0),
+            0.0,
+            10.0,
+        ));
+        let idx = sim.ants.len() - 1;
+        sim.ants[idx].module_id = new_id;
+
+        let killed = sim.remove_module(new_id);
+        assert_eq!(killed, 1, "ant on removed module was not killed");
+        assert_eq!(sim.ants.len(), ants_before);
+        assert_eq!(sim.topology.modules.len(), 2);
+        assert!(
+            sim.topology.tubes.iter().all(|t| t.from.module != new_id && t.to.module != new_id),
+            "tube touching removed module still present"
+        );
     }
 }
