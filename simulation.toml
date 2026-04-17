@@ -1,0 +1,70 @@
+# Ant Colony Simulation Configuration
+# All values are tunable at runtime (reload with F5 in dev mode)
+
+[world]
+width = 512
+height = 512
+food_spawn_rate = 0.1          # Probability of new food source per tick
+food_cluster_size = 5          # Tiles per food cluster
+initial_food_sources = 10      # Food sources at world start
+food_per_source = 50           # Food units per source
+
+[pheromone]
+evaporation_rate = 0.02        # Per-tick decay multiplier (cell *= 1 - rate)
+diffusion_rate = 0.1           # Spread coefficient for Laplacian stencil
+diffusion_interval = 4         # Ticks between diffusion passes
+max_intensity = 10.0           # Hard cap on pheromone per cell
+min_threshold = 0.001          # Below this, cell zeroed (sparsity optimization)
+deposit_food_trail = 1.0       # Amount deposited by ant carrying food
+deposit_home_trail = 0.8       # Amount deposited by outbound ant
+deposit_alarm = 2.0            # Amount deposited on threat detection
+
+[ant]
+speed_worker = 2.0             # Tiles per tick
+speed_soldier = 1.5            # Slower but tougher
+speed_queen = 0.0              # Queens don't move after founding
+sense_radius = 5               # Forward cone sensing distance in tiles
+sense_angle = 60.0             # Half-angle of sensing cone (degrees)
+sense_samples = 5              # Number of sample points in cone
+exploration_rate = 0.15        # Probability of ignoring pheromone (random walk)
+alpha = 1.0                    # ACO pheromone influence exponent
+beta = 2.0                     # ACO heuristic influence exponent
+food_capacity = 1.0            # Max food one ant can carry
+
+[colony]
+initial_workers = 20           # Starting worker count
+initial_food = 100.0           # Starting food reserves
+egg_cost = 5.0                 # Food consumed per egg laid
+larva_maturation_ticks = 300   # Egg → larva
+pupa_maturation_ticks = 200    # Larva → pupa → adult
+adult_food_consumption = 0.01  # Food consumed per ant per tick
+soldier_food_multiplier = 1.5  # Soldiers eat this × worker rate
+breeder_food_multiplier = 2.0  # Breeders eat the most, do no work
+queen_egg_rate = 0.05          # Eggs per tick when fed
+queen_health = 100.0           # Starting queen HP
+breeder_flight_threshold = 20  # Breeders needed to trigger mating flight
+
+[combat]
+worker_attack = 1.0            # Damage per tick
+soldier_attack = 3.0
+worker_health = 10.0
+soldier_health = 25.0
+queen_health_combat = 50.0     # Queen can fight if cornered
+corpse_food_value = 0.5        # Food from a dead ant
+
+[predators]
+spider_speed = 4.0             # Fastest entity on map
+spider_health = 50.0
+spider_damage = 10.0           # One-shots most ants
+spider_respawn_ticks = 500     # Ticks before new spider appears
+antlion_damage = 999.0         # Instant kill
+initial_spiders = 1
+initial_antlions = 3
+
+[events]
+rain_interval_min = 3000       # Minimum ticks between rain
+rain_interval_max = 8000       # Maximum ticks (random in range)
+rain_flood_depth = 3           # Underground rows flooded from bottom
+lawnmower_interval_min = 10000
+lawnmower_interval_max = 30000
+lawnmower_warning_ticks = 150  # Warning before lawnmower arrives (~5 sec at 30Hz)

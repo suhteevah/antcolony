@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /j/antcolony/.claude/skills/handoff)",
+      "Bash(cp ~/.claude/skills/handoff/SKILL.md /j/antcolony/.claude/skills/handoff/SKILL.md)",
+      "Bash(cp /j/claudeai/.mcp.json /j/antcolony/.mcp.json)"
+    ]
+  }
+}

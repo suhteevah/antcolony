@@ -1,0 +1,64 @@
+id = "pogonomyrmex_occidentalis"
+common_name = "Western Harvester Ant"
+genus = "Pogonomyrmex"
+species_epithet = "occidentalis"
+difficulty = "advanced"
+
+[biology]
+queen_lifespan_years = 16.0
+worker_lifespan_months = 12.0
+founding = "claustral"
+polymorphic = false
+hibernation_required = true
+
+[growth]
+egg_maturation_seconds = 1209600
+larva_maturation_seconds = 2116800
+pupa_maturation_seconds = 1814400
+queen_eggs_per_day = 20.0
+initial_workers = 15
+target_population = 10000
+egg_cost_food = 7.0
+food_per_adult_per_day = 0.5
+
+[diet]
+prefers = ["seeds", "protein", "insects"]
+forages_on = ["ground"]
+
+[combat]
+worker_attack = 2.8
+soldier_attack = 0.0
+worker_health = 14.0
+soldier_health = 0.0
+aggression = 0.7
+
+[appearance]
+color_hex = "#a83418"
+size_mm = 6.0
+speed_multiplier = 1.0
+
+[default_caste_ratio]
+worker = 0.97
+soldier = 0.0
+breeder = 0.03
+
+[encyclopedia]
+tagline = "Desert seed-harvester with one of the most painful stings on the continent."
+real_world_range = "Arid grasslands and shortgrass prairie of the western United States — Wyoming, Colorado, Utah, Nevada, and the Great Basin."
+description = '''Pogonomyrmex occidentalis is the classic "red harvester ant" of the American West. Workers are 5-7mm, bright red-brown, and unmistakable on the large, cleared, pebble-topped mound disks that mark their nests in prairie and desert. A mature colony clears a bare circle up to two meters across around the entrance, a strategy for thermal regulation and easy chaff disposal.
+
+The diet is predominantly seeds. Foragers run fixed trunk trails radiating from the mound, collecting grass and forb seeds that are husked underground in dedicated granary chambers. A mature colony stores many thousands of seeds and plays a large role in prairie plant dispersal.
+
+Pogonomyrmex possess one of the most painful stings of any North American insect — Schmidt Pain Index 3.0, often described as "like drilling into your hand with a hot nail." The venom is also among the most toxic per-milligram of any arthropod. This is serious defensive equipment and must be respected in keeping.
+
+Colonies are monogyne and strictly claustral. Queens emerge from synchronized summer nuptial flights, usually after the first heavy monsoon rains, and found new colonies in sandy soil. Growth is slow — a colony may take 4-5 years to reach mature population of 6,000-12,000 workers.'''
+fun_facts = [
+    "Schmidt Pain Index rating: 3.0 — one of the most painful stings of any North American insect.",
+    "A single colony can clear a 2-meter bare disk around its mound entrance.",
+    "Seeds stored in granaries can remain viable for years — the colony is effectively a living seed bank.",
+    "Workers orient using polarized sunlight patterns to navigate the featureless prairie.",
+    "Nuptial flights are timed to summer monsoon rains that soften the soil for founding queens."
+]
+keeper_notes = '''Not a beginner species — the sting alone earns the advanced rating. A single well-placed sting is intensely painful and can cause systemic reactions in sensitive individuals. Long tweezers and sealed outworlds are mandatory.
+
+They also need a dry, arid setup unlike most hobby ants — over-humidified enclosures will mold brood rapidly. Offer mixed grass seeds (millet, chia, dandelion) as staple diet with occasional insect protein. Hibernation at 10-15 C through winter is required; in the wild they plug the mound and cluster deep.'''

@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/antcolony-sim",
+    "crates/antcolony-game",
+    "crates/antcolony-render",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+rand = "0.8"
+rand_chacha = "0.3"
+glam = { version = "0.29", features = ["serde"] }
+toml = "0.8"
+bevy = { version = "0.15", default-features = false, features = [
+    "bevy_asset",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_render",
+    "bevy_sprite",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_window",
+    "bevy_winit",
+    "default_font",
+    "multi_threaded",
+    "tonemapping_luts",
+    "x11",
+] }
+
+antcolony-sim = { path = "crates/antcolony-sim" }
+antcolony-game = { path = "crates/antcolony-game" }
+antcolony-render = { path = "crates/antcolony-render" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[package]
+name = "antcolony"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+antcolony-sim.workspace = true
+antcolony-game.workspace = true
+antcolony-render.workspace = true
+bevy.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,64 @@
+id = "tapinoma_sessile"
+common_name = "Odorous House Ant"
+genus = "Tapinoma"
+species_epithet = "sessile"
+difficulty = "beginner"
+
+[biology]
+queen_lifespan_years = 3.0
+worker_lifespan_months = 4.0
+founding = "polygyne"
+polymorphic = false
+hibernation_required = false
+
+[growth]
+egg_maturation_seconds = 907200
+larva_maturation_seconds = 1209600
+pupa_maturation_seconds = 1209600
+queen_eggs_per_day = 25.0
+initial_workers = 20
+target_population = 10000
+egg_cost_food = 3.5
+food_per_adult_per_day = 0.3
+
+[diet]
+prefers = ["sugar", "honeydew", "protein"]
+forages_on = ["ground", "vegetation", "tree"]
+
+[combat]
+worker_attack = 0.8
+soldier_attack = 0.0
+worker_health = 5.0
+soldier_health = 0.0
+aggression = 0.3
+
+[appearance]
+color_hex = "#2a1e1a"
+size_mm = 2.7
+speed_multiplier = 1.2
+
+[default_caste_ratio]
+worker = 0.97
+soldier = 0.0
+breeder = 0.03
+
+[encyclopedia]
+tagline = "The coconut-rot ant — tiny, polygyne, and ready to move house at a moment's notice."
+real_world_range = "Native across most of North America from southern Canada to northern Mexico, occupying a wider ecological range than almost any other ant on the continent."
+description = '''Tapinoma sessile is the small (2-3mm), dark brown ant most likely to be trailing across your kitchen counter after a rainstorm. Its common name comes from the sharp, distinctive odor released when a worker is crushed — variously described as rotten coconut, blue cheese, or stale cleaning solvent.
+
+T. sessile is ecologically remarkable: it occupies habitats from alpine tundra to deep forest to urban apartment buildings, with colony structure varying wildly by environment. Small natural colonies may hold 100-500 workers with a single queen. Urban supercolonies — especially those nesting inside heated buildings — can reach 10,000+ workers with dozens of cooperating queens and multiple satellite nest sites.
+
+Polygyne and polydomous, colonies relocate readily when disturbed, with the queen and brood carried to a new site within hours. This mobility makes them very hard to exterminate in homes but quite forgiving in captivity — a badly-set-up enclosure just prompts a move to a new tube.
+
+Foragers specialize in sweet liquid food, farming aphids outdoors and raiding sugar bowls indoors. Growth is extremely fast compared to temperate species; a small starter colony can double in three months with adequate food.'''
+fun_facts = [
+    "When crushed, workers release an odor often compared to rotten coconut — the source of the common name.",
+    "A single urban supercolony can occupy multiple apartments in the same building simultaneously.",
+    "They will pick up and relocate the entire colony in a few hours if threatened.",
+    "One of the few North American ants that thrives equally in alpine mountains and heated houses.",
+    "Polygyne colonies can have dozens of cooperating queens, none of which fight each other."
+]
+keeper_notes = '''Very easy. Polygyne founding means you can start with multiple queens and workers together, skipping the slow single-queen founding phase entirely. No hibernation required — indoor populations reproduce year-round.
+
+Growth is fast and the colony will outgrow a test tube within a couple of months. Have a small formicarium ready early. Sweet liquid (honey water or sugar water) is the staple; offer fruit flies or small crickets for protein once or twice a week. Crushing a worker to smell the signature coconut-rot odor is a rite of passage.'''

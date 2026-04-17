@@ -1,0 +1,62 @@
+id = "aphaenogaster_rudis"
+common_name = "Winnow Ant"
+genus = "Aphaenogaster"
+species_epithet = "rudis"
+difficulty = "beginner"
+
+[biology]
+queen_lifespan_years = 12.0
+worker_lifespan_months = 12.0
+founding = "claustral"
+polymorphic = false
+hibernation_required = true
+
+[growth]
+egg_maturation_seconds = 1209600
+larva_maturation_seconds = 1814400
+pupa_maturation_seconds = 1512000
+queen_eggs_per_day = 10.0
+initial_workers = 12
+target_population = 800
+egg_cost_food = 4.5
+food_per_adult_per_day = 0.35
+
+[diet]
+prefers = ["seeds", "protein", "insects", "sugar"]
+forages_on = ["ground", "vegetation"]
+
+[combat]
+worker_attack = 1.1
+soldier_attack = 0.0
+worker_health = 7.0
+soldier_health = 0.0
+aggression = 0.25
+
+[appearance]
+color_hex = "#6b3a22"
+size_mm = 4.5
+speed_multiplier = 1.1
+
+[default_caste_ratio]
+worker = 0.97
+soldier = 0.0
+breeder = 0.03
+
+[encyclopedia]
+tagline = "The quiet workhorse of the eastern forest floor and a keystone seed disperser."
+real_world_range = "Deciduous forests of eastern North America from southern Ontario through the Appalachians and west to the Mississippi River."
+description = '''Aphaenogaster rudis is the slender, 4-5mm red-brown ant you see carrying seeds twice its own size along forest-floor trunk trails from April through October. Although individually unassuming, A. rudis is an ecological heavyweight: studies of eastern deciduous forests show it is the single most important disperser of understory wildflower seeds, including trillium, bloodroot, and violets.
+
+The relationship — called myrmecochory — works through elaiosomes, nutritious fatty appendages on the seed that workers find irresistible. The ant carries the seed home, eats the elaiosome, and discards the still-viable seed in the nest midden, where it germinates in loose organic soil. An estimated 30-40% of eastern wildflower species depend partly or entirely on ant dispersal.
+
+Colonies are small by any standard — 300 to 1,000 workers at maturity — and monogyne. Queens are fully claustral, but growth is slow and a first-year colony often numbers only 30-50 workers. A. rudis is actually a species complex; the "rudis" name covers several closely related cryptic lineages that only recent molecular work is beginning to tease apart.'''
+fun_facts = [
+    "A. rudis is responsible for dispersing 30-40% of eastern North American wildflower species.",
+    "Workers can carry seeds weighing more than twice their own body weight.",
+    "The name 'Winnow Ant' comes from the way workers sort seeds from chaff in the nest entrance.",
+    "What we call A. rudis is actually a complex of several cryptic species being disentangled by DNA work.",
+    "Nest middens act as microhabitats — many forest wildflowers germinate exclusively in discarded ant soil."
+]
+keeper_notes = '''Excellent beginner species for keepers who want a smaller, slower colony rather than explosive growth. The modest target population means a single hybrid nest can house a mature colony for life.
+
+Hibernation at 5-10 C from November through March is required — this species experiences hard winters under leaf litter in the wild. Offer mixed small seeds (chia, poppy) alongside insect protein. Temperament is calm; workers rarely bite and have no meaningful sting.'''

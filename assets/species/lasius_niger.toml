@@ -1,0 +1,61 @@
+id = "lasius_niger"
+common_name = "Black Garden Ant"
+genus = "Lasius"
+species_epithet = "niger"
+difficulty = "beginner"
+
+[biology]
+queen_lifespan_years = 28.0
+worker_lifespan_months = 24.0
+founding = "claustral"
+polymorphic = false
+hibernation_required = true
+
+[growth]
+egg_maturation_seconds = 1209600
+larva_maturation_seconds = 1814400
+pupa_maturation_seconds = 1209600
+queen_eggs_per_day = 30.0
+initial_workers = 20
+target_population = 15000
+egg_cost_food = 5.0
+food_per_adult_per_day = 0.4
+
+[diet]
+prefers = ["sugar", "protein", "honeydew"]
+forages_on = ["ground", "vegetation"]
+
+[combat]
+worker_attack = 1.0
+soldier_attack = 0.0
+worker_health = 8.0
+soldier_health = 0.0
+aggression = 0.2
+
+[appearance]
+color_hex = "#1a1a1a"
+size_mm = 4.0
+speed_multiplier = 1.0
+
+[default_caste_ratio]
+worker = 0.97
+soldier = 0.0
+breeder = 0.03
+
+[encyclopedia]
+tagline = "The perfect starter ant — hardy, docile, and famously long-lived."
+real_world_range = "Native throughout Europe and into northern Asia, with introduced populations across North America."
+description = '''Lasius niger, the Black Garden Ant, is probably the single most-kept species in the hobby and for good reason. A mature queen holds the world record for documented ant longevity: nearly 29 years in captivity under the care of Hermann Appel. Workers are small (3-5mm), jet-black, and unmistakable on sidewalks and lawns across the Palearctic.
+
+Colonies are monogyne (single queen) and strictly claustral — after her nuptial flight the queen seals herself in a small chamber and raises her first batch of workers from internal reserves, eating nothing until they emerge. A first-year colony is tiny (often <50 workers by autumn), but growth accelerates dramatically from year two onward. Mature colonies of 5,000-15,000 workers are typical.
+
+Foragers are generalists, fond of aphid honeydew, extrafloral nectar, and small insect prey. Famous summer nuptial flights — often triggered by warm, humid evenings in July or August — release thousands of alates simultaneously in a coordinated regional event.'''
+fun_facts = [
+    "A captive Lasius niger queen lived 28 years and 8 months — the longest documented lifespan of any ant.",
+    "Workers tend aphid herds for honeydew, protecting them from predators like a dairy farmer with livestock.",
+    "Nuptial flights are so synchronized across a region they show up on weather radar.",
+    "First-year founding queens will not leave the chamber even if you remove the lid — pure claustral discipline."
+]
+keeper_notes = '''The gold-standard beginner species. Tolerant of humidity swings, temperature fluctuations, and minor keeper mistakes. A small test tube setup with cotton plug and water reservoir is all a founding queen needs for the first six months.
+
+Hibernation (diapause) at 8-15 C from October through March is REQUIRED for queen longevity and egg viability. Skipping diapause will shorten the queen's life dramatically. A wine fridge or garage shelf works well.'''

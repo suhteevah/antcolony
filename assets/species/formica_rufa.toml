@@ -1,0 +1,66 @@
+id = "formica_rufa"
+common_name = "Red Wood Ant"
+genus = "Formica"
+species_epithet = "rufa"
+difficulty = "advanced"
+
+[biology]
+queen_lifespan_years = 18.0
+worker_lifespan_months = 30.0
+founding = "parasitic"
+polymorphic = false
+hibernation_required = true
+
+[growth]
+egg_maturation_seconds = 1512000
+larva_maturation_seconds = 1814400
+pupa_maturation_seconds = 1814400
+queen_eggs_per_day = 50.0
+initial_workers = 30
+target_population = 300000
+egg_cost_food = 6.0
+food_per_adult_per_day = 0.5
+
+[diet]
+prefers = ["honeydew", "protein", "insects", "sugar"]
+forages_on = ["tree", "ground", "vegetation"]
+
+[combat]
+worker_attack = 2.5
+soldier_attack = 0.0
+worker_health = 12.0
+soldier_health = 0.0
+aggression = 0.9
+
+[appearance]
+color_hex = "#8b3a1a"
+size_mm = 8.0
+speed_multiplier = 1.3
+
+[default_caste_ratio]
+worker = 0.97
+soldier = 0.0
+breeder = 0.03
+
+[encyclopedia]
+tagline = "The forest's formic-acid cannon — aggressive, massive, and legally protected."
+real_world_range = "Coniferous and mixed forests across Europe into northern Asia; protected by law in much of Europe."
+description = '''Formica rufa is the iconic thatched-mound wood ant of European forests. A single mature mound can tower over a meter tall, house 100,000 to 400,000 workers, and serve as the centerpiece of a polydomous network linking dozens of satellite nests. The exterior is thatched from spruce and pine needles the workers meticulously arrange for thermal regulation.
+
+Workers are 6-9mm, bicolored red and black, and extraordinarily aggressive. Their primary chemical defense is formic acid — they can spray it several centimeters from the gaster when the nest is disturbed, and a stirred mound produces a sharp vinegar-like stench detectable downwind. An average worker can forage 100+ meters from the nest.
+
+Founding is socially parasitic: a newly-mated F. rufa queen cannot start a colony alone. She invades a colony of a host Formica species (typically F. fusca), kills the host queen, and tricks the host workers into raising her first brood. This makes F. rufa extremely difficult to found in captivity.
+
+Because of their ecological importance as pest-insect predators, wood ant mounds are legally protected across much of Europe — destroying or disturbing them is a prosecutable offense in Germany, Switzerland, and elsewhere.'''
+fun_facts = [
+    "Formic acid gets its name from Formica — it was first isolated by distilling crushed wood ants in the 17th century.",
+    "A single mature mound eats an estimated 100,000 insects per day during summer.",
+    "Workers bask on the mound surface in the morning to absorb heat, then carry it inside to warm the brood.",
+    "Birds deliberately sit on wood ant mounds to let ants spray formic acid through their feathers — a mite treatment called 'anting'.",
+    "Polydomous supercolonies can interconnect dozens of mounds across hundreds of meters of forest."
+]
+keeper_notes = '''Not recommended for beginners. The social-parasitic founding requirement alone rules out most keepers: you need a healthy founding population of host Formica workers to introduce the F. rufa queen into, and the takeover has a high failure rate.
+
+Even a successful colony is demanding — wood ants are highly aggressive, spray formic acid readily (painful in the eyes), and need very large enclosures with thermal gradients to simulate mound conditions. Hibernation at 2-8 C from October through April is mandatory and must be deep to match their natural winter cluster behavior.
+
+Also check local law: keeping F. rufa is restricted or outright illegal in several European jurisdictions.'''

@@ -1,0 +1,43 @@
+[world]
+width = 256
+height = 256
+food_spawn_rate = 0.0
+food_cluster_size = 5
+
+[pheromone]
+evaporation_rate = 0.02
+diffusion_rate = 0.10
+diffusion_interval = 4
+max_intensity = 10.0
+min_threshold = 0.001
+deposit_food_trail = 1.0
+deposit_home_trail = 0.8
+deposit_alarm = 2.0
+
+[ant]
+speed_worker = 2.0
+speed_soldier = 1.5
+speed_queen = 0.0
+sense_radius = 5
+sense_angle = 60.0
+exploration_rate = 0.15
+alpha = 1.0
+beta = 2.0
+food_capacity = 1.0
+initial_count = 60
+
+[colony]
+initial_workers = 20
+initial_food = 100.0
+egg_cost = 5.0
+larva_maturation_ticks = 300
+pupa_maturation_ticks = 200
+adult_food_consumption = 0.01
+soldier_food_multiplier = 1.5
+queen_egg_rate = 0.05
+
+[combat]
+worker_attack = 1.0
+soldier_attack = 3.0
+worker_health = 10.0
+soldier_health = 25.0

@@ -1,0 +1,12 @@
+[package]
+name = "antcolony-game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+antcolony-sim.workspace = true
+bevy.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+glam.workspace = true

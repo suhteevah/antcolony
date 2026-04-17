@@ -1,0 +1,61 @@
+id = "tetramorium_immigrans"
+common_name = "Pavement Ant"
+genus = "Tetramorium"
+species_epithet = "immigrans"
+difficulty = "beginner"
+
+[biology]
+queen_lifespan_years = 12.0
+worker_lifespan_months = 18.0
+founding = "semi_claustral"
+polymorphic = false
+hibernation_required = false
+
+[growth]
+egg_maturation_seconds = 1209600
+larva_maturation_seconds = 1814400
+pupa_maturation_seconds = 1209600
+queen_eggs_per_day = 40.0
+initial_workers = 25
+target_population = 20000
+egg_cost_food = 4.0
+food_per_adult_per_day = 0.3
+
+[diet]
+prefers = ["protein", "sugar", "insects"]
+forages_on = ["pavement", "ground"]
+
+[combat]
+worker_attack = 1.2
+soldier_attack = 0.0
+worker_health = 7.0
+soldier_health = 0.0
+aggression = 0.6
+
+[appearance]
+color_hex = "#3a2818"
+size_mm = 2.8
+speed_multiplier = 0.95
+
+[default_caste_ratio]
+worker = 0.97
+soldier = 0.0
+breeder = 0.03
+
+[encyclopedia]
+tagline = "The sidewalk warrior — small, scrappy, and famous for boundary battles."
+real_world_range = "Originally European, now naturalized across urban and suburban North America; distinct from the closely related Tetramorium caespitum."
+description = '''Tetramorium immigrans is the dark, 2-3mm ant you see swarming over cracked sidewalks on warm summer days. Until recently this North American urban population was lumped under T. caespitum; genetic work in the 2010s split it as its own species. The common name "Pavement Ant" is earned — they nest under slabs, curbs, and building foundations almost anywhere humans have poured concrete.
+
+Colonies are monogyne but dense, reaching 10,000-30,000 workers, and defend territory aggressively against neighboring Tetramorium nests. The famous "sidewalk wars" of early summer, where thousands of workers from adjacent colonies wrestle along boundary lines for hours, are a Tetramorium specialty. Fatalities are lower than the spectacle suggests — much of the combat is ritualized grappling.
+
+Queens found colonies semi-claustrally, occasionally emerging to forage during the first brood. Growth is fast compared to Lasius, and workers tolerate wider humidity and temperature swings, making this one of the easier species for a first-time keeper in a warm climate.'''
+fun_facts = [
+    "The summer sidewalk wars between adjacent colonies can involve tens of thousands of ants at once.",
+    "Recognized as its own species only in 2017 — previously considered a North American form of T. caespitum.",
+    "Nests under concrete retain warmth into the evening, extending foraging hours past sunset.",
+    "Workers will happily raid a dropped ice cream cone within minutes in a city park."
+]
+keeper_notes = '''Extremely easy to keep. Unlike most temperate species, Tetramorium immigrans does not strictly require a hibernation period in captivity — urban populations nesting beside heated buildings often reproduce year-round. A brief cool period helps but is not mandatory.
+
+Warning: colonies can grow explosively once past 500 workers. Have an upgrade nest ready before the outworld fills with brood piles. They are tolerant of dryness but protein-hungry — offer fresh insects 2-3 times a week.'''
