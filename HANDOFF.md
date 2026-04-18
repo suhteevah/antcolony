@@ -8,7 +8,7 @@ This document contains everything needed to implement the ant colony simulation 
 2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 (sim core) complete.** 70 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 6 sim: spider predator with Patrol→Hunt→Eat FSM, antlion stationary kill-tile, rain event wipes surface pheromones and floods underground bottom-row cells, lawnmower sweeps a warning-then-blade line across a surface module killing ants in its path. Predator render sprites still to do.
+🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 complete.** 70 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 6 complete: spider/antlion predator sprites track position + state colour, rain overlay fades in on surface modules during rainfall, lawnmower blade indicator shows warning stripe then sweep blade.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -39,7 +39,7 @@ None.
 Priority order for next session:
 
 1. **P5 follow-ups** — ants transitioning *between* layers via the nest entrance (currently surface and underground are disjoint — diggers that happen to be on the underground module stay there; there's no teleport-down mechanic yet). Auto-assign some workers to `AntState::Digging` when `behavior_weights.dig > 0` so excavation actually happens without a player tool. Underground pheromone trails are isolated (no port-bleed) — decide whether that's the desired behavior. Render: per-cell tile sprites for Chambers at ~0.5 alpha are readable but could use the chamber labels / icons on top.
-2. **P6 render**: spider and antlion sprites (one per predator, position-synced each frame), rain overlay (blue wash on surface modules while `weather.rain_ticks_remaining > 0`), lawnmower warning banner + blade indicator during sweep. Sim is already in — render is the last P6 leg.
+2. **Phase 7 — player interaction** (next main-game phase): yellow-ant avatar (possession, WASD override of FSM), recruit command (`R` pulls N nearby idle ants into a follow group), pheromone beacons (right-click to place "gather here" / "attack here" markers), per-colony behaviour triangle UI (forage / dig / nurse). Exchange mechanic: `E` lets the player jump into any nearby ant.
 3. **P4 polish** — combat kill banner/sfx, Avenger highlight sprite (crown/ring), per-colony panel split in the HUD, per-colony nuptial flight attribution (currently `nuptial_flight_tick` only books stats on `colonies[0]`), upgrade Avenger targeting from nearest-enemy to highest-food-carried ("most valuable" mechanic).
 3. **K5 follow-up** — when a nuptial flight succeeds, actually spawn a new `ColonyState` + nest module in the topology rather than just bumping `daughter_colonies_founded`. Blocker was keeping the milestone-tracker `seen_counts` keyed by vector position; now even more relevant since Phase 4 already proves multi-colony state works.
 4. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
@@ -253,6 +253,12 @@ Priority order for next session:
 - Lawnmower picks `surface_mods.first()` — always the same module. If the sim has more than one non-underground module (e.g. outworld + feeder), later passes could randomize this.
 - Rain flood damage hits only `y < 1.0` (cell-space), i.e. the very bottom row of each underground module. Spec said "lowest chambers" — this approximation is good enough for MVP since carved chambers are well off the bottom row.
 - Combat + predator deaths both deposit `combat.alarm_deposit_on_death`. Keeps the behaviors consistent (a dying ant signals danger regardless of who killed it).
+
+### P6 render (this session)
+- **Predator sprites**: `PredatorSprite(u32)` component; `sync_predator_sprites` runs each frame, diffs against `sim.predators` by id, spawns new sprites / despawns orphans / patches transform + colour for survivors. Spider colours by state: Hunt = brighter red (1.25× size), Eat = brightest red (1.4× size, brief flash), Patrol = dull red, Dead = dark translucent corpse. Antlion = static dark brown square (1.6×).
+- **Rain overlay**: one `RainOverlay(ModuleId)` sprite per surface module spawned in `spawn_formicarium` (skipped for UndergroundNest). `update_rain_overlay` scales alpha by `weather.rain_ticks_remaining / cfg.rain_duration_ticks` up to 0.35. Zero alpha when dry.
+- **Lawnmower blade**: single `LawnmowerBlade` sprite spawned at setup, hidden. `update_lawnmower_blade` shows it during warning (dim orange stripe at y=0) or sweep (bright red blade at `weather.lawnmower_y`), sized to the target module's width.
+- No new tests — render is visual and covered by the 7s smoke run (no panics when a hazard-enabled sim is active).
 
 ---
 

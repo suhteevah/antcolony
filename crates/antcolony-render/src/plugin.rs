@@ -34,6 +34,22 @@ pub(crate) struct FoodCarryIndicator {
 #[derive(Component)]
 pub(crate) struct PheromoneOverlay(pub ModuleId);
 
+/// P6: one sprite per predator. Synced each frame against
+/// `Simulation::predators` by id — new predators get spawned, dead ones
+/// get despawned, live ones track position + state color.
+#[derive(Component)]
+pub(crate) struct PredatorSprite(pub u32);
+
+/// P6: rain overlay sprite covering a surface module. Alpha fades in
+/// with `weather.rain_ticks_remaining`.
+#[derive(Component)]
+pub(crate) struct RainOverlay(pub ModuleId);
+
+/// P6: lawnmower blade indicator — thin horizontal rectangle at the
+/// current blade y.
+#[derive(Component)]
+pub(crate) struct LawnmowerBlade;
+
 /// K3: temperature overlay for a specific module.
 #[derive(Component)]
 pub(crate) struct TemperatureOverlay(pub ModuleId);
@@ -140,6 +156,9 @@ impl Plugin for RenderPlugin {
                 (
                     rebuild_formicarium_if_dirty,
                     sync_ant_sprites,
+                    sync_predator_sprites,
+                    update_rain_overlay,
+                    update_lawnmower_blade,
                     animate_ant_legs,
                     update_food_indicators,
                     update_pheromone_textures,
@@ -355,6 +374,23 @@ pub(crate) fn spawn_formicarium(
             FormicariumEntity,
         ));
         territory_textures.push((mid, gtex));
+
+        // P6 rain overlay: translucent blue wash. Hidden by default,
+        // becomes visible + full alpha while it's raining. Only on
+        // surface modules — underground is sheltered.
+        if module.kind != antcolony_sim::ModuleKind::UndergroundNest {
+            commands.spawn((
+                Sprite {
+                    color: Color::srgba(0.15, 0.35, 0.75, 0.0),
+                    custom_size: Some(Vec2::new(mww, mhh)),
+                    ..default()
+                },
+                Transform::from_xyz(origin.x + mww * 0.5, origin.y + mhh * 0.5, -0.2),
+                RainOverlay(mid),
+                Visibility::Visible,
+                FormicariumEntity,
+            ));
+        }
 
         // Food: berry-cluster (dark base + bright core + tiny highlight).
         // Nest entrance: crater (dark rim / shadow / pit / bright inner dot).
@@ -635,6 +671,20 @@ pub(crate) fn spawn_formicarium(
     commands.insert_resource(TerritoryTextures(territory_textures));
     commands.insert_resource(ModuleLayout(layout.clone()));
 
+    // P6: single lawnmower blade indicator, hidden by default. Width is
+    // re-sized by the update system based on the target module.
+    commands.spawn((
+        Sprite {
+            color: Color::srgba(0.95, 0.15, 0.12, 0.85),
+            custom_size: Some(Vec2::new(8.0, 4.0)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, 3.0),
+        LawnmowerBlade,
+        Visibility::Hidden,
+        FormicariumEntity,
+    ));
+
     tracing::info!(
         ants = sim.sim.ants.len(),
         modules = sim.sim.topology.modules.len(),
@@ -861,6 +911,163 @@ fn sync_ant_sprites(
             tf.scale = Vec3::ONE;
             tf.rotation = Quat::from_rotation_z(ant.heading);
         }
+    }
+}
+
+/// P6: sync predator sprite entities against `Simulation::predators`.
+/// Spawns a new sprite for any predator without one, despawns orphans,
+/// updates the transform + color of live entries.
+fn sync_predator_sprites(
+    mut commands: Commands,
+    sim: Res<SimulationState>,
+    layout: Option<Res<ModuleLayout>>,
+    existing: Query<(Entity, &PredatorSprite)>,
+) {
+    use antcolony_sim::{PredatorKind, PredatorState};
+    let Some(layout) = layout else {
+        return;
+    };
+    let (_, centroid) = compute_layout(&sim);
+
+    // Index existing sprites by predator id.
+    let mut by_id: std::collections::HashMap<u32, Entity> = std::collections::HashMap::new();
+    for (e, s) in existing.iter() {
+        by_id.insert(s.0, e);
+    }
+
+    let live_ids: std::collections::HashSet<u32> =
+        sim.sim.predators.iter().map(|p| p.id).collect();
+
+    // Despawn sprites whose predator is gone.
+    for (e, s) in existing.iter() {
+        if !live_ids.contains(&s.0) {
+            commands.entity(e).despawn_recursive();
+        }
+    }
+
+    for predator in &sim.sim.predators {
+        let origin = layout
+            .0
+            .iter()
+            .find(|(id, _)| *id == predator.module_id)
+            .map(|(_, o)| *o)
+            .unwrap_or(Vec2::ZERO)
+            - centroid;
+        let pos = Vec2::new(
+            origin.x + predator.position.x * TILE,
+            origin.y + predator.position.y * TILE,
+        );
+        let (color, size) = match (predator.kind, predator.state) {
+            (PredatorKind::Spider, PredatorState::Dead { .. }) => {
+                (Color::srgba(0.2, 0.1, 0.08, 0.6), Vec2::splat(TILE * 1.1))
+            }
+            (PredatorKind::Spider, PredatorState::Eat { .. }) => {
+                (Color::srgb(0.95, 0.15, 0.1), Vec2::splat(TILE * 1.4))
+            }
+            (PredatorKind::Spider, PredatorState::Hunt { .. }) => {
+                (Color::srgb(0.85, 0.2, 0.15), Vec2::splat(TILE * 1.25))
+            }
+            (PredatorKind::Spider, _) => {
+                (Color::srgb(0.6, 0.2, 0.2), Vec2::splat(TILE * 1.1))
+            }
+            (PredatorKind::Antlion, _) => {
+                (Color::srgb(0.45, 0.25, 0.12), Vec2::splat(TILE * 1.6))
+            }
+        };
+        let z = 1.2;
+        if let Some(&e) = by_id.get(&predator.id) {
+            // Existing — patch transform + sprite.
+            commands.entity(e).insert((
+                Transform::from_translation(pos.extend(z)),
+                Sprite {
+                    color,
+                    custom_size: Some(size),
+                    ..default()
+                },
+            ));
+        } else {
+            commands.spawn((
+                Sprite {
+                    color,
+                    custom_size: Some(size),
+                    ..default()
+                },
+                Transform::from_translation(pos.extend(z)),
+                PredatorSprite(predator.id),
+                FormicariumEntity,
+            ));
+        }
+    }
+}
+
+/// P6: fade the per-module rain wash in during rain, out when clear.
+fn update_rain_overlay(
+    sim: Res<SimulationState>,
+    mut q: Query<(&RainOverlay, &mut Sprite)>,
+) {
+    let cfg = &sim.sim.config.hazards;
+    let remaining = sim.sim.weather.rain_ticks_remaining as f32;
+    let duration = cfg.rain_duration_ticks.max(1) as f32;
+    // Ramp alpha up toward the start, hold, ramp down at the end.
+    let intensity = (remaining / duration).clamp(0.0, 1.0);
+    let alpha = intensity * 0.35;
+    for (_, mut sprite) in q.iter_mut() {
+        let mut c = sprite.color.to_srgba();
+        c.alpha = alpha;
+        sprite.color = Color::Srgba(c);
+    }
+}
+
+/// P6: snap the lawnmower blade to `(module.origin.x + width/2, blade_y)`
+/// and show/hide based on whether a sweep is active.
+fn update_lawnmower_blade(
+    sim: Res<SimulationState>,
+    layout: Option<Res<ModuleLayout>>,
+    mut q: Query<(&mut Transform, &mut Visibility, &mut Sprite), With<LawnmowerBlade>>,
+) {
+    let Some(layout) = layout else {
+        return;
+    };
+    let (_, centroid) = compute_layout(&sim);
+    let w = &sim.sim.weather;
+    let sweeping = w.lawnmower_sweep_remaining > 0;
+    let warning = w.lawnmower_warning_remaining > 0;
+    let active = sweeping || warning;
+
+    for (mut tf, mut vis, mut sprite) in q.iter_mut() {
+        if !active {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        *vis = Visibility::Visible;
+        let Some(&(_, origin)) = layout
+            .0
+            .iter()
+            .find(|(id, _)| *id == w.lawnmower_module)
+        else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+        let Some(module) = sim.sim.topology.try_module(w.lawnmower_module) else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+        let module_w = module.width() as f32 * TILE;
+        let origin = origin - centroid;
+        // During warning, park the blade at y=0 (just-spawning); during
+        // sweep, place it at the live blade_y.
+        let blade_y = if warning { 0.0 } else { w.lawnmower_y * TILE };
+        tf.translation.x = origin.x + module_w * 0.5;
+        tf.translation.y = origin.y + blade_y;
+        tf.translation.z = 3.0;
+        let (color, height) = if warning {
+            // Pulsing warning stripe (dim red).
+            (Color::srgba(0.95, 0.40, 0.15, 0.55), TILE * 0.6)
+        } else {
+            (Color::srgba(0.95, 0.15, 0.10, 0.90), TILE * 0.8)
+        };
+        sprite.color = color;
+        sprite.custom_size = Some(Vec2::new(module_w, height));
     }
 }
 
