@@ -404,7 +404,7 @@ impl Simulation {
                 continue;
             }
             let (ux, uy) = (gx as usize, gy as usize);
-            drop(module);
+            let _ = module; // release the immutable borrow before taking a mutable one
             self.topology.module_mut(b.module_id).pheromones.deposit(
                 ux,
                 uy,
