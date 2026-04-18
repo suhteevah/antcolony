@@ -8,7 +8,7 @@ This document contains everything needed to implement the ant colony simulation 
 2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 (sim core) complete.** 58 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 4 sim-side is in: two-colony arena topology, cross-colony combat with corpses+alarm, red AI auto-escalation. Render/UI for P4 (territory overlay, two-colony picker entry) still to do.
+🟢 **Phases 1-3 + K1-K5 + P4 (sim + basic render) complete.** 58 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 4 is playable: `V` in the picker launches the two-colony arena (black vs red AI), red ants render in a distinct rust tint, combat stats appear in the HUD. Territory overlay and Avenger mechanic still to do.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -38,7 +38,7 @@ None.
 ## What's Next
 Priority order for next session:
 
-1. **P4 render + UI** — per-colony ant sprite tint (red vs black), territory overlay driven by the existing `ColonyScent` pheromone layer, picker option to launch `two_colony_arena` instead of the single-colony starter, combat-kill banner/sfx, HUD split per colony.
+1. **P4 render + UI follow-ups** — territory overlay driven by the `ColonyScent` pheromone layer (deposit + visualize per-colony tile control), combat kill banner/sfx, per-colony panel split rather than a single line.
 2. **P4 sim polish** — Avenger mechanic (one red ant tagged, hunts the player's most-valuable ant, role transfers on death), alarm-pheromone steering (soldiers bias toward alarm gradient, workers flee), per-colony nuptial flight attribution (currently nuptial_flight_tick only books stats on `colonies[0]`).
 3. **K5 follow-up** — when a nuptial flight succeeds, actually spawn a new `ColonyState` + nest module in the topology rather than just bumping `daughter_colonies_founded`. Blocker was keeping the milestone-tracker `seen_counts` keyed by vector position; now even more relevant since Phase 4 already proves multi-colony state works.
 4. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
@@ -190,6 +190,12 @@ Priority order for next session:
 - Queens: combat can reduce `queen_health` to 0 via the `AntCaste::Queen` branch of the victim decrement. Economy already gates egg-laying on `queen_health > 0`, so queen-death via combat is automatically a game-over condition for that colony.
 - No alarm-pheromone steering yet — alarm deposits accumulate at death sites but ants don't change heading in response. See "What's Next" P4 sim polish.
 - No render work: both colonies currently draw in the same palette. `new_two_colony_with_topology` is not yet exposed via the picker — tests construct sims directly.
+
+### P4 render pass (this session)
+- `SimulationState::from_species_two_colony` builds the arena with food seeded in the middle of the shared outworld.
+- Picker: pressing `V` (with a species selected) boots straight into the two-colony arena, bypassing Confirm. No extra UI — intentional; a full two-colony mode-switch panel can come later.
+- Per-colony ant tint: plugin builds one `body_mat` + `limb_color` per colony. Colony 0 wears the species' chosen hex; every subsequent colony wears a bright rust-red (`srgb(0.85, 0.18, 0.12)`). All child leg/antenna sprites pull from the same per-colony handle.
+- HUD: when `colonies.len() >= 2`, a `Red: N alive | kills vs you: X | losses: Y  ·  Your kills: X | losses: Y` line appears between the queen-HP line and the nuptial line.
 
 ---
 

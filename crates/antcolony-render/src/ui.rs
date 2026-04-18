@@ -309,6 +309,27 @@ fn update_stats_text(
         "Fertility: ok"
     };
 
+    // P4: combat summary when the sim has a hostile second colony.
+    let combat_line = if sim.sim.colonies.len() >= 2 {
+        let red = &sim.sim.colonies[1];
+        let red_alive = sim
+            .sim
+            .ants
+            .iter()
+            .filter(|a| a.colony_id == 1)
+            .count();
+        format!(
+            "Red: {} alive | kills vs you: {} | losses: {}  ·  Your kills: {} | losses: {}",
+            red_alive,
+            red.combat_kills,
+            red.combat_losses,
+            colony.combat_kills,
+            colony.combat_losses,
+        )
+    } else {
+        String::new()
+    };
+
     let flying: usize = sim
         .sim
         .ants
@@ -335,7 +356,7 @@ fn update_stats_text(
     };
 
     let text = format!(
-        "Tick: {}{}\nFPS: {:.0}\nSeason: {} (day {}/365, year {})\nAmbient: {:.1} °C\nDiapause: {}\n{}\nAnts: {} (W {} / S {} / B {} / Q {})\nFood stored: {:.1}\nFood returned: {}\nBrood: eggs {} / larvae {} / pupae {}\nQueen HP: {:.1}{}{}",
+        "Tick: {}{}\nFPS: {:.0}\nSeason: {} (day {}/365, year {})\nAmbient: {:.1} °C\nDiapause: {}\n{}\nAnts: {} (W {} / S {} / B {} / Q {})\nFood stored: {:.1}\nFood returned: {}\nBrood: eggs {} / larvae {} / pupae {}\nQueen HP: {:.1}{}{}{}{}",
         sim.sim.tick,
         pause_tag,
         fps,
@@ -356,6 +377,8 @@ fn update_stats_text(
         colony.larvae,
         colony.pupae,
         colony.queen_health,
+        if combat_line.is_empty() { "" } else { "\n" },
+        combat_line,
         if nuptial_line.is_empty() { "" } else { "\n" },
         nuptial_line,
     );

@@ -490,11 +490,26 @@ pub(crate) fn spawn_formicarium(
     // Ant bodies: parent entity carries AntSprite + Transform; children form
     // a head / thorax / gaster trio plus antennae and six legs, rotated by
     // the parent's heading.
+    //
+    // P4: per-colony palette. Colony 0 wears the chosen species' color;
+    // every additional colony gets a distinctive rust-red tint so the
+    // player can tell them apart at a glance.
     let species_color = crate::picker::parse_hex(&sim.species.appearance.color_hex);
-    let body_color = darken(species_color, 0.55);
-    let limb_color = darken(species_color, 0.35);
+    let colony_count = sim.sim.colonies.len().max(1);
+    let mut body_mats: Vec<Handle<ColorMaterial>> = Vec::with_capacity(colony_count);
+    let mut limb_colors: Vec<Color> = Vec::with_capacity(colony_count);
+    for cid in 0..colony_count {
+        let base = if cid == 0 {
+            species_color
+        } else {
+            // Hostile red — bright enough to read against dark substrate,
+            // distinct from green (food) and yellow (ports).
+            Color::srgb(0.85, 0.18, 0.12)
+        };
+        body_mats.push(materials.add(darken(base, 0.55)));
+        limb_colors.push(darken(base, 0.35));
+    }
     let unit_circle = meshes.add(Circle::new(1.0));
-    let body_mat = materials.add(body_color);
     let food_carry_mat = materials.add(Color::srgb(0.25, 0.95, 0.35));
     for (idx, ant) in sim.sim.ants.iter().enumerate() {
         let (_, origin) = layout
@@ -515,13 +530,14 @@ pub(crate) fn spawn_formicarium(
                 FormicariumEntity,
             ))
             .with_children(|c| {
+                let cid = (ant.colony_id as usize).min(body_mats.len() - 1);
                 spawn_ant_parts(
                     c,
                     idx as u32,
                     ant.caste,
                     &unit_circle,
-                    &body_mat,
-                    limb_color,
+                    &body_mats[cid],
+                    limb_colors[cid],
                     &food_carry_mat,
                 );
             });

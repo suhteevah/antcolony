@@ -25,6 +25,7 @@ impl Plugin for PickerPlugin {
                     species_button_system,
                     timescale_button_system,
                     confirm_button_system,
+                    versus_key_launch_system,
                     update_detail_pane,
                     update_species_button_highlights,
                     update_timescale_button_highlights,
@@ -492,6 +493,41 @@ fn confirm_button_system(
         commands.insert_resource(state);
         next_state.set(AppState::Running);
     }
+}
+
+/// Phase 4: pressing `V` on the picker launches the selected species
+/// straight into the two-colony arena (black vs red AI) instead of the
+/// solo keeper starter. No extra UI button — keeps the picker clean.
+fn versus_key_launch_system(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    catalog: Res<SpeciesCatalog>,
+    selection: Res<PickerSelection>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    if !keys.just_pressed(KeyCode::KeyV) {
+        return;
+    }
+    let Some(idx) = selection.selected_index else {
+        tracing::warn!("Picker: V pressed with no species selected");
+        return;
+    };
+    let Some(species) = catalog.species.get(idx) else {
+        tracing::error!(idx, "Picker: V selected index out of range");
+        return;
+    };
+    let env = Environment {
+        time_scale: selection.time_scale,
+        ..Environment::default()
+    };
+    tracing::info!(
+        species = %species.id,
+        scale = env.time_scale.label(),
+        "Picker: V pressed -> launching two-colony arena (P4)"
+    );
+    let state = SimulationState::from_species_two_colony(species, &env);
+    commands.insert_resource(state);
+    next_state.set(AppState::Running);
 }
 
 // --- Display sync ---

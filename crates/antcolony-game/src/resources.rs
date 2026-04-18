@@ -57,4 +57,40 @@ impl SimulationState {
             environment: env.clone(),
         }
     }
+
+    /// Phase 4: two-colony arena variant. Black (player) + red (AI) share
+    /// a single outworld. Food clusters are scattered in the middle so
+    /// both colonies race for them. Same species config for both — P4
+    /// MVP doesn't yet let the player pick different species per colony.
+    pub fn from_species_two_colony(species: &Species, env: &Environment) -> Self {
+        let cfg = species.apply(env);
+        let nest_w = (env.world_width / 5).max(24);
+        let nest_h = (env.world_height / 3).max(20);
+        let out_w = env.world_width;
+        let out_h = env.world_height;
+        let topology = Topology::two_colony_arena((nest_w, nest_h), (out_w, out_h));
+        let mut sim = Simulation::new_two_colony_with_topology(cfg, topology, env.seed, 0, 2);
+        sim.set_environment(env);
+
+        // Food in the middle of the shared outworld.
+        let ow = out_w as i64;
+        let oh = out_h as i64;
+        sim.spawn_food_cluster_on(1, ow / 2, oh / 2, 4, 40);
+        sim.spawn_food_cluster_on(1, ow / 3, oh / 4, 3, 30);
+        sim.spawn_food_cluster_on(1, 2 * ow / 3, 3 * oh / 4, 3, 30);
+
+        tracing::info!(
+            species = %species.id,
+            scale = env.time_scale.label(),
+            seed = env.seed,
+            modules = sim.topology.modules.len(),
+            "SimulationState::from_species_two_colony initialized (P4 arena)"
+        );
+
+        Self {
+            sim,
+            species: species.clone(),
+            environment: env.clone(),
+        }
+    }
 }
