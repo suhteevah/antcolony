@@ -2,9 +2,12 @@
 
 pub mod editor;
 pub mod encyclopedia;
+pub mod inspector;
 pub mod picker;
 pub mod plugin;
 pub mod save_ui;
+pub mod substrate;
+pub mod timeline;
 pub mod ui;
 
 use bevy::prelude::States;

@@ -20,6 +20,10 @@ pub enum MilestoneKind {
     FirstColonyAnniversary,
     /// Transitioned from Winter → Spring with live adults.
     SurvivedFirstWinter,
+    /// K5: the colony launched its first nuptial flight.
+    FirstNuptialFlight,
+    /// K5: a breeder survived its flight and founded a daughter colony.
+    FirstDaughterColony,
 }
 
 impl MilestoneKind {
@@ -33,6 +37,8 @@ impl MilestoneKind {
             MilestoneKind::PopulationFiveHundred => "Population 500",
             MilestoneKind::FirstColonyAnniversary => "First Anniversary",
             MilestoneKind::SurvivedFirstWinter => "Survived First Winter",
+            MilestoneKind::FirstNuptialFlight => "First Nuptial Flight",
+            MilestoneKind::FirstDaughterColony => "First Daughter Colony",
         }
     }
 }

@@ -341,7 +341,9 @@ fn editor_canvas_clicks(
         return;
     };
 
-    // 1. Port hit-test (priority — small target).
+    // 1. Port hit-test (priority — small target). Radius is more forgiving
+    // while mid tube-draw so partial misses still land on the target port.
+    let port_radius: f32 = if editor.tube_start.is_some() { 14.0 } else { 8.0 };
     if let Some(pm) = q_ports
         .iter()
         .min_by(|a, b| {
@@ -350,7 +352,7 @@ fn editor_canvas_clicks(
                 .partial_cmp(&b.world_pos.distance_squared(world))
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .filter(|pm| pm.world_pos.distance(world) <= 6.0)
+        .filter(|pm| pm.world_pos.distance(world) <= port_radius)
     {
         handle_port_click(pm, &mut editor, &mut sim, &mut dirty);
         return;
@@ -383,6 +385,32 @@ fn editor_canvas_clicks(
     }
 
     if let Some(m) = hit_module {
+        // Mid tube-draw: clicking another module's body snaps to that
+        // module's nearest port instead of just selecting the module —
+        // port dots are small and easy to miss.
+        if let Some((from_mod, _)) = editor.tube_start {
+            if m.id != from_mod {
+                if let Some(pm) = q_ports
+                    .iter()
+                    .filter(|pm| pm.module == m.id)
+                    .min_by(|a, b| {
+                        a.world_pos
+                            .distance_squared(world)
+                            .partial_cmp(&b.world_pos.distance_squared(world))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                {
+                    tracing::info!(
+                        module_id = m.id,
+                        px = pm.port.x,
+                        py = pm.port.y,
+                        "editor: module click snapped to nearest port"
+                    );
+                    handle_port_click(pm, &mut editor, &mut sim, &mut dirty);
+                    return;
+                }
+            }
+        }
         editor.selection = Selection::Module(m.id);
         editor.tube_start = None;
         tracing::info!(module_id = m.id, "editor: module selected");

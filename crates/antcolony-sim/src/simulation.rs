@@ -529,6 +529,8 @@ impl Simulation {
 
         self.port_bleed();
 
+        self.nuptial_flight_tick();
+
         self.evaluate_milestones();
 
         self.tick += 1;
@@ -570,7 +572,10 @@ impl Simulation {
             // K3 diapause override: combat/flee states are preserved, but
             // every other state can flip to/from Diapause based on local temp.
             let temp = module.temp_at(ant.position);
-            let preserve_combat = matches!(ant.state, AntState::Fighting | AntState::Fleeing);
+            let preserve_combat = matches!(
+                ant.state,
+                AntState::Fighting | AntState::Fleeing | AntState::NuptialFlight
+            );
             if !preserve_combat {
                 if ant.state != AntState::Diapause && temp < cold_t {
                     new_headings.push(ant.heading);
@@ -855,6 +860,135 @@ impl Simulation {
                 self.topology.module_mut(ma).pheromones.set_cell(ax, ay, layer, new_a);
                 self.topology.module_mut(mb).pheromones.set_cell(bx, by, layer, new_b);
             }
+        }
+    }
+
+    /// K5 nuptial flight.
+    ///
+    /// Each tick:
+    /// 1. **Launch** — if enough eligible breeders exist (Exploring +
+    ///    age ≥ `nuptial_breeder_min_age`), transition them all to
+    ///    `AntState::NuptialFlight` and zero their `state_timer`. The
+    ///    whole batch takes off together — no stragglers.
+    /// 2. **Predation** — each flying breeder rolls against
+    ///    `nuptial_predation_per_tick`; failures are removed.
+    /// 3. **Resolution** — once a breeder's `state_timer` reaches
+    ///    `nuptial_flight_ticks`, roll `nuptial_founding_chance`. On
+    ///    success, increment the colony's `daughter_colonies_founded`
+    ///    (the founder despawns either way — she left to start a new
+    ///    colony, which is beyond the scope of K5).
+    pub fn nuptial_flight_tick(&mut self) {
+        use crate::ant::AntCaste;
+
+        let col_cfg = self.config.colony.clone();
+        let min_count = col_cfg.nuptial_breeder_min;
+        let min_age = col_cfg.nuptial_breeder_min_age;
+        let flight_ticks = col_cfg.nuptial_flight_ticks;
+        let predation = col_cfg.nuptial_predation_per_tick;
+        let founding = col_cfg.nuptial_founding_chance;
+        let tick = self.tick;
+        let day_of_year = self.day_of_year();
+
+        if self.colonies.is_empty() {
+            return;
+        }
+
+        // --- 1. Launch: any batch of ready breeders takes off together. ---
+        let ready_indices: Vec<usize> = self
+            .ants
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| {
+                a.caste == AntCaste::Breeder
+                    && a.state == AntState::Exploring
+                    && a.age >= min_age
+                    && a.transit.is_none()
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if ready_indices.len() as u32 >= min_count {
+            for &i in &ready_indices {
+                let ant = &mut self.ants[i];
+                ant.state = AntState::NuptialFlight;
+                ant.state_timer = 0;
+            }
+            // Track on colony 0 for now (single-colony K5).
+            let c = &mut self.colonies[0];
+            c.nuptial_launches += ready_indices.len() as u32;
+            c.last_nuptial_flight_tick = tick;
+            if !c.has_milestone(crate::milestones::MilestoneKind::FirstNuptialFlight) {
+                let day = day_of_year;
+                c.milestones.push(crate::milestones::Milestone {
+                    kind: crate::milestones::MilestoneKind::FirstNuptialFlight,
+                    tick_awarded: tick,
+                    in_game_day: day,
+                });
+                tracing::info!(
+                    tick,
+                    count = ready_indices.len(),
+                    "milestone: FirstNuptialFlight"
+                );
+            } else {
+                tracing::info!(
+                    tick,
+                    count = ready_indices.len(),
+                    "nuptial flight: batch launched"
+                );
+            }
+        }
+
+        // --- 2. Predation + 3. Resolution (pass over flying breeders). ---
+        let mut predated: u32 = 0;
+        let mut founded: u32 = 0;
+        let mut flight_ended_empty: u32 = 0;
+        // Work with indices so we can borrow `self.rng` and `self.ants`
+        // separately. Collect in descending order so swap_remove is safe.
+        let mut to_remove: Vec<usize> = Vec::new();
+        for i in (0..self.ants.len()).rev() {
+            if self.ants[i].state != AntState::NuptialFlight {
+                continue;
+            }
+            if predation > 0.0 && self.rng.gen_range(0.0..1.0) < predation {
+                predated += 1;
+                to_remove.push(i);
+                continue;
+            }
+            // state_timer is incremented by sense_and_decide earlier in the tick.
+            if self.ants[i].state_timer >= flight_ticks {
+                if self.rng.gen_range(0.0..1.0) < founding {
+                    founded += 1;
+                } else {
+                    flight_ended_empty += 1;
+                }
+                to_remove.push(i);
+            }
+        }
+        for i in to_remove {
+            self.ants.swap_remove(i);
+        }
+
+        if predated + founded + flight_ended_empty > 0 {
+            let c = &mut self.colonies[0];
+            c.nuptial_predation_deaths += predated;
+            c.daughter_colonies_founded += founded;
+            if founded > 0
+                && !c.has_milestone(crate::milestones::MilestoneKind::FirstDaughterColony)
+            {
+                let day = day_of_year;
+                c.milestones.push(crate::milestones::Milestone {
+                    kind: crate::milestones::MilestoneKind::FirstDaughterColony,
+                    tick_awarded: tick,
+                    in_game_day: day,
+                });
+                tracing::info!(tick, "milestone: FirstDaughterColony");
+            }
+            tracing::info!(
+                tick,
+                predated,
+                founded,
+                lost_no_mate = flight_ended_empty,
+                "nuptial flight: resolution"
+            );
         }
     }
 
@@ -1323,9 +1457,31 @@ pub fn spawn_initial_ants(
     distribution: CasteRatio,
     id_offset: u32,
 ) -> Vec<Ant> {
-    let mut ants = Vec::with_capacity(config.ant.initial_count);
+    let mut ants = Vec::with_capacity(config.ant.initial_count + 1);
     let worker_health = config.combat.worker_health;
     let soldier_health = config.combat.soldier_health;
+
+    // Every founding colony gets a visible queen as ant #0. She sits on
+    // the nest entrance (Idle is not in the `moving` match set, so she
+    // does not walk around), is rendered at 1.3× worker scale with the
+    // queen silhouette, and can be clicked in the inspector. Economy
+    // continues to read `ColonyState.queen_health` for egg-laying —
+    // `sync_queen_ant` keeps the two values in lockstep each tick.
+    ants.push(Ant {
+        id: id_offset,
+        position: nest,
+        heading: 0.0,
+        state: AntState::Idle,
+        caste: AntCaste::Queen,
+        colony_id,
+        health: 100.0,
+        food_carried: 0.0,
+        age: 0,
+        state_timer: 0,
+        module_id: 0,
+        transit: None,
+    });
+
     for i in 0..config.ant.initial_count {
         let angle = rng.gen_range(0.0..std::f32::consts::TAU);
         let r: f32 = rng.gen_range(0.0..2.0);
@@ -1336,7 +1492,7 @@ pub fn spawn_initial_ants(
             _ => worker_health,
         };
         ants.push(Ant::new_with_caste(
-            id_offset + i as u32,
+            id_offset + 1 + i as u32,
             colony_id,
             pos,
             angle,
@@ -1527,7 +1683,13 @@ mod tests {
         let sim = Simulation::new_with_topology(cfg, topology, 1);
         assert_eq!(sim.topology.modules.len(), 2);
         assert_eq!(sim.topology.tubes.len(), 1);
-        assert_eq!(sim.ants.len(), 20);
+        // 20 workers + 1 queen spawned at the nest.
+        assert_eq!(sim.ants.len(), 21);
+        assert_eq!(
+            sim.ants.iter().filter(|a| a.caste == AntCaste::Queen).count(),
+            1,
+            "exactly one queen at spawn"
+        );
         for a in &sim.ants {
             assert_eq!(a.module_id, 0, "initial ants spawn on module 0");
         }
@@ -1692,8 +1854,9 @@ mod tests {
         let cfg = small_config();
         let topology = Topology::starter_formicarium((32, 24), (64, 64));
         let mut sim = Simulation::new_with_topology(cfg, topology, 1);
-        let nest_port = sim.topology.module(0).ports[0];
-        let out_port = sim.topology.module(1).ports[0];
+        // Use the specific ports the tube uses: nest east ↔ outworld west.
+        let nest_port = crate::PortPos::new(31, 12);
+        let out_port = crate::PortPos::new(0, 32);
 
         for _ in 0..5 {
             sim.topology.module_mut(0).pheromones.deposit(
@@ -1958,5 +2121,108 @@ mod tests {
             .filter(|m| m.kind == MilestoneKind::PopulationTen)
             .count();
         assert_eq!(count_pop10, 1, "pop10 should only fire once across oscillation");
+    }
+
+    #[test]
+    fn nuptial_flight_launches_and_resolves() {
+        use crate::ant::AntCaste;
+
+        let mut cfg = small_config();
+        cfg.colony.nuptial_breeder_min = 2;
+        cfg.colony.nuptial_breeder_min_age = 0;
+        cfg.colony.nuptial_flight_ticks = 10;
+        cfg.colony.nuptial_predation_per_tick = 0.0; // deterministic — no deaths mid-flight
+        cfg.colony.nuptial_founding_chance = 1.0; // deterministic founding
+        cfg.ant.initial_count = 0;
+
+        let mut sim = Simulation::new(cfg, 42);
+        // Seed three Breeders at the nest.
+        for i in 0..3 {
+            let mut a = Ant::new_with_caste(
+                5000 + i,
+                0,
+                Vec2::new(3.0, 3.0),
+                0.0,
+                10.0,
+                AntCaste::Breeder,
+            );
+            a.age = 100;
+            a.state = AntState::Exploring;
+            sim.ants.push(a);
+        }
+
+        // One tick: launch.
+        sim.tick();
+        let flying: usize = sim
+            .ants
+            .iter()
+            .filter(|a| a.state == AntState::NuptialFlight)
+            .count();
+        assert_eq!(flying, 3, "all three breeders should be airborne");
+        assert_eq!(sim.colonies[0].nuptial_launches, 3);
+
+        // Advance past the flight window; all should resolve as founders.
+        for _ in 0..20 {
+            sim.tick();
+        }
+        assert!(
+            sim.ants
+                .iter()
+                .all(|a| a.state != AntState::NuptialFlight),
+            "no breeders should still be airborne after 20 ticks"
+        );
+        assert_eq!(
+            sim.colonies[0].daughter_colonies_founded, 3,
+            "all three should have founded daughter colonies (deterministic)"
+        );
+        assert!(
+            sim.colonies[0]
+                .milestones
+                .iter()
+                .any(|m| m.kind == MilestoneKind::FirstNuptialFlight),
+            "FirstNuptialFlight milestone should fire"
+        );
+        assert!(
+            sim.colonies[0]
+                .milestones
+                .iter()
+                .any(|m| m.kind == MilestoneKind::FirstDaughterColony),
+            "FirstDaughterColony milestone should fire"
+        );
+    }
+
+    #[test]
+    fn nuptial_flight_waits_for_threshold() {
+        use crate::ant::AntCaste;
+
+        let mut cfg = small_config();
+        cfg.colony.nuptial_breeder_min = 4;
+        cfg.colony.nuptial_breeder_min_age = 0;
+        cfg.ant.initial_count = 0;
+
+        let mut sim = Simulation::new(cfg, 42);
+        for i in 0..2 {
+            let mut a = Ant::new_with_caste(
+                6000 + i,
+                0,
+                Vec2::new(3.0, 3.0),
+                0.0,
+                10.0,
+                AntCaste::Breeder,
+            );
+            a.age = 100;
+            sim.ants.push(a);
+        }
+        for _ in 0..5 {
+            sim.tick();
+        }
+        // Below threshold: no one flies.
+        assert!(
+            sim.ants
+                .iter()
+                .all(|a| a.state != AntState::NuptialFlight),
+            "below threshold — no launch"
+        );
+        assert_eq!(sim.colonies[0].nuptial_launches, 0);
     }
 }

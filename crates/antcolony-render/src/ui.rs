@@ -111,7 +111,7 @@ fn setup_ui(mut commands: Commands) {
     // --- Bottom-right help text ---
     commands.spawn((
         Text::new(
-            "WASD/arrows pan | scroll zoom | P pheromone | T temperature\n1/2/3/4 speed (30/60/150/300 Hz) | Space pause | Ctrl+S save / Ctrl+L load | B editor | E encyclopedia",
+            "WASD/arrows pan | scroll zoom | P pheromone | T temperature | H timeline\n1/2/3/4 speed (30/60/150/300 Hz) | Space pause | Ctrl+S save / Ctrl+L load | B editor | E encyclopedia",
         ),
         TextFont {
             font_size: 11.0,
@@ -309,8 +309,33 @@ fn update_stats_text(
         "Fertility: ok"
     };
 
+    let flying: usize = sim
+        .sim
+        .ants
+        .iter()
+        .filter(|a| a.state == antcolony_sim::AntState::NuptialFlight)
+        .count();
+    let nuptial_line = if flying > 0 {
+        format!(
+            "Nuptial: {} airborne | launches {} | daughters {} | lost {}",
+            flying,
+            colony.nuptial_launches,
+            colony.daughter_colonies_founded,
+            colony.nuptial_predation_deaths,
+        )
+    } else if colony.nuptial_launches > 0 {
+        format!(
+            "Nuptial: launches {} | daughters {} | lost {}",
+            colony.nuptial_launches,
+            colony.daughter_colonies_founded,
+            colony.nuptial_predation_deaths,
+        )
+    } else {
+        String::new()
+    };
+
     let text = format!(
-        "Tick: {}{}\nFPS: {:.0}\nSeason: {} (day {}/365, year {})\nAmbient: {:.1} °C\nDiapause: {}\n{}\nAnts: {} (W {} / S {} / B {} / Q {})\nFood stored: {:.1}\nFood returned: {}\nBrood: eggs {} / larvae {} / pupae {}\nQueen HP: {:.1}",
+        "Tick: {}{}\nFPS: {:.0}\nSeason: {} (day {}/365, year {})\nAmbient: {:.1} °C\nDiapause: {}\n{}\nAnts: {} (W {} / S {} / B {} / Q {})\nFood stored: {:.1}\nFood returned: {}\nBrood: eggs {} / larvae {} / pupae {}\nQueen HP: {:.1}{}{}",
         sim.sim.tick,
         pause_tag,
         fps,
@@ -331,6 +356,8 @@ fn update_stats_text(
         colony.larvae,
         colony.pupae,
         colony.queen_health,
+        if nuptial_line.is_empty() { "" } else { "\n" },
+        nuptial_line,
     );
 
     for mut t in q.iter_mut() {

@@ -1,5 +1,5 @@
 use antcolony_game::SimulationState;
-use antcolony_sim::{AntState, ModuleId, PheromoneLayer, Terrain};
+use antcolony_sim::{AntCaste, AntState, ModuleId, PheromoneLayer, Terrain};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 
@@ -11,6 +11,24 @@ pub struct RenderPlugin;
 
 #[derive(Component)]
 pub(crate) struct AntSprite(pub u32);
+
+/// Tag on each leg child sprite of an ant; the animation system swings
+/// `rotation.z` around `base_angle` by a sine of the sim tick.
+#[derive(Component)]
+pub(crate) struct AntLeg {
+    pub ant_idx: u32,
+    pub base_angle: f32,
+    /// `+1.0` or `-1.0` — which side of the body the leg sits on.
+    pub side_sign: f32,
+    /// 0 = front pair, 1 = middle pair, 2 = rear pair.
+    pub pair: u8,
+}
+
+/// Child dot on the gaster that only shows when the ant is carrying food.
+#[derive(Component)]
+pub(crate) struct FoodCarryIndicator {
+    pub ant_idx: u32,
+}
 
 /// Pheromone overlay for a specific module.
 #[derive(Component)]
@@ -94,7 +112,10 @@ impl Plugin for RenderPlugin {
             .add_plugins(crate::encyclopedia::EncyclopediaPlugin)
             .add_plugins(crate::editor::EditorPlugin)
             .add_plugins(crate::save_ui::SaveUiPlugin)
+            .add_plugins(crate::inspector::InspectorPlugin)
+            .add_plugins(crate::timeline::TimelinePlugin)
             .init_state::<AppState>()
+            .insert_resource(ClearColor(Color::srgb(0.09, 0.07, 0.05)))
             .insert_resource(OverlayState { visible: true })
             .insert_resource(TempOverlayState { visible: false })
             .insert_resource(OverviewState::default())
@@ -105,6 +126,8 @@ impl Plugin for RenderPlugin {
                 (
                     rebuild_formicarium_if_dirty,
                     sync_ant_sprites,
+                    animate_ant_legs,
+                    update_food_indicators,
                     update_pheromone_textures,
                     update_temperature_textures,
                     toggle_overlay_input,
@@ -145,7 +168,7 @@ fn rebuild_formicarium_if_dirty(
     }
     let n = q.iter().count();
     for e in q.iter() {
-        commands.entity(e).despawn();
+        commands.entity(e).despawn_recursive();
     }
     tracing::info!(despawned = n, "rebuild_formicarium: topology dirty — respawning");
     spawn_formicarium(&mut commands, &sim, &mut images, &mut meshes, &mut materials);
@@ -182,10 +205,23 @@ pub(crate) fn spawn_formicarium(
         let mww = module.width() as f32 * TILE;
         let mhh = module.height() as f32 * TILE;
 
-        // Module background panel (so the player can see where modules are).
+        // Drop shadow: soft dark rectangle behind the module, offset down/right.
         commands.spawn((
             Sprite {
-                color: Color::srgba(0.12, 0.12, 0.15, 1.0),
+                color: Color::srgba(0.0, 0.0, 0.0, 0.55),
+                custom_size: Some(Vec2::new(mww + 10.0, mhh + 10.0)),
+                ..default()
+            },
+            Transform::from_xyz(origin.x + mww * 0.5 + 4.0, origin.y + mhh * 0.5 - 4.0, -2.5),
+            FormicariumEntity,
+        ));
+
+        // Module background: procedural substrate texture per kind.
+        let substrate_img = crate::substrate::make_substrate(module.kind, mw, mh, mid as u32 ^ 0xBEEF);
+        let substrate_tex = images.add(substrate_img);
+        commands.spawn((
+            Sprite {
+                image: substrate_tex,
                 custom_size: Some(Vec2::new(mww, mhh)),
                 ..default()
             },
@@ -273,8 +309,24 @@ pub(crate) fn spawn_formicarium(
         ));
         temp_textures.push((mid, ttex));
 
-        // Tile overlays: food + nest entrances.
-        let tile_mesh = meshes.add(Rectangle::new(TILE * 1.5, TILE * 1.5));
+        // Food: berry-cluster (dark base + bright core + tiny highlight).
+        // Nest entrance: crater (dark rim / shadow / pit / bright inner dot).
+        let food_base = meshes.add(Circle::new(TILE * 0.95));
+        let food_core = meshes.add(Circle::new(TILE * 0.65));
+        let food_shine = meshes.add(Circle::new(TILE * 0.22));
+        let food_base_mat = materials.add(Color::srgb(0.08, 0.45, 0.12));
+        let food_core_mat = food_mat.clone();
+        let food_shine_mat = materials.add(Color::srgb(0.75, 0.95, 0.55));
+
+        let nest_rim = meshes.add(Circle::new(TILE * 3.0));
+        let nest_shadow = meshes.add(Circle::new(TILE * 2.3));
+        let nest_pit = meshes.add(Circle::new(TILE * 1.3));
+        let nest_glow = meshes.add(Circle::new(TILE * 0.45));
+        let nest_rim_mat = nest_mat.clone();
+        let nest_shadow_mat = materials.add(Color::srgb(0.28, 0.17, 0.06));
+        let nest_pit_mat = materials.add(Color::srgb(0.05, 0.03, 0.01));
+        let nest_glow_mat = materials.add(Color::srgb(0.95, 0.78, 0.35));
+
         for y in 0..module.height() {
             for x in 0..module.width() {
                 let t = module.world.get(x, y);
@@ -284,37 +336,73 @@ pub(crate) fn spawn_formicarium(
                 );
                 match t {
                     Terrain::Food(_) => {
+                        // Slight deterministic offset so clusters feel organic.
+                        let jitter = Vec2::new(
+                            ((x as i32 * 17 + y as i32 * 29) % 7) as f32 * 0.1 - 0.35,
+                            ((x as i32 * 31 + y as i32 * 11) % 7) as f32 * 0.1 - 0.35,
+                        );
+                        let p = world_pos + jitter;
                         commands.spawn((
-                            Mesh2d(tile_mesh.clone()),
-                            MeshMaterial2d(food_mat.clone()),
-                            Transform::from_translation(world_pos.extend(0.0)),
+                            Mesh2d(food_base.clone()),
+                            MeshMaterial2d(food_base_mat.clone()),
+                            Transform::from_translation(p.extend(0.0)),
+                            FormicariumEntity,
+                        ));
+                        commands.spawn((
+                            Mesh2d(food_core.clone()),
+                            MeshMaterial2d(food_core_mat.clone()),
+                            Transform::from_translation(p.extend(0.05)),
+                            FormicariumEntity,
+                        ));
+                        commands.spawn((
+                            Mesh2d(food_shine.clone()),
+                            MeshMaterial2d(food_shine_mat.clone()),
+                            Transform::from_translation(
+                                (p + Vec2::new(TILE * 0.15, TILE * 0.2)).extend(0.1),
+                            ),
                             FormicariumEntity,
                         ));
                     }
                     Terrain::NestEntrance(_) => {
-                        commands.spawn((
-                            Mesh2d(meshes.add(Circle::new(TILE * 2.5))),
-                            MeshMaterial2d(nest_mat.clone()),
-                            Transform::from_translation(world_pos.extend(0.5)),
-                            FormicariumEntity,
-                        ));
+                        for (mesh, mat, z) in [
+                            (&nest_rim, &nest_rim_mat, 0.3),
+                            (&nest_shadow, &nest_shadow_mat, 0.4),
+                            (&nest_pit, &nest_pit_mat, 0.5),
+                            (&nest_glow, &nest_glow_mat, 0.55),
+                        ] {
+                            commands.spawn((
+                                Mesh2d(mesh.clone()),
+                                MeshMaterial2d(mat.clone()),
+                                Transform::from_translation(world_pos.extend(z)),
+                                FormicariumEntity,
+                            ));
+                        }
                     }
                     _ => {}
                 }
             }
         }
 
-        // Port markers (tiny yellow dots on module borders).
-        let port_mat = materials.add(Color::srgb(0.95, 0.85, 0.2));
-        let port_mesh = meshes.add(Circle::new(TILE * 0.6));
+        // Port markers: dark ring + bright inner dot, reading as tube
+        // mouths rather than flat yellow stickers.
+        let port_ring_mat = materials.add(Color::srgb(0.20, 0.14, 0.08));
+        let port_inner_mat = materials.add(Color::srgb(0.95, 0.85, 0.28));
+        let port_ring = meshes.add(Circle::new(TILE * 0.85));
+        let port_inner = meshes.add(Circle::new(TILE * 0.45));
         for port in &module.ports {
             let p = Vec2::new(
                 origin.x + (port.x as f32 + 0.5) * TILE,
                 origin.y + (port.y as f32 + 0.5) * TILE,
             );
             commands.spawn((
-                Mesh2d(port_mesh.clone()),
-                MeshMaterial2d(port_mat.clone()),
+                Mesh2d(port_ring.clone()),
+                MeshMaterial2d(port_ring_mat.clone()),
+                Transform::from_translation(p.extend(0.65)),
+                FormicariumEntity,
+            ));
+            commands.spawn((
+                Mesh2d(port_inner.clone()),
+                MeshMaterial2d(port_inner_mat.clone()),
                 Transform::from_translation(p.extend(0.7)),
                 FormicariumEntity,
                 PortMarker {
@@ -351,10 +439,26 @@ pub(crate) fn spawn_formicarium(
         let dir = b - a;
         let length = dir.length().max(0.001);
         let angle = dir.y.atan2(dir.x);
+        // Tube body: dark outline, warm tan core, thin bright sheen band
+        // along the top for a glass-cylinder read.
+        let body_thickness = TILE * 1.7;
         commands.spawn((
             Sprite {
-                color: Color::srgb(0.7, 0.6, 0.4),
-                custom_size: Some(Vec2::new(length, TILE * 1.6)),
+                color: Color::srgb(0.22, 0.17, 0.10),
+                custom_size: Some(Vec2::new(length + TILE * 0.3, body_thickness + TILE * 0.4)),
+                ..default()
+            },
+            Transform {
+                translation: mid.extend(-0.9),
+                rotation: Quat::from_rotation_z(angle),
+                ..default()
+            },
+            FormicariumEntity,
+        ));
+        commands.spawn((
+            Sprite {
+                color: Color::srgb(0.72, 0.60, 0.38),
+                custom_size: Some(Vec2::new(length, body_thickness)),
                 ..default()
             },
             Transform {
@@ -365,13 +469,33 @@ pub(crate) fn spawn_formicarium(
             FormicariumEntity,
             TubeSprite { id: tube.id, a, b },
         ));
+        // Sheen band: sits ~20% above centre along the tube axis.
+        let sheen_offset = Vec2::new(-dir.y, dir.x).normalize_or_zero() * body_thickness * 0.28;
+        commands.spawn((
+            Sprite {
+                color: Color::srgba(1.0, 0.95, 0.78, 0.55),
+                custom_size: Some(Vec2::new(length * 0.95, body_thickness * 0.18)),
+                ..default()
+            },
+            Transform {
+                translation: (mid + sheen_offset).extend(-0.75),
+                rotation: Quat::from_rotation_z(angle),
+                ..default()
+            },
+            FormicariumEntity,
+        ));
         let _ = tube_mat;
     }
 
-    // Ant sprites.
-    let ant_color = crate::picker::parse_hex(&sim.species.appearance.color_hex);
-    let ant_mesh = meshes.add(Circle::new(TILE * 0.4));
-    let ant_mat = materials.add(ant_color);
+    // Ant bodies: parent entity carries AntSprite + Transform; children form
+    // a head / thorax / gaster trio plus antennae and six legs, rotated by
+    // the parent's heading.
+    let species_color = crate::picker::parse_hex(&sim.species.appearance.color_hex);
+    let body_color = darken(species_color, 0.55);
+    let limb_color = darken(species_color, 0.35);
+    let unit_circle = meshes.add(Circle::new(1.0));
+    let body_mat = materials.add(body_color);
+    let food_carry_mat = materials.add(Color::srgb(0.25, 0.95, 0.35));
     for (idx, ant) in sim.sim.ants.iter().enumerate() {
         let (_, origin) = layout
             .iter()
@@ -383,13 +507,24 @@ pub(crate) fn spawn_formicarium(
             origin.x + ant.position.x * TILE,
             origin.y + ant.position.y * TILE,
         );
-        commands.spawn((
-            AntSprite(idx as u32),
-            Mesh2d(ant_mesh.clone()),
-            MeshMaterial2d(ant_mat.clone()),
-            Transform::from_translation(pos.extend(1.0)),
-            FormicariumEntity,
-        ));
+        commands
+            .spawn((
+                AntSprite(idx as u32),
+                Transform::from_translation(pos.extend(1.0)),
+                Visibility::default(),
+                FormicariumEntity,
+            ))
+            .with_children(|c| {
+                spawn_ant_parts(
+                    c,
+                    idx as u32,
+                    ant.caste,
+                    &unit_circle,
+                    &body_mat,
+                    limb_color,
+                    &food_carry_mat,
+                );
+            });
     }
 
     commands.insert_resource(PheromoneTextures(textures));
@@ -405,10 +540,124 @@ pub(crate) fn spawn_formicarium(
     );
 }
 
+fn darken(c: Color, factor: f32) -> Color {
+    let s = c.to_srgba();
+    Color::srgb(s.red * factor, s.green * factor, s.blue * factor)
+}
+
+/// Build the child sprites that compose one ant: gaster, thorax, head (three
+/// stacked ellipses formed by scaling a unit circle), two antennae, and six
+/// legs. Facing direction is +X, so the parent's heading rotation orients it.
+fn spawn_ant_parts(
+    c: &mut ChildBuilder,
+    ant_idx: u32,
+    caste: AntCaste,
+    unit_circle: &Handle<Mesh>,
+    body_mat: &Handle<ColorMaterial>,
+    limb_color: Color,
+    food_carry_mat: &Handle<ColorMaterial>,
+) {
+    // Caste-driven size + silhouette shaping.
+    let (body_scale, head_boost, gaster_boost) = match caste {
+        AntCaste::Worker => (1.0, 1.0, 1.0),
+        AntCaste::Soldier => (1.25, 1.35, 1.0),
+        AntCaste::Breeder => (1.15, 1.0, 1.15),
+        AntCaste::Queen => (1.7, 1.0, 1.6),
+    };
+    let s = TILE * 0.35 * body_scale;
+
+    // Gaster (rear, largest, elongated along body axis).
+    let gx = -1.35 * s * gaster_boost;
+    c.spawn((
+        Mesh2d(unit_circle.clone()),
+        MeshMaterial2d(body_mat.clone()),
+        Transform::from_translation(Vec3::new(gx, 0.0, 0.0))
+            .with_scale(Vec3::new(1.55 * s * gaster_boost, 1.0 * s * gaster_boost, 1.0)),
+    ));
+    // Gaster sheen — soft highlight on the upper surface for a wet look.
+    c.spawn((
+        Sprite {
+            color: Color::srgba(1.0, 1.0, 1.0, 0.18),
+            custom_size: Some(Vec2::new(1.5 * s * gaster_boost, 0.25 * s * gaster_boost)),
+            ..default()
+        },
+        Transform::from_translation(Vec3::new(gx + 0.15 * s, 0.32 * s * gaster_boost, 0.02)),
+    ));
+    // Thorax (middle).
+    c.spawn((
+        Mesh2d(unit_circle.clone()),
+        MeshMaterial2d(body_mat.clone()),
+        Transform::from_scale(Vec3::new(0.85 * s, 0.65 * s, 1.0)),
+    ));
+    // Head (front).
+    c.spawn((
+        Mesh2d(unit_circle.clone()),
+        MeshMaterial2d(body_mat.clone()),
+        Transform::from_translation(Vec3::new(1.25 * s, 0.0, 0.0))
+            .with_scale(Vec3::new(0.8 * s * head_boost, 0.72 * s * head_boost, 1.0)),
+    ));
+
+    // Antennae — two thin rectangles sweeping forward from the head.
+    let antenna_len = 1.3 * s;
+    let antenna_thick = (s * 0.14).max(0.6);
+    for sign in [-1.0_f32, 1.0] {
+        c.spawn((
+            Sprite {
+                color: limb_color,
+                custom_size: Some(Vec2::new(antenna_len, antenna_thick)),
+                ..default()
+            },
+            Transform {
+                translation: Vec3::new(1.7 * s, sign * 0.35 * s, -0.05),
+                rotation: Quat::from_rotation_z(sign * 0.55),
+                ..default()
+            },
+        ));
+    }
+
+    // Six legs: three pairs anchored around the thorax, splayed outward.
+    let leg_len = 1.75 * s;
+    let leg_thick = (s * 0.16).max(0.7);
+    for (pair, lx) in [-0.55_f32, 0.0, 0.55].into_iter().enumerate() {
+        let angle_base = 0.95 - pair as f32 * 0.35; // front legs lean forward, rear legs lean back
+        for sign in [-1.0_f32, 1.0] {
+            let base_angle = sign * angle_base;
+            c.spawn((
+                Sprite {
+                    color: limb_color,
+                    custom_size: Some(Vec2::new(leg_len, leg_thick)),
+                    ..default()
+                },
+                Transform {
+                    translation: Vec3::new(lx * s, sign * 0.45 * s, -0.1),
+                    rotation: Quat::from_rotation_z(base_angle),
+                    ..default()
+                },
+                AntLeg {
+                    ant_idx,
+                    base_angle,
+                    side_sign: sign,
+                    pair: pair as u8,
+                },
+            ));
+        }
+    }
+
+    // Food carry indicator — bright green dot sitting on the gaster.
+    c.spawn((
+        Mesh2d(unit_circle.clone()),
+        MeshMaterial2d(food_carry_mat.clone()),
+        Transform::from_translation(Vec3::new(-1.35 * s * gaster_boost, 0.0, 0.1))
+            .with_scale(Vec3::splat(s * 0.45)),
+        Visibility::Hidden,
+        FoodCarryIndicator { ant_idx },
+    ));
+}
+
 /// Compute each module's world-space origin (in pixels) from its
 /// `formicarium_origin`, and return the centroid so we can recentre the
 /// camera to (0,0).
-fn compute_layout(sim: &SimulationState) -> (Vec<(ModuleId, Vec2)>, Vec2) {
+pub(crate) fn compute_layout(sim: &SimulationState) -> (Vec<(ModuleId, Vec2)>, Vec2) {
     let mut out = Vec::new();
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
@@ -492,9 +741,79 @@ fn sync_ant_sprites(
         tf.translation.y = origin.y + ant.position.y * TILE;
         tf.translation.z = match ant.state {
             AntState::ReturningHome | AntState::StoringFood => 1.2,
+            AntState::NuptialFlight => 3.0,
             _ => 1.0,
         };
-        tf.rotation = Quat::from_rotation_z(ant.heading);
+        // Nuptial flight: lift the breeder off the substrate and scale it
+        // down as she climbs, ending in a small dot as she exits the frame.
+        if ant.state == AntState::NuptialFlight {
+            let flight_ticks = sim.sim.config.colony.nuptial_flight_ticks.max(1) as f32;
+            let t = (ant.state_timer as f32 / flight_ticks).clamp(0.0, 1.0);
+            tf.translation.y += t * 40.0; // rise ~10 tiles over full flight
+            let shrink = 1.0 - t * 0.6;
+            tf.scale = Vec3::splat(shrink);
+            tf.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2); // face up
+        } else {
+            tf.scale = Vec3::ONE;
+            tf.rotation = Quat::from_rotation_z(ant.heading);
+        }
+    }
+}
+
+/// Swing each leg's rotation around its base angle. Tripod gait: legs
+/// in tripod A (front-left, middle-right, rear-left) step together,
+/// tripod B (the opposite three) are 180° out of phase. Still ants hold
+/// their legs at the base angle.
+fn animate_ant_legs(
+    time: Res<Time>,
+    sim: Res<SimulationState>,
+    mut q: Query<(&AntLeg, &mut Transform)>,
+) {
+    let t = time.elapsed_secs();
+    for (leg, mut tf) in q.iter_mut() {
+        let Some(ant) = sim.sim.ants.get(leg.ant_idx as usize) else {
+            continue;
+        };
+        let moving = matches!(
+            ant.state,
+            AntState::Exploring
+                | AntState::FollowingTrail
+                | AntState::ReturningHome
+                | AntState::Fleeing
+                | AntState::Fighting
+                | AntState::NuptialFlight
+        ) || ant.transit.is_some();
+        if !moving {
+            tf.rotation = Quat::from_rotation_z(leg.base_angle);
+            continue;
+        }
+        // Tripod gait: pair 0 & 2 on one side and pair 1 on the other step together.
+        let tripod = (leg.pair as i32 + (if leg.side_sign > 0.0 { 0 } else { 1 })).rem_euclid(2);
+        let phase_offset = if tripod == 0 { 0.0 } else { std::f32::consts::PI };
+        let freq = 10.0; // steps per second visual
+        let swing = (t * freq + phase_offset).sin() * 0.35;
+        tf.rotation = Quat::from_rotation_z(leg.base_angle + swing * leg.side_sign);
+    }
+}
+
+/// Toggle each ant's food dot visibility based on whether the ant is
+/// carrying food right now.
+fn update_food_indicators(
+    sim: Res<SimulationState>,
+    mut q: Query<(&FoodCarryIndicator, &mut Visibility)>,
+) {
+    for (ind, mut vis) in q.iter_mut() {
+        let visible = sim
+            .sim
+            .ants
+            .get(ind.ant_idx as usize)
+            .map(|a| a.food_carried > 0.0)
+            .unwrap_or(false);
+        *vis = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
     }
 }
 
@@ -523,7 +842,11 @@ fn update_pheromone_textures(
         let Some(img) = images.get_mut(handle) else {
             continue;
         };
-        let module = sim.sim.topology.module(*mid);
+        // Resource may lag a frame behind topology rebuilds — skip entries
+        // whose module has been removed.
+        let Some(module) = sim.sim.topology.try_module(*mid) else {
+            continue;
+        };
         let w = module.pheromones.width;
         let h = module.pheromones.height;
         let food = &module.pheromones.food_trail;
@@ -582,7 +905,9 @@ fn update_temperature_textures(
         let Some(img) = images.get_mut(handle) else {
             continue;
         };
-        let module = sim.sim.topology.module(*mid);
+        let Some(module) = sim.sim.topology.try_module(*mid) else {
+            continue;
+        };
         let w = module.pheromones.width;
         let h = module.pheromones.height;
         let temps = &module.temperature;

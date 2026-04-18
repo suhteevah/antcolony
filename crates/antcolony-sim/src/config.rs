@@ -88,6 +88,16 @@ pub struct ColonyConfig {
     pub adult_food_consumption: f32,
     pub soldier_food_multiplier: f32,
     pub queen_egg_rate: f32,
+    /// K5 nuptial flight: breeders needed before a launch is triggered.
+    pub nuptial_breeder_min: u32,
+    /// Breeder must be at least this many ticks old to participate.
+    pub nuptial_breeder_min_age: u32,
+    /// Flight duration in ticks (time each breeder spends airborne).
+    pub nuptial_flight_ticks: u32,
+    /// Per-tick probability that a flying breeder gets picked off by a bird.
+    pub nuptial_predation_per_tick: f32,
+    /// Chance that a surviving breeder successfully founds a daughter colony.
+    pub nuptial_founding_chance: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -170,6 +180,11 @@ impl Default for ColonyConfig {
             adult_food_consumption: 0.01,
             soldier_food_multiplier: 1.5,
             queen_egg_rate: 0.05,
+            nuptial_breeder_min: 3,
+            nuptial_breeder_min_age: 600,
+            nuptial_flight_ticks: 180,
+            nuptial_predation_per_tick: 0.02,
+            nuptial_founding_chance: 0.5,
         }
     }
 }

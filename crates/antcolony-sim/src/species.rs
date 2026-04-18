@@ -208,6 +208,7 @@ impl Species {
             adult_food_consumption,
             soldier_food_multiplier: 1.5,
             queen_egg_rate,
+            ..ColonyConfig::default()
         };
 
         let combat = CombatConfig {

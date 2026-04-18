@@ -18,6 +18,17 @@ pub struct Topology {
     pub tubes: Vec<Tube>,
 }
 
+/// Four edge-center ports (east / west / south / north) — the default
+/// port set for a rectangular module.
+fn default_edge_ports(w: usize, h: usize) -> Vec<PortPos> {
+    vec![
+        PortPos::new(w - 1, h / 2),
+        PortPos::new(0, h / 2),
+        PortPos::new(w / 2, 0),
+        PortPos::new(w / 2, h - 1),
+    ]
+}
+
 impl Topology {
     pub fn empty() -> Self {
         Self {
@@ -59,7 +70,7 @@ impl Topology {
             nest_origin,
             "Founding Nest",
         )
-        .with_ports(vec![nest_port]);
+        .with_ports(default_edge_ports(nest_w, nest_h));
         let outworld = Module::new(
             1,
             ModuleKind::Outworld,
@@ -68,7 +79,7 @@ impl Topology {
             outworld_origin,
             "Outworld",
         )
-        .with_ports(vec![outworld_port]);
+        .with_ports(default_edge_ports(out_w, out_h));
 
         let tube = Tube {
             id: 0,
@@ -134,7 +145,7 @@ impl Topology {
             nest_origin,
             "Founding Nest",
         )
-        .with_ports(vec![nest_port]);
+        .with_ports(default_edge_ports(nest_w, nest_h));
         let outworld = Module::new(
             1,
             ModuleKind::Outworld,
@@ -143,7 +154,7 @@ impl Topology {
             outworld_origin,
             "Outworld",
         )
-        .with_ports(vec![outworld_port_w, outworld_port_s]);
+        .with_ports(default_edge_ports(out_w, out_h));
         let dish = Module::new(
             2,
             ModuleKind::FeedingDish,
@@ -152,7 +163,7 @@ impl Topology {
             dish_origin,
             "Feeding Dish",
         )
-        .with_ports(vec![dish_port_n]);
+        .with_ports(default_edge_ports(dish_w, dish_h));
 
         let tube_nest_out = Tube {
             id: 0,
@@ -389,8 +400,9 @@ mod tests {
     #[test]
     fn tube_at_port_finds_both_ends() {
         let t = Topology::starter_formicarium((32, 24), (96, 96));
-        let nest_port = t.module(0).ports[0];
-        let out_port = t.module(1).ports[0];
+        // Tube connects the nest's east port to the outworld's west port.
+        let nest_port = PortPos::new(31, 12);
+        let out_port = PortPos::new(0, 48);
         let (_, fw1) = t.tube_at_port(0, nest_port).unwrap();
         let (_, fw2) = t.tube_at_port(1, out_port).unwrap();
         assert!(fw1);

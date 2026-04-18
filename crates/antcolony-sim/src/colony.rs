@@ -114,6 +114,18 @@ pub struct ColonyState {
     /// K4: last observed season, used for Winter→Spring transition detection.
     #[serde(default)]
     pub last_season_idx: u8,
+    /// K5: cumulative count of breeders this colony has sent on nuptial flights.
+    #[serde(default)]
+    pub nuptial_launches: u32,
+    /// K5: cumulative count of daughter colonies successfully founded.
+    #[serde(default)]
+    pub daughter_colonies_founded: u32,
+    /// K5: cumulative breeders lost to predation mid-flight.
+    #[serde(default)]
+    pub nuptial_predation_deaths: u32,
+    /// K5: tick of the most recent nuptial launch (0 = never).
+    #[serde(default)]
+    pub last_nuptial_flight_tick: u64,
 }
 
 impl ColonyState {
@@ -142,6 +154,10 @@ impl ColonyState {
             fertility_suppressed: false,
             milestones: Vec::new(),
             last_season_idx: u8::MAX, // sentinel "unset"
+            nuptial_launches: 0,
+            daughter_colonies_founded: 0,
+            nuptial_predation_deaths: 0,
+            last_nuptial_flight_tick: 0,
         }
     }
 

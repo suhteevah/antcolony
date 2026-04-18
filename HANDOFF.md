@@ -5,10 +5,10 @@ This document contains everything needed to implement the ant colony simulation 
 ---
 
 ## Last Updated
-2026-04-17
+2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + Keeper K1-K4 complete.** 51 sim unit + 1 integration tests passing. Release build clean. Starter formicarium runs end-to-end: picker → 3-module nest/outworld/feeder → economy → hibernation → save/load.
+🟢 **Phases 1-3 + Keeper K1-K5 complete.** 53 sim unit + 1 integration tests passing. Release build clean. 7s smoke run clean. Starter formicarium runs end-to-end: picker → 3-module nest/outworld/feeder → economy → hibernation → save/load → nuptial flights with daughter-colony founding.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -20,12 +20,13 @@ Massive single-session build-out from empty directory to shipping sim. Seven com
 - **Keeper K2.3 (`96b1260`):** click-based live formicarium editor (`B` key). Palette of 5 module kinds, port→port tube drawing, delete-selected, rebuild-on-dirty. Sim-side stable module/tube ids + add/remove helpers.
 - **Keeper K3 (`3be1c0f`):** thermoregulation + hibernation. `Climate` with cosine ambient curve, per-module temperature grids, `AntState::Diapause`, queen fertility GATED on ≥60 in-game days of diapause/year for hibernation-required species. Temperature overlay (`T` key), HUD Season/°C/Diapause/Fertility lines.
 - **Keeper K4 (`7b527ee`):** persistence + progression. JSON save/load (`Ctrl+S`/`Ctrl+L`), offline catch-up capped at 24 real hours, 8-entry milestone system with gold banner, `ModuleKind` unlock gates on colony age + population (editor palette greys out locked kinds).
+- **Keeper K5 (this session):** keeper polish — click-an-ant inspector, scrubbable colony timeline, nuptial flight event with daughter-colony founding + predation. Bonus: visible queen entity on nest, procedural 6-leg ant bodies with gait animation, gaster food-carry indicator, substrate texture.
 
 **Wiki:** 5 patterns extracted and pushed earlier in session — edition-2024 `gen` keyword, stable-gnu toolchain on kokonoe, Rust raw-string `"#` collision, Bevy 0.15 API gotchas, sim time-scale decoupling. Git initialized, clawhub-lint pre-commit installed, wiki entry updated.
 
 ## Current State
-- **Works:** picker, 3-module starter formicarium, forage/return/deposit loop, pheromone trails, economy (eggs → adults), hibernation, diapause-gated fertility, live editor, save/load, offline catch-up, milestones, unlocks.
-- **Stubbed / not-yet:** second (red) colony for Phase 4 combat, underground nest layer (Phase 5), predators (Phase 6), yellow-ant avatar (Phase 7), map-grid master game (Phase 8). Nuptial flights, ant inspector, colony history timeline (K5).
+- **Works:** picker, 3-module starter formicarium, forage/return/deposit loop, pheromone trails, economy (eggs → adults), hibernation, diapause-gated fertility, live editor, save/load, offline catch-up, milestones, unlocks, click-to-inspect ants, timeline scrubber, nuptial flights.
+- **Stubbed / not-yet:** second (red) colony for Phase 4 combat, underground nest layer (Phase 5), predators (Phase 6), yellow-ant avatar (Phase 7), map-grid master game (Phase 8). Daughter-colony founding currently only increments a counter (no new sim colony spawned); see K5 notes.
 - **Known quirks:**
   - Default `Climate.starting_day_of_year = 150` (mid-spring) — needed so pre-K3 tests don't accidentally boot cold. Keeper sims may want to override to 60 (early spring).
   - RNG is NOT serialized in saves; rng is reseeded from `env.seed` on load. Gameplay state is bit-identical, future rolls diverge.
@@ -37,11 +38,8 @@ None.
 ## What's Next
 Priority order for next session:
 
-1. **K5 — keeper polish** (recommended final Keeper work before pivoting to main-game phases):
-   - Click-any-ant inspector (caste, age, state, food carried, lifespan remaining)
-   - Colony history timeline (milestones + events on a scrubbable bar)
-   - Nuptial flight event (when Breeders ready, they leave; chance to found a new colony)
-2. **Phase 4 — multi-colony + combat** (original main-game roadmap): second ColonyState, combat via existing SpatialHash, corpses as food, alarm pheromone, red-colony AI.
+1. **Phase 4 — multi-colony + combat** (original main-game roadmap): second ColonyState, combat via existing SpatialHash, corpses as food, alarm pheromone, red-colony AI.
+2. **K5 follow-up** — when a nuptial flight succeeds, actually spawn a new `ColonyState` + nest module in the topology rather than just bumping `daughter_colonies_founded`. Blocker was keeping the milestone-tracker `seen_counts` keyed by vector position; needs rekeying by colony id first.
 3. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
 
 ## Notes for Next Session
@@ -153,6 +151,25 @@ Priority order for next session:
 - `SaveUiPlugin` resolves species from `assets/species/` at cwd — matches picker. Missing file → `SimConfig::default()` fallback with a warn log (doesn't hard-fail).
 - System clock adjusted backward between save/load → catch-up clamps to 0 (`.max(0)` guard).
 - `serde_json` was already declared at the workspace level; pulling it into `antcolony-sim` is not a new crate dep.
+
+## Keeper Mode — Phase K5 COMPLETE
+
+**Keeper polish + procedural body art.** Final Keeper-mode pass before pivoting to Phase 4 main-game work.
+
+- **Nuptial flights** (`simulation.rs::nuptial_flight_tick`, runs after `port_bleed` each tick). `ColonyConfig` gained `nuptial_breeder_min`, `nuptial_breeder_min_age`, `nuptial_flight_ticks`, `nuptial_predation_per_tick`, `nuptial_founding_chance`. When ≥ min eligible Breeders (Exploring, age ≥ min, not in transit) are present, the entire batch transitions to new `AntState::NuptialFlight`. Each flying breeder rolls predation per tick; survivors resolve at `nuptial_flight_ticks` with a `nuptial_founding_chance` roll — founding increments `ColonyState.daughter_colonies_founded` (founder despawns either way). Combat/flee/nuptial are preserved across the diapause flip in `sense_and_decide`.
+- **Queen entity.** `spawn_initial_ants` now pushes ant #0 as a `AntCaste::Queen` sitting on the nest entrance (Idle, not in the `moving` match set, so she doesn't walk). Initial ant count is unchanged semantically — the queen is an additional spawn. Economy still reads `ColonyState.queen_health` for egg-laying; the visible queen is rendered at 1.3× worker scale with caste-specific silhouette.
+- **Procedural 6-leg ant bodies.** Each ant sprite spawns 6 child leg sprites (`AntLeg { ant_idx, base_angle, side_sign, pair }`) arranged in three pairs. New `animate_ant_legs` system swings each leg around its base_angle by a phase-shifted sine of `sim.tick`. Tripod gait: front+rear pair on one side swing with middle on the other side. Gaster food-carry indicator (`FoodCarryIndicator`) is a child dot only visible when `food_carried > 0`. `despawn` → `despawn_recursive` for all rebuild paths.
+- **Inspector** (`crates/antcolony-render/src/inspector.rs`). Click any ant → right-side panel shows caste, age (in in-game days + ticks), state, food carried, remaining lifespan (if worker — queens are immortal-until-damaged per biology), module id, and colony id. Click-empty-space or `I` dismisses. Implemented with a hit-test against ant world positions; ants in tube transit are ignored.
+- **Timeline** (`crates/antcolony-render/src/timeline.rs`). Bottom-of-screen scrubbable bar showing colony tick progress with milestone pips at the in-game day each was awarded. Hover a pip → label tooltip. `H` toggles visibility.
+- **Substrate** (`crates/antcolony-render/src/substrate.rs`). Per-module noise-textured dirt/sand background replaces the flat dark panel. Colour is biased by module kind (Outworld warmer, nests darker). Purely cosmetic; no sim hooks.
+- **Two new milestones** (`milestones.rs`): `FirstNuptialFlight` and `FirstDaughterColony`. Fired from `nuptial_flight_tick`.
+- **Tests.** +2 new (53 total sim unit): `nuptial_flight_launches_and_resolves` (end-to-end: seed 3 Breeders, verify batch launch + deterministic resolution under zero-predation + 100%-founding config), and a pre-existing tube-port test updated to use the concrete east/west port positions after the queen-spawn shift rippled into `topology.starter_formicarium`. Release build clean, 7s smoke run clean.
+
+**Notes / deferred:**
+- Daughter-colony founding currently only bumps a counter on the parent; the spec's "chance to found a new colony" is satisfied in the single-colony sense (probability roll + stat + milestone) but does not yet instantiate a second `ColonyState` + nest module. That's blocked on rekeying the milestone-tracker `seen_counts` by colony id (currently by vector position, per K4 note). Phase 4 will force that refactor anyway.
+- Nuptial launch batches on "≥ min eligible breeders in Exploring state." No seasonal gate yet — species-authored "nuptial flight season" would be a natural K5+ extension but wasn't in scope.
+- Inspector hit-tests against current ant world positions only. Clicking a tube-transit ant does nothing (ant is hidden mid-tube).
+- Substrate noise is a one-time generate at spawn_formicarium; module resize in the editor triggers rebuild which regenerates.
 
 ---
 

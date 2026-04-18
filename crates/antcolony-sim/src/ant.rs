@@ -27,6 +27,11 @@ pub enum AntState {
     /// Winter diapause (K3): the ant is immobile and non-depositing until
     /// ambient temperature rises above the warm threshold.
     Diapause,
+    /// K5 nuptial flight: breeders have left the nest to mate. Not
+    /// moving on the grid; flight progress tracked by `state_timer`.
+    /// Predation ticks while flying; at the end, a daughter colony may
+    /// be founded (counter on `ColonyState`).
+    NuptialFlight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
