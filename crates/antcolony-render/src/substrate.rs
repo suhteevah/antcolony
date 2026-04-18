@@ -77,6 +77,10 @@ fn palette(kind: ModuleKind) -> ([f32; 3], [f32; 3], f32, f32) {
         ModuleKind::HibernationChamber => ([0.42, 0.52, 0.62], [0.22, 0.30, 0.42], 0.08, 0.65),
         ModuleKind::FeedingDish => ([0.82, 0.80, 0.76], [0.64, 0.62, 0.56], 0.14, 0.40),
         ModuleKind::Graveyard => ([0.24, 0.18, 0.14], [0.10, 0.08, 0.06], 0.10, 0.70),
+        // P5 underground: dark earth backdrop. Individual Solid cells
+        // paint themselves opaque on top of this; tunnels let the
+        // substrate show through.
+        ModuleKind::UndergroundNest => ([0.18, 0.12, 0.08], [0.08, 0.05, 0.03], 0.10, 0.70),
     }
 }
 
@@ -190,6 +194,17 @@ fn accent_pass(
                 *r *= 0.55;
                 *g *= 0.55;
                 *b *= 0.55;
+            }
+        }
+        ModuleKind::UndergroundNest => {
+            // Rooty veins: anisotropic streaks that evoke tree roots and
+            // ant galleries. Darkens deep, lightens shallow.
+            let vein = value_noise(x as f32 * 0.18, y as f32 * 0.05, seed ^ 0x8888);
+            if vein > 0.78 {
+                let t = ((vein - 0.78) / 0.22).clamp(0.0, 1.0) * 0.35;
+                *r = (*r - t * 0.40).max(0.0);
+                *g = (*g - t * 0.35).max(0.0);
+                *b = (*b - t * 0.25).max(0.0);
             }
         }
     }

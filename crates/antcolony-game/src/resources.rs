@@ -28,11 +28,14 @@ impl SimulationState {
         // K2.2: include an auto-refilling FeedingDish as a third module.
         let dish_w = (out_w / 3).max(18);
         let dish_h = (out_h / 3).max(14);
-        let topology = Topology::starter_formicarium_with_feeder(
+        let mut topology = Topology::starter_formicarium_with_feeder(
             (nest_w, nest_h),
             (out_w, out_h),
             (dish_w, dish_h),
         );
+        // Phase 5: attach an underground layer below the surface nest.
+        let underground_id = topology.attach_underground(0, 0, nest_w.max(32), nest_h.max(24));
+        tracing::info!(underground_id, "attached underground nest (P5)");
         let mut sim = Simulation::new_with_topology(cfg, topology, env.seed);
         sim.set_environment(env);
 
@@ -68,7 +71,10 @@ impl SimulationState {
         let nest_h = (env.world_height / 3).max(20);
         let out_w = env.world_width;
         let out_h = env.world_height;
-        let topology = Topology::two_colony_arena((nest_w, nest_h), (out_w, out_h));
+        let mut topology = Topology::two_colony_arena((nest_w, nest_h), (out_w, out_h));
+        // P5: each colony gets its own underground layer.
+        let _ = topology.attach_underground(0, 0, nest_w.max(32), nest_h.max(24));
+        let _ = topology.attach_underground(2, 1, nest_w.max(32), nest_h.max(24));
         let mut sim = Simulation::new_two_colony_with_topology(cfg, topology, env.seed, 0, 2);
         sim.set_environment(env);
 

@@ -607,6 +607,7 @@ impl Simulation {
         self.deposit_and_interact();
         self.territory_deposit_tick();
         self.feeding_dish_tick();
+        self.dig_tick();
         self.red_ai_tick();
         self.colony_economy_tick();
 
@@ -838,6 +839,18 @@ impl Simulation {
                 next.y = h - 0.5;
                 ant.heading = -ant.heading;
             }
+
+            // Phase 5: Solid/Obstacle cells block movement — reflect and
+            // stay in place so an ant can't walk through unexcavated earth.
+            let (nx, ny) = module.world.world_to_grid(next);
+            if module.world.in_bounds(nx, ny) {
+                let t = module.world.get(nx as usize, ny as usize);
+                if matches!(t, Terrain::Solid | Terrain::Obstacle) {
+                    ant.heading += std::f32::consts::PI;
+                    continue; // skip position update — next tick re-computes
+                }
+            }
+
             ant.position = next;
         }
 
@@ -1131,6 +1144,53 @@ impl Simulation {
         for i in idxs.into_iter().rev() {
             self.ants.swap_remove(i);
         }
+    }
+
+    /// Phase 5: excavation. Every ant currently in `AntState::Digging`
+    /// converts one adjacent `Terrain::Solid` cell to `Terrain::Empty`
+    /// per tick (if any exist in its 4-neighborhood). No direction —
+    /// the first solid neighbor found wins. Ants not in `Digging` are
+    /// ignored; ants in transit are ignored. Chambers and nest
+    /// entrances are untouched.
+    fn dig_tick(&mut self) {
+        // Collect (module_id, x, y) targets first so we can borrow the
+        // ant immutably and the world mutably afterwards.
+        let mut targets: Vec<(ModuleId, usize, usize)> = Vec::new();
+        for ant in &self.ants {
+            if ant.state != AntState::Digging || ant.is_in_transit() {
+                continue;
+            }
+            let module = self.topology.module(ant.module_id);
+            let (gx, gy) = module.world.world_to_grid(ant.position);
+            if !module.world.in_bounds(gx, gy) {
+                continue;
+            }
+            let (ux, uy) = (gx as usize, gy as usize);
+            // Look at 4-neighbors.
+            let candidates = [
+                (ux.wrapping_sub(1), uy),
+                (ux + 1, uy),
+                (ux, uy.wrapping_sub(1)),
+                (ux, uy + 1),
+            ];
+            for (nx, ny) in candidates {
+                if nx < module.world.width
+                    && ny < module.world.height
+                    && module.world.get(nx, ny) == Terrain::Solid
+                {
+                    targets.push((ant.module_id, nx, ny));
+                    break;
+                }
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        let excavated = targets.len();
+        for (mid, x, y) in targets {
+            self.topology.module_mut(mid).world.set(x, y, Terrain::Empty);
+        }
+        tracing::debug!(excavated, "dig_tick: cells carved this tick");
     }
 
     /// P4 territory: each non-transit, non-diapause ant leaves a small
@@ -2855,6 +2915,129 @@ mod tests {
         // worker heads roughly west (cos < 0).
         assert!(sh.cos() > 0.3, "soldier heading should face east, got {}", sh);
         assert!(wh.cos() < -0.3, "worker heading should face west, got {}", wh);
+    }
+
+    #[test]
+    fn underground_attaches_with_expected_chambers() {
+        use crate::ChamberType;
+        let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+        let before = topology.modules.len();
+        let ug = topology.attach_underground(0, 0, 40, 24);
+        assert_eq!(topology.modules.len(), before + 1);
+        let m = topology.module(ug);
+        assert_eq!(m.kind, ModuleKind::UndergroundNest);
+        // Quick count: expect at least one of every chamber type and a
+        // meaningful Solid majority.
+        let mut solid = 0;
+        let mut queen = 0;
+        let mut brood = 0;
+        let mut store = 0;
+        let mut waste = 0;
+        for y in 0..m.world.height {
+            for x in 0..m.world.width {
+                match m.world.get(x, y) {
+                    crate::Terrain::Solid => solid += 1,
+                    crate::Terrain::Chamber(ChamberType::QueenChamber) => queen += 1,
+                    crate::Terrain::Chamber(ChamberType::BroodNursery) => brood += 1,
+                    crate::Terrain::Chamber(ChamberType::FoodStorage) => store += 1,
+                    crate::Terrain::Chamber(ChamberType::Waste) => waste += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert!(queen > 0 && brood > 0 && store > 0 && waste > 0, "all 4 chambers present");
+        assert!(
+            solid as f32 > 0.5 * (m.world.width * m.world.height) as f32,
+            "underground should be mostly Solid at start"
+        );
+    }
+
+    #[test]
+    fn dig_tick_excavates_adjacent_solid() {
+        use crate::ant::AntCaste;
+        let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+        let ug = topology.attach_underground(0, 0, 40, 24);
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new_with_topology(cfg, topology, 1);
+
+        // Build a deterministic mini-setup: one Empty cell surrounded by
+        // Solid on all 4 sides, on the underground module. Ignore the
+        // pre-carved starter chambers.
+        let (cx, cy) = (5usize, 5usize);
+        let m = sim.topology.module_mut(ug);
+        m.world.set(cx, cy, crate::Terrain::Empty);
+        for (nx, ny) in [(cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)] {
+            m.world.set(nx, ny, crate::Terrain::Solid);
+        }
+
+        let mut digger = Ant::new_with_caste(
+            8888,
+            0,
+            Vec2::new(cx as f32 + 0.5, cy as f32 + 0.5),
+            0.0,
+            10.0,
+            AntCaste::Worker,
+        );
+        digger.module_id = ug;
+        digger.state = AntState::Digging;
+        sim.ants.push(digger);
+
+        sim.dig_tick();
+
+        let m = sim.topology.module(ug);
+        let solid_left = [
+            m.world.get(cx + 1, cy),
+            m.world.get(cx - 1, cy),
+            m.world.get(cx, cy + 1),
+            m.world.get(cx, cy - 1),
+        ]
+        .into_iter()
+        .filter(|t| *t == crate::Terrain::Solid)
+        .count();
+        assert_eq!(
+            solid_left, 3,
+            "exactly one Solid neighbor should be excavated (3 still Solid, 1 now Empty)"
+        );
+    }
+
+    #[test]
+    fn solid_blocks_ant_movement() {
+        use crate::ant::AntCaste;
+        let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+        let ug = topology.attach_underground(0, 0, 40, 24);
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new_with_topology(cfg, topology, 1);
+
+        // Seed the center of the underground as Solid and place an ant
+        // just east of it, heading west. One movement tick should NOT
+        // advance the ant into the Solid cell.
+        let ug_mod_mut = sim.topology.module_mut(ug);
+        let (mx, my) = (10usize, 10usize);
+        ug_mod_mut.world.set(mx, my, crate::Terrain::Solid);
+
+        let mut ant = Ant::new_with_caste(
+            9999,
+            0,
+            Vec2::new((mx + 1) as f32 + 0.5, my as f32 + 0.5),
+            std::f32::consts::PI, // heading west, toward the Solid cell
+            10.0,
+            AntCaste::Worker,
+        );
+        ant.module_id = ug;
+        sim.ants.push(ant);
+        let start_x = sim.ants.last().unwrap().position.x;
+
+        sim.movement();
+        let end = &sim.ants[sim.ants.len() - 1];
+        // Must NOT be inside the Solid cell (no x in [mx, mx+1)).
+        assert!(
+            end.position.x > (mx as f32 + 1.0) - 0.001 || end.position.x >= start_x - 0.01,
+            "ant should be blocked by Solid terrain (start={}, end={})",
+            start_x,
+            end.position.x
+        );
     }
 
     #[test]

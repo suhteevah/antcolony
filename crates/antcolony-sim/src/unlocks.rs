@@ -16,6 +16,9 @@ pub fn module_kind_unlocked(kind: ModuleKind, total_days: u32, population: u32) 
         ModuleKind::HeatChamber => total_days >= 30,
         ModuleKind::HibernationChamber => total_days >= 180,
         ModuleKind::Graveyard => total_days >= 7,
+        // P5 underground nest is attached automatically by the sim at
+        // starter build; it is not a player-placeable palette kind.
+        ModuleKind::UndergroundNest => false,
     }
 }
 
@@ -30,5 +33,6 @@ pub fn unlock_hint(kind: ModuleKind) -> &'static str {
         ModuleKind::HeatChamber => "Unlocks at Day 30",
         ModuleKind::HibernationChamber => "Unlocks at Day 180",
         ModuleKind::Graveyard => "Unlocks at Day 7",
+        ModuleKind::UndergroundNest => "Built automatically (P5)",
     }
 }

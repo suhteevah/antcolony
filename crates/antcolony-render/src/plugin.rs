@@ -149,6 +149,7 @@ impl Plugin for RenderPlugin {
                     toggle_temperature_input,
                     toggle_territory_input,
                     toggle_overview_input,
+                    toggle_layer_view_input,
                     camera_controls,
                 )
                     .chain()
@@ -424,7 +425,47 @@ pub(crate) fn spawn_formicarium(
                             ));
                         }
                     }
-                    _ => {}
+                    // P5: Solid = unexcavated earth, opaque dark tile
+                    // that hides the tunnel substrate below.
+                    Terrain::Solid => {
+                        commands.spawn((
+                            Sprite {
+                                color: Color::srgb(0.08, 0.05, 0.03),
+                                custom_size: Some(Vec2::splat(TILE)),
+                                ..default()
+                            },
+                            Transform::from_translation(world_pos.extend(0.15)),
+                            FormicariumEntity,
+                        ));
+                    }
+                    // P5: Chamber cells — subtle per-kind coloured tile
+                    // over the tunnel substrate so rooms read clearly.
+                    Terrain::Chamber(kind) => {
+                        let color = match kind {
+                            antcolony_sim::ChamberType::QueenChamber => {
+                                Color::srgba(0.85, 0.30, 0.60, 0.55)
+                            }
+                            antcolony_sim::ChamberType::BroodNursery => {
+                                Color::srgba(0.95, 0.80, 0.30, 0.50)
+                            }
+                            antcolony_sim::ChamberType::FoodStorage => {
+                                Color::srgba(0.30, 0.75, 0.30, 0.50)
+                            }
+                            antcolony_sim::ChamberType::Waste => {
+                                Color::srgba(0.45, 0.35, 0.20, 0.55)
+                            }
+                        };
+                        commands.spawn((
+                            Sprite {
+                                color,
+                                custom_size: Some(Vec2::splat(TILE * 0.9)),
+                                ..default()
+                            },
+                            Transform::from_translation(world_pos.extend(0.2)),
+                            FormicariumEntity,
+                        ));
+                    }
+                    Terrain::Obstacle | Terrain::Empty => {}
                 }
             }
         }
@@ -1094,6 +1135,63 @@ fn toggle_territory_input(
     if keys.just_pressed(KeyCode::KeyG) {
         overlay.visible = !overlay.visible;
         tracing::info!(visible = overlay.visible, "territory overlay toggled");
+    }
+}
+
+/// P5: Tab-key toggles between surface view (non-UndergroundNest
+/// modules) and underground view (UndergroundNest modules). Each press
+/// snaps the camera to the centroid of the other layer; the zoom is
+/// left alone so the player keeps their scale.
+fn toggle_layer_view_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    sim: Res<SimulationState>,
+    mut q: Query<&mut Transform, With<Camera2d>>,
+) {
+    if !keys.just_pressed(KeyCode::Tab) {
+        return;
+    }
+    let (layout, centroid) = compute_layout(&sim);
+    let mut surface_sum = Vec2::ZERO;
+    let mut surface_n = 0u32;
+    let mut under_sum = Vec2::ZERO;
+    let mut under_n = 0u32;
+    for m in &sim.sim.topology.modules {
+        let Some(&(_, origin)) = layout.iter().find(|(id, _)| *id == m.id) else {
+            continue;
+        };
+        let origin = origin - centroid;
+        let center = origin
+            + Vec2::new(m.width() as f32 * TILE * 0.5, m.height() as f32 * TILE * 0.5);
+        if m.kind == antcolony_sim::ModuleKind::UndergroundNest {
+            under_sum += center;
+            under_n += 1;
+        } else {
+            surface_sum += center;
+            surface_n += 1;
+        }
+    }
+    if under_n == 0 {
+        tracing::info!("Tab: no underground modules to switch to");
+        return;
+    }
+    let surface_c = if surface_n > 0 {
+        surface_sum / surface_n as f32
+    } else {
+        Vec2::ZERO
+    };
+    let under_c = under_sum / under_n as f32;
+    for mut tf in q.iter_mut() {
+        // Decide which layer we are currently on by proximity, then jump
+        // to the other one.
+        let to_surface = (tf.translation.truncate() - under_c).length()
+            < (tf.translation.truncate() - surface_c).length();
+        let target = if to_surface { surface_c } else { under_c };
+        tf.translation.x = target.x;
+        tf.translation.y = target.y;
+        tracing::info!(
+            layer = if to_surface { "surface" } else { "underground" },
+            "Tab: layer view switched"
+        );
     }
 }
 

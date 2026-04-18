@@ -286,6 +286,86 @@ impl Topology {
         }
     }
 
+    /// Phase 5: attach an underground nest module for the given colony
+    /// below the specified surface nest. Returns the new module id.
+    ///
+    /// The underground module is pre-carved with:
+    /// - a small `QueenChamber` at the top-center (directly below the
+    ///   surface nest entrance mirror),
+    /// - a wider `BroodNursery` one step deeper,
+    /// - a `FoodStorage` room to one side,
+    /// - a `Waste` room to the other.
+    /// Every other cell is `Solid` — diggers excavate new tunnels at
+    /// runtime.
+    pub fn attach_underground(
+        &mut self,
+        surface_nest_id: ModuleId,
+        colony_id: u8,
+        w: usize,
+        h: usize,
+    ) -> ModuleId {
+        use crate::world::ChamberType;
+
+        let surface = self.module(surface_nest_id);
+        // Underground sits directly below the surface nest on the
+        // formicarium canvas so the Tab view switch is visually aligned.
+        let origin = Vec2::new(
+            surface.formicarium_origin.x,
+            surface.formicarium_origin.y - h as f32 - 20.0,
+        );
+        let id = self.next_module_id();
+        let label = format!("Underground (colony {})", colony_id);
+        let mut module = Module::new(id, ModuleKind::UndergroundNest, w, h, origin, label);
+        module.world.fill_solid();
+
+        let cx = w / 2;
+        let top = h.saturating_sub(2);
+        // Queen chamber: 3x3 at top-center.
+        module
+            .world
+            .carve_chamber(cx, top.saturating_sub(1), 1, 1, ChamberType::QueenChamber);
+        // Brood nursery: 5x3 one row below.
+        module
+            .world
+            .carve_chamber(cx, top.saturating_sub(5), 2, 1, ChamberType::BroodNursery);
+        // Food storage: left side, midway down.
+        module.world.carve_chamber(
+            cx.saturating_sub(w / 4),
+            h / 2,
+            2,
+            1,
+            ChamberType::FoodStorage,
+        );
+        // Waste: right side, opposite.
+        module
+            .world
+            .carve_chamber(cx + w / 4, h / 2, 1, 1, ChamberType::Waste);
+        // Shallow tunnel connecting queen chamber to nursery and the
+        // storage/waste chambers so ants can path between rooms from
+        // day one.
+        module.world.carve_tunnel(
+            (cx, top.saturating_sub(1)),
+            (cx, top.saturating_sub(5)),
+        );
+        module
+            .world
+            .carve_tunnel((cx, top.saturating_sub(5)), (cx.saturating_sub(w / 4), h / 2));
+        module
+            .world
+            .carve_tunnel((cx, top.saturating_sub(5)), (cx + w / 4, h / 2));
+
+        tracing::info!(
+            id,
+            surface_nest_id,
+            colony_id,
+            w,
+            h,
+            "Topology::attach_underground"
+        );
+        self.modules.push(module);
+        id
+    }
+
     pub fn len(&self) -> usize {
         self.modules.len()
     }

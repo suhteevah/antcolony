@@ -8,7 +8,7 @@ This document contains everything needed to implement the ant colony simulation 
 2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 complete.** 62 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 4 is playable end-to-end: `V` in the picker launches the two-colony arena (black vs red AI), red ants render in a distinct rust tint, soldiers converge on alarm trails while workers flee, one avenger per AI colony hunts the nearest player ant and transfers the role on death, and `G` toggles a territory overlay driven by signed colony-scent.
+🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) complete.** 65 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 5 MVP: each starter/arena nest auto-spawns an UndergroundNest module (queen + brood + food-storage + waste chambers pre-carved, rest Solid earth), ants in `AntState::Digging` excavate adjacent Solid cells, Solid terrain blocks movement, Tab swaps the camera between surface and underground layers. Chamber-type-colored tiles render on the underground view.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -38,8 +38,9 @@ None.
 ## What's Next
 Priority order for next session:
 
-1. **Phase 5 — underground nest layer** (next main-game phase): diggable tunnels, chambers (FoodStorage / BroodNursery / QueenChamber / Waste), Tab-key view toggle between surface and underground, ants transition between layers via nest entrances. Sim-side `WorldGrid::cells` can stay; a separate underground grid per colony will need a new component on `Module` or a new `ModuleKind::Underground`.
-2. **P4 polish** (optional before Phase 5) — combat kill banner/sfx, Avenger highlight sprite (crown/ring), per-colony panel split in the HUD, per-colony nuptial flight attribution (currently `nuptial_flight_tick` only books stats on `colonies[0]`), upgrade Avenger targeting from nearest-enemy to highest-food-carried ("most valuable" mechanic).
+1. **P5 follow-ups** — ants transitioning *between* layers via the nest entrance (currently surface and underground are disjoint — diggers that happen to be on the underground module stay there; there's no teleport-down mechanic yet). Auto-assign some workers to `AntState::Digging` when `behavior_weights.dig > 0` so excavation actually happens without a player tool. Underground pheromone trails are isolated (no port-bleed) — decide whether that's the desired behavior. Render: per-cell tile sprites for Chambers at ~0.5 alpha are readable but could use the chamber labels / icons on top.
+2. **Phase 6 — hazards + predators**: spider (patrol→hunt→eat→patrol), antlion (stationary pit, permanent kill), rain (wipes surface pheromones + floods lowest underground chambers), lawnmower (kills surface ants in a sweep). Telegraphed with warning period.
+3. **P4 polish** — combat kill banner/sfx, Avenger highlight sprite (crown/ring), per-colony panel split in the HUD, per-colony nuptial flight attribution (currently `nuptial_flight_tick` only books stats on `colonies[0]`), upgrade Avenger targeting from nearest-enemy to highest-food-carried ("most valuable" mechanic).
 3. **K5 follow-up** — when a nuptial flight succeeds, actually spawn a new `ColonyState` + nest module in the topology rather than just bumping `daughter_colonies_founded`. Blocker was keeping the milestone-tracker `seen_counts` keyed by vector position; now even more relevant since Phase 4 already proves multi-colony state works.
 4. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
 
@@ -207,6 +208,28 @@ Priority order for next session:
 - **Sim**: existing `PheromoneLayer::ColonyScent` repurposed as signed per-colony territory scalar. Colony 0 deposits positive, colony 1+ deposits negative via new `PheromoneGrid::deposit_territory`. `Simulation::territory_deposit_tick` runs each tick after `deposit_and_interact`; each non-transit non-Diapause ant drops `0.08` of signed scent on its cell (clamped to ±`max_intensity`). `PheromoneGrid::evaporate` updated to `v.abs() < threshold` so the negative half of the scale decays correctly.
 - **Render**: new `TerritoryTextures` resource + `TerritoryOverlay` component following the `TemperatureOverlay` / `PheromoneOverlay` pattern. Toggle with `G` (starts hidden). Colour wash uses the species' chosen colour for positive scent (colony 0) and bright rust for negative scent (colony 1+). Alpha scales with `|scent|/max` up to ~0.78.
 - **+1 test (62 total sim)**: `territory_deposits_signed_by_colony` stands one ant from each colony on distinct cells on the shared outworld, runs 40 deposit ticks, asserts the colony 0 cell is positive and the colony 1 cell is negative.
+
+## Phase 5 — Underground Nest (MVP COMPLETE)
+
+**Diggable side-view nests.** Every starter formicarium now includes an UndergroundNest module per colony, pre-carved with a queen chamber, brood nursery, food storage, waste room, plus a spine tunnel. The rest of the underground is `Solid` earth that ants can dig through.
+
+- **Terrain variants** (`world.rs`): added `Terrain::Solid` (unexcavated earth) and `Terrain::Chamber(ChamberType)` with `ChamberType { QueenChamber, BroodNursery, FoodStorage, Waste }`. Serde derives on ChamberType. `WorldGrid::fill_solid`, `carve_chamber(cx, cy, half_w, half_h, kind)`, and `carve_tunnel((x0, y0), (x1, y1))` helpers. Carve operations preserve existing `NestEntrance` cells.
+- **ModuleKind** (`module.rs`): new `UndergroundNest` variant with label "Underground". Not player-placeable (`unlocks::module_kind_unlocked` returns false) — attached automatically by the sim on starter build.
+- **`Topology::attach_underground(surface_nest_id, colony_id, w, h)`**: spawns a new module positioned directly below the surface nest (y-offset = `-h - 20`), fills it with Solid, carves the four chamber types + a short tunnel spine. Returns the new `ModuleId`.
+- **Auto-attach** (`antcolony-game/src/resources.rs`): `from_species` attaches one underground layer for colony 0; `from_species_two_colony` attaches one per colony. Underground modules are always `ModuleId >= 3` (after the 3-module surface starter) or `>= 3/4` depending on variant.
+- **`Simulation::dig_tick`**: runs each tick between `feeding_dish_tick` and `red_ai_tick`. Any ant in `AntState::Digging` (not in transit) that has a `Solid` neighbor in its 4-neighborhood converts the first one found to `Empty`. No randomness — deterministic order (east / west / south / north).
+- **Movement gate** (`simulation.rs::movement`): after bounds reflection, the final `next` cell is checked. If `Solid` or `Obstacle`, the ant reflects its heading and skips the position update — can't walk through unexcavated earth.
+- **Render** (`plugin.rs::spawn_formicarium`): `Terrain::Solid` → opaque dark-brown `Sprite` tile at z=0.15 over the substrate, `Terrain::Chamber(kind)` → translucent kind-coloured tile at z=0.2 (queen=pink, nursery=amber, food=green, waste=umber). `substrate.rs` gained an `UndergroundNest` palette entry (dark earth) + an `accent_pass` arm that draws rooty vein streaks.
+- **Tab key** (`plugin.rs::toggle_layer_view_input`): snaps the camera between the centroid of surface modules and the centroid of underground modules, keeping the current zoom. Decides which layer you're on by proximity.
+- **+3 tests (65 total sim)**: `underground_attaches_with_expected_chambers` (all 4 chamber types present + majority-Solid), `dig_tick_excavates_adjacent_solid` (deterministic 4-neighbor excavation, exactly one Solid neighbor converted per tick), `solid_blocks_ant_movement` (ant heading into Solid cell is reflected and does not advance).
+
+**Notes / deferred:**
+- Ants don't traverse between surface and underground layers yet — the two are connected in the visual sense (underground sits below the surface nest on the canvas) but there's no teleport-through-entrance mechanic. `Terrain::NestEntrance` on the underground module is carved but no code uses it yet.
+- Nobody is actually in `AntState::Digging` under the default keeper sim — `behavior_weights.dig` is set but never consumed by the FSM. Diggers have to be manually assigned (e.g. through a player tool or an AI rule) for `dig_tick` to fire.
+- `carve_tunnel` uses straight-line interpolation — rooms further apart produce Z-shaped tunnels that may clip through Solid. Good enough for the pre-carved starter layout; in-game excavation is always single-cell anyway.
+- `UndergroundNest` modules are not reachable from editor palette (locked). Editor can still drag-place them via the existing API, but the palette button greys out.
+- `port_bleed` doesn't run between surface and underground layers — underground nests are pheromone-isolated. Fine for MVP; may want to change later when layer transition exists.
+- Render tile sprites use 2D `Sprite`s for each non-Empty terrain cell. At starter scale (~40x24 underground) that's ~800 sprites per underground module; fine. Would become a hot spot at 512x512 — revisit as a single texture if Phase 8 scales world size up.
 
 ---
 

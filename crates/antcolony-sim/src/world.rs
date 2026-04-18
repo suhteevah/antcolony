@@ -3,12 +3,30 @@
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
+/// Phase 5 chamber specialization — labels rooms carved out of an
+/// `UndergroundNest`. Chambers are walkable (like `Empty`) but have
+/// distinct behavior (queens only lay in `BroodNursery`, returning ants
+/// dump food in `FoodStorage`) and render tints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChamberType {
+    QueenChamber,
+    BroodNursery,
+    FoodStorage,
+    Waste,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Terrain {
     Empty,
     Food(u32),
     Obstacle,
     NestEntrance(u8),
+    /// Phase 5: unexcavated earth. Diggable — an adjacent ant in state
+    /// `Digging` will convert it to `Empty` over time.
+    Solid,
+    /// Phase 5: a specialized room inside an underground nest.
+    Chamber(ChamberType),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +99,66 @@ impl WorldGrid {
     pub fn place_nest(&mut self, x: usize, y: usize, colony_id: u8) {
         self.set(x, y, Terrain::NestEntrance(colony_id));
         tracing::info!(x, y, colony_id, "nest entrance placed");
+    }
+
+    /// Phase 5: fill every cell with `Solid` (unexcavated earth). Used
+    /// when an `UndergroundNest` module is first built.
+    pub fn fill_solid(&mut self) {
+        for c in self.cells.iter_mut() {
+            *c = Terrain::Solid;
+        }
+    }
+
+    /// Phase 5: carve an axis-aligned rectangular room, overwriting any
+    /// `Solid` (and any other non-nest-entrance terrain) with the given
+    /// chamber specialization. `NestEntrance` cells are preserved.
+    pub fn carve_chamber(
+        &mut self,
+        cx: usize,
+        cy: usize,
+        half_w: usize,
+        half_h: usize,
+        kind: ChamberType,
+    ) -> u32 {
+        let mut placed = 0u32;
+        let x0 = cx.saturating_sub(half_w);
+        let y0 = cy.saturating_sub(half_h);
+        let x1 = (cx + half_w).min(self.width.saturating_sub(1));
+        let y1 = (cy + half_h).min(self.height.saturating_sub(1));
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let i = self.idx(x, y);
+                if !matches!(self.cells[i], Terrain::NestEntrance(_)) {
+                    self.cells[i] = Terrain::Chamber(kind);
+                    placed += 1;
+                }
+            }
+        }
+        tracing::info!(cx, cy, half_w, half_h, ?kind, placed, "carve_chamber");
+        placed
+    }
+
+    /// Phase 5: carve a straight tunnel between two cells, overwriting
+    /// any `Solid`. Uses Bresenham-ish stepping — good enough for the
+    /// pre-carved starter nest layout.
+    pub fn carve_tunnel(&mut self, (x0, y0): (usize, usize), (x1, y1): (usize, usize)) -> u32 {
+        let mut placed = 0u32;
+        let dx = x1 as i64 - x0 as i64;
+        let dy = y1 as i64 - y0 as i64;
+        let steps = dx.abs().max(dy.abs()).max(1) as usize;
+        for s in 0..=steps {
+            let t = s as f32 / steps as f32;
+            let x = (x0 as f32 + t * dx as f32).round() as i64;
+            let y = (y0 as f32 + t * dy as f32).round() as i64;
+            if self.in_bounds(x, y) {
+                let i = self.idx(x as usize, y as usize);
+                if !matches!(self.cells[i], Terrain::NestEntrance(_) | Terrain::Chamber(_)) {
+                    self.cells[i] = Terrain::Empty;
+                    placed += 1;
+                }
+            }
+        }
+        placed
     }
 
     /// Decrement food at cell, returns amount picked up (0 or 1).

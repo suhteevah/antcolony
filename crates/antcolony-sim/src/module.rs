@@ -38,6 +38,9 @@ pub enum ModuleKind {
     FeedingDish,
     /// Waste / cemetery.
     Graveyard,
+    /// Phase 5: side-view underground nest — all cells start `Solid`;
+    /// ants in `Digging` state excavate tunnels and chambers.
+    UndergroundNest,
 }
 
 impl ModuleKind {
@@ -52,6 +55,7 @@ impl ModuleKind {
             ModuleKind::HibernationChamber => "Hibernation Chamber",
             ModuleKind::FeedingDish => "Feeding Dish",
             ModuleKind::Graveyard => "Graveyard",
+            ModuleKind::UndergroundNest => "Underground",
         }
     }
 }

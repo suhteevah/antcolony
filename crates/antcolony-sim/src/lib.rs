@@ -43,4 +43,4 @@ pub use persist::{
 pub use topology::Topology;
 pub use tube::{Tube, TubeEnd, TubeId, TubeTransit};
 pub use unlocks::{module_kind_unlocked, unlock_hint};
-pub use world::{Terrain, WorldGrid};
+pub use world::{ChamberType, Terrain, WorldGrid};
