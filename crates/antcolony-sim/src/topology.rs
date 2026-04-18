@@ -205,6 +205,87 @@ impl Topology {
         }
     }
 
+    /// Phase 4 starter: two nests (black on the west, red on the east)
+    /// sharing a single outworld in the middle. Both nests connect to
+    /// the outworld via their own tube. Module ids: 0 = black nest,
+    /// 1 = shared outworld, 2 = red nest. Tube ids: 0 = black↔outworld,
+    /// 1 = red↔outworld.
+    pub fn two_colony_arena(
+        nest_dim: (usize, usize),
+        outworld_dim: (usize, usize),
+    ) -> Self {
+        let (nest_w, nest_h) = nest_dim;
+        let (out_w, out_h) = outworld_dim;
+        let gap = 24.0;
+
+        let black_origin = Vec2::ZERO;
+        let outworld_origin = Vec2::new(nest_w as f32 + gap, 0.0);
+        let red_origin = Vec2::new(
+            outworld_origin.x + out_w as f32 + gap,
+            0.0,
+        );
+
+        let black = Module::new(
+            0,
+            ModuleKind::TestTubeNest,
+            nest_w,
+            nest_h,
+            black_origin,
+            "Black Nest",
+        )
+        .with_ports(default_edge_ports(nest_w, nest_h));
+        let outworld = Module::new(
+            1,
+            ModuleKind::Outworld,
+            out_w,
+            out_h,
+            outworld_origin,
+            "Shared Outworld",
+        )
+        .with_ports(default_edge_ports(out_w, out_h));
+        let red = Module::new(
+            2,
+            ModuleKind::TestTubeNest,
+            nest_w,
+            nest_h,
+            red_origin,
+            "Red Nest",
+        )
+        .with_ports(default_edge_ports(nest_w, nest_h));
+
+        // Black east ↔ outworld west, red west ↔ outworld east.
+        let black_port = PortPos::new(nest_w - 1, nest_h / 2);
+        let out_port_w = PortPos::new(0, out_h / 2);
+        let out_port_e = PortPos::new(out_w - 1, out_h / 2);
+        let red_port = PortPos::new(0, nest_h / 2);
+
+        let tube_black = Tube {
+            id: 0,
+            from: TubeEnd { module: 0, port: black_port },
+            to: TubeEnd { module: 1, port: out_port_w },
+            length_ticks: 30,
+            bore_width_mm: 8.0,
+        };
+        let tube_red = Tube {
+            id: 1,
+            from: TubeEnd { module: 2, port: red_port },
+            to: TubeEnd { module: 1, port: out_port_e },
+            length_ticks: 30,
+            bore_width_mm: 8.0,
+        };
+
+        tracing::info!(
+            nest_size = format!("{}x{}", nest_w, nest_h),
+            outworld_size = format!("{}x{}", out_w, out_h),
+            "two_colony_arena built (3 modules, 2 tubes)"
+        );
+
+        Self {
+            modules: vec![black, outworld, red],
+            tubes: vec![tube_black, tube_red],
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.modules.len()
     }

@@ -125,6 +125,90 @@ impl Simulation {
         }
     }
 
+    /// Phase 4 entry point: build a sim with TWO colonies sharing a
+    /// topology. Colony 0 (black) spawns on `nest_black_module` (default 0).
+    /// Colony 1 (red) is AI-controlled and spawns on `nest_red_module`
+    /// (default 2, i.e. the far nest in `two_colony_arena`). Initial
+    /// populations for each come from `config.ant.initial_count`.
+    pub fn new_two_colony_with_topology(
+        config: SimConfig,
+        mut topology: Topology,
+        seed: u64,
+        nest_black_module: ModuleId,
+        nest_red_module: ModuleId,
+    ) -> Self {
+        assert!(!topology.is_empty(), "at least one module required");
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+        // Black colony (player).
+        let black_mod = topology.module(nest_black_module);
+        let (bw, bh) = (black_mod.width(), black_mod.height());
+        let black_nest = Vec2::new(bw as f32 * 0.5, bh as f32 * 0.5);
+        let mut c_black = ColonyState::new(0, config.colony.initial_food, black_nest);
+
+        let dist = CasteRatio { worker: 1.0, soldier: 0.0, breeder: 0.0 };
+        let mut black_ants = spawn_initial_ants(&config, &mut rng, black_nest, 0, dist, 0);
+        for a in black_ants.iter_mut() { a.module_id = nest_black_module; }
+
+        // Red colony (AI).
+        let red_mod = topology.module(nest_red_module);
+        let (rw, rh) = (red_mod.width(), red_mod.height());
+        let red_nest = Vec2::new(rw as f32 * 0.5, rh as f32 * 0.5);
+        let mut c_red = ColonyState::new(1, config.colony.initial_food, red_nest);
+        c_red.is_ai_controlled = true;
+        // Red colonies lean defensive — more soldiers by default.
+        c_red.caste_ratio = CasteRatio { worker: 0.65, soldier: 0.3, breeder: 0.05 };
+
+        let id_offset = black_ants.len() as u32;
+        let mut red_ants = spawn_initial_ants(&config, &mut rng, red_nest, 1, dist, id_offset);
+        for a in red_ants.iter_mut() { a.module_id = nest_red_module; }
+
+        let mut ants = black_ants;
+        ants.append(&mut red_ants);
+
+        for a in &ants {
+            let colony = if a.colony_id == 0 { &mut c_black } else { &mut c_red };
+            match a.caste {
+                AntCaste::Worker => colony.population.workers += 1,
+                AntCaste::Soldier => colony.population.soldiers += 1,
+                AntCaste::Breeder => colony.population.breeders += 1,
+                AntCaste::Queen => {}
+            }
+        }
+
+        topology
+            .module_mut(nest_black_module)
+            .world
+            .place_nest(bw / 2, bh / 2, 0);
+        topology
+            .module_mut(nest_red_module)
+            .world
+            .place_nest(rw / 2, rh / 2, 1);
+
+        tracing::info!(
+            modules = topology.modules.len(),
+            tubes = topology.tubes.len(),
+            ants = ants.len(),
+            black = c_black.adult_total() + 1, // +queen
+            red = c_red.adult_total() + 1,
+            seed,
+            "Simulation::new_two_colony_with_topology"
+        );
+
+        let next_ant_id = ants.len() as u32;
+        Self {
+            config,
+            topology,
+            ants,
+            colonies: vec![c_black, c_red],
+            tick: 0,
+            rng,
+            next_ant_id,
+            climate: Climate::default(),
+            in_game_seconds_per_tick: 1.0,
+        }
+    }
+
     /// Expose the internal ant-id counter for snapshotting.
     #[inline]
     pub fn next_ant_id_value(&self) -> u32 {
@@ -508,8 +592,10 @@ impl Simulation {
         self.temperature_tick();
         self.sense_and_decide();
         self.movement();
+        self.combat_tick();
         self.deposit_and_interact();
         self.feeding_dish_tick();
+        self.red_ai_tick();
         self.colony_economy_tick();
 
         let evap_rate = self.config.pheromone.evaporation_rate;
@@ -860,6 +946,212 @@ impl Simulation {
                 self.topology.module_mut(ma).pheromones.set_cell(ax, ay, layer, new_a);
                 self.topology.module_mut(mb).pheromones.set_cell(bx, by, layer, new_b);
             }
+        }
+    }
+
+    /// Phase 4: cross-colony combat. For each module, bucket non-transit
+    /// ants into a spatial hash, find pairs of differing `colony_id`
+    /// within `combat.interaction_radius`, and deal damage each tick.
+    /// Soldiers get `soldier_vs_worker_bonus` against worker/breeder
+    /// targets. Queens are non-combatants (they attack for 0 but can be
+    /// damaged).
+    ///
+    /// Ants whose health drops to 0 are removed from `self.ants` at the
+    /// end of the tick. Their grid cell becomes `Terrain::Food` (if
+    /// Empty) and alarm pheromone is deposited at the death site.
+    pub fn combat_tick(&mut self) {
+        let cfg = self.config.combat.clone();
+        let pcfg = self.config.pheromone.clone();
+        let radius = cfg.interaction_radius;
+        if radius <= 0.0 || self.ants.is_empty() || self.colonies.len() < 2 {
+            // Nothing to fight — skip spatial hashing entirely.
+            return;
+        }
+
+        // Build a per-module spatial hash of ants (by index into self.ants).
+        use std::collections::HashMap;
+        let mut buckets: HashMap<ModuleId, crate::spatial::SpatialHash> = HashMap::new();
+        for (i, ant) in self.ants.iter().enumerate() {
+            if ant.is_in_transit() {
+                continue;
+            }
+            let hash = buckets
+                .entry(ant.module_id)
+                .or_insert_with(|| crate::spatial::SpatialHash::new((radius * 2.0).max(1.0)));
+            hash.insert(i as u32, ant.position);
+        }
+
+        // Accumulate damage. Using a Vec<f32> aligned to self.ants so we
+        // can safely borrow positions/castes of both attacker and target.
+        let mut damage: Vec<f32> = vec![0.0; self.ants.len()];
+        let mut attacker_of: Vec<Option<u8>> = vec![None; self.ants.len()];
+
+        for (i, ant) in self.ants.iter().enumerate() {
+            if ant.is_in_transit() {
+                continue;
+            }
+            if matches!(ant.caste, AntCaste::Queen) {
+                continue; // queens don't melee
+            }
+            let Some(hash) = buckets.get(&ant.module_id) else { continue };
+            let candidates = hash.query_radius(ant.position, radius);
+            let base_attack = match ant.caste {
+                AntCaste::Soldier => cfg.soldier_attack,
+                _ => cfg.worker_attack,
+            };
+            for j in candidates {
+                let j = j as usize;
+                if j == i {
+                    continue;
+                }
+                let other = &self.ants[j];
+                if other.colony_id == ant.colony_id {
+                    continue;
+                }
+                if (ant.position - other.position).length() > radius {
+                    continue;
+                }
+                let mut dmg = base_attack;
+                if matches!(ant.caste, AntCaste::Soldier)
+                    && !matches!(other.caste, AntCaste::Soldier)
+                {
+                    dmg *= cfg.soldier_vs_worker_bonus;
+                }
+                damage[j] += dmg;
+                attacker_of[j] = Some(ant.colony_id);
+            }
+        }
+
+        // Apply damage + flag states. Track death events for a post-pass.
+        struct DeathEvent {
+            idx: usize,
+            module: ModuleId,
+            pos: Vec2,
+            victim_colony: u8,
+            killer_colony: Option<u8>,
+        }
+        let mut deaths: Vec<DeathEvent> = Vec::new();
+        for (i, ant) in self.ants.iter_mut().enumerate() {
+            if damage[i] <= 0.0 {
+                continue;
+            }
+            ant.health -= damage[i];
+            // Soldiers stand and fight; workers/breeders flee.
+            if ant.health > 0.0 {
+                let new_state = match ant.caste {
+                    AntCaste::Soldier => AntState::Fighting,
+                    AntCaste::Worker | AntCaste::Breeder => AntState::Fleeing,
+                    AntCaste::Queen => ant.state,
+                };
+                if ant.state != new_state {
+                    ant.transition(new_state);
+                }
+            } else {
+                deaths.push(DeathEvent {
+                    idx: i,
+                    module: ant.module_id,
+                    pos: ant.position,
+                    victim_colony: ant.colony_id,
+                    killer_colony: attacker_of[i],
+                });
+            }
+        }
+
+        if deaths.is_empty() {
+            return;
+        }
+
+        // Book-keep kills and losses per colony.
+        for d in &deaths {
+            for c in self.colonies.iter_mut() {
+                if c.id == d.victim_colony {
+                    c.combat_losses += 1;
+                    c.combat_losses_this_tick += 1;
+                    match self.ants[d.idx].caste {
+                        AntCaste::Worker => c.population.workers = c.population.workers.saturating_sub(1),
+                        AntCaste::Soldier => c.population.soldiers = c.population.soldiers.saturating_sub(1),
+                        AntCaste::Breeder => c.population.breeders = c.population.breeders.saturating_sub(1),
+                        AntCaste::Queen => { c.queen_health = 0.0; }
+                    }
+                }
+                if Some(c.id) == d.killer_colony {
+                    c.combat_kills += 1;
+                }
+            }
+        }
+
+        // Drop corpses as food + deposit alarm at each death site.
+        for d in &deaths {
+            let module = self.topology.module_mut(d.module);
+            let (gx, gy) = module.world.world_to_grid(d.pos);
+            if module.world.in_bounds(gx, gy) {
+                let (ux, uy) = (gx as usize, gy as usize);
+                if module.world.get(ux, uy) == Terrain::Empty && cfg.corpse_food_units > 0 {
+                    module.world.set(ux, uy, Terrain::Food(cfg.corpse_food_units));
+                }
+                module.pheromones.deposit(
+                    ux,
+                    uy,
+                    PheromoneLayer::Alarm,
+                    cfg.alarm_deposit_on_death,
+                    pcfg.max_intensity,
+                );
+            }
+        }
+
+        tracing::info!(
+            tick = self.tick,
+            deaths = deaths.len(),
+            "combat resolved"
+        );
+
+        // Remove dead ants. Indices collected ascending; iterate descending
+        // for swap_remove so later indices stay valid.
+        let mut idxs: Vec<usize> = deaths.iter().map(|d| d.idx).collect();
+        idxs.sort_unstable();
+        for i in idxs.into_iter().rev() {
+            self.ants.swap_remove(i);
+        }
+    }
+
+    /// Phase 4: simple red-colony AI. For any colony flagged
+    /// `is_ai_controlled`, nudge its `caste_ratio` toward soldiers when
+    /// it's taking casualties and nudge `behavior_weights` toward forage
+    /// when food is low.
+    ///
+    /// Called once per tick; clears `combat_losses_this_tick` for every
+    /// colony at the end (AI or not).
+    pub fn red_ai_tick(&mut self) {
+        let low_food = self.config.colony.egg_cost * 4.0;
+        for c in self.colonies.iter_mut() {
+            if c.is_ai_controlled {
+                // Taking losses → shift toward soldiers (cap 0.5).
+                if c.combat_losses_this_tick > 0 {
+                    let shift = 0.01 * c.combat_losses_this_tick as f32;
+                    let target_soldier = (c.caste_ratio.soldier + shift).min(0.5);
+                    let delta = target_soldier - c.caste_ratio.soldier;
+                    c.caste_ratio.soldier = target_soldier;
+                    // Take it out of the worker share; leave breeders alone.
+                    c.caste_ratio.worker = (c.caste_ratio.worker - delta).max(0.05);
+                    tracing::debug!(
+                        colony = c.id,
+                        soldier = c.caste_ratio.soldier,
+                        worker = c.caste_ratio.worker,
+                        losses_this_tick = c.combat_losses_this_tick,
+                        "red AI: escalated soldier ratio"
+                    );
+                }
+                // Low food → all hands foraging.
+                if c.food_stored < low_food {
+                    let shift = 0.02;
+                    let target_forage = (c.behavior_weights.forage + shift).min(0.9);
+                    let delta = target_forage - c.behavior_weights.forage;
+                    c.behavior_weights.forage = target_forage;
+                    c.behavior_weights.nurse = (c.behavior_weights.nurse - delta * 0.5).max(0.05);
+                    c.behavior_weights.dig = (c.behavior_weights.dig - delta * 0.5).max(0.02);
+                }
+            }
+            c.combat_losses_this_tick = 0;
         }
     }
 
@@ -2224,5 +2516,131 @@ mod tests {
             "below threshold — no launch"
         );
         assert_eq!(sim.colonies[0].nuptial_launches, 0);
+    }
+
+    // ===================== Phase 4 combat tests =====================
+
+    fn two_colony_sim_for_combat() -> Simulation {
+        let mut cfg = small_config();
+        // No initial spawn — tests seed their own ants at known positions.
+        cfg.ant.initial_count = 0;
+        cfg.combat.interaction_radius = 1.5;
+        let topology = Topology::two_colony_arena((24, 24), (32, 32));
+        // Module 0 = black nest, 1 = outworld, 2 = red nest.
+        Simulation::new_two_colony_with_topology(cfg, topology, 7, 0, 2)
+    }
+
+    fn place_combatant(
+        sim: &mut Simulation,
+        id: u32,
+        colony: u8,
+        pos: Vec2,
+        caste: AntCaste,
+        health: f32,
+    ) {
+        let mut a = Ant::new_with_caste(id, colony, pos, 0.0, health, caste);
+        a.module_id = 1; // outworld
+        sim.ants.push(a);
+    }
+
+    #[test]
+    fn two_colony_arena_starter_builds() {
+        let sim = two_colony_sim_for_combat();
+        assert_eq!(sim.topology.modules.len(), 3);
+        assert_eq!(sim.topology.tubes.len(), 2);
+        assert_eq!(sim.colonies.len(), 2);
+        assert!(!sim.colonies[0].is_ai_controlled);
+        assert!(sim.colonies[1].is_ai_controlled);
+    }
+
+    #[test]
+    fn cross_colony_combat_kills_ants() {
+        let mut sim = two_colony_sim_for_combat();
+        let initial = sim.ants.len();
+
+        // Two black workers vs one red soldier, standing toe-to-toe.
+        place_combatant(&mut sim, 9001, 0, Vec2::new(16.0, 16.0), AntCaste::Worker, 5.0);
+        place_combatant(&mut sim, 9002, 0, Vec2::new(16.5, 16.0), AntCaste::Worker, 5.0);
+        place_combatant(&mut sim, 9003, 1, Vec2::new(16.25, 16.25), AntCaste::Soldier, 25.0);
+
+        // Combat tick directly — bypass FSM/movement.
+        for _ in 0..6 {
+            sim.combat_tick();
+        }
+
+        let losses: u32 = sim.colonies.iter().map(|c| c.combat_losses).sum();
+        assert!(losses > 0, "expected combat to kill at least one ant");
+        assert!(
+            sim.ants.len() < initial + 3,
+            "at least one combatant should have died (initial+3={})",
+            initial + 3
+        );
+    }
+
+    #[test]
+    fn combat_death_drops_food_and_alarm() {
+        let mut sim = two_colony_sim_for_combat();
+        place_combatant(&mut sim, 9101, 0, Vec2::new(10.0, 10.0), AntCaste::Worker, 1.0);
+        place_combatant(&mut sim, 9102, 1, Vec2::new(10.0, 10.0), AntCaste::Soldier, 25.0);
+
+        sim.combat_tick();
+        sim.combat_tick();
+
+        // One of the two must have died (soldier outhits worker).
+        assert!(
+            sim.ants.iter().find(|a| a.id == 9101).is_none(),
+            "weak black worker should be dead"
+        );
+        let module = sim.topology.module(1);
+        let (gx, gy) = module.world.world_to_grid(Vec2::new(10.0, 10.0));
+        assert!(module.world.in_bounds(gx, gy));
+        let cell = module.world.get(gx as usize, gy as usize);
+        assert!(
+            matches!(cell, Terrain::Food(_)),
+            "corpse should leave food, got {:?}",
+            cell
+        );
+        let alarm = module
+            .pheromones
+            .read(gx as usize, gy as usize, PheromoneLayer::Alarm);
+        assert!(alarm > 0.0, "alarm pheromone should be deposited, got {}", alarm);
+    }
+
+    #[test]
+    fn red_ai_escalates_soldier_ratio_under_attack() {
+        let mut sim = two_colony_sim_for_combat();
+        let before = sim.colonies[1].caste_ratio.soldier;
+
+        // Simulate sustained losses: inject combat_losses_this_tick and
+        // run red_ai_tick several times.
+        for _ in 0..15 {
+            sim.colonies[1].combat_losses_this_tick = 3;
+            sim.red_ai_tick();
+        }
+        let after = sim.colonies[1].caste_ratio.soldier;
+        assert!(
+            after > before,
+            "AI should escalate soldier ratio: before={} after={}",
+            before, after
+        );
+        assert!(after <= 0.5, "cap at 0.5 (got {})", after);
+        // And the tick-local counter is cleared.
+        assert_eq!(sim.colonies[1].combat_losses_this_tick, 0);
+    }
+
+    #[test]
+    fn same_colony_ants_never_attack_each_other() {
+        let mut sim = two_colony_sim_for_combat();
+        place_combatant(&mut sim, 9201, 0, Vec2::new(8.0, 8.0), AntCaste::Soldier, 25.0);
+        place_combatant(&mut sim, 9202, 0, Vec2::new(8.2, 8.0), AntCaste::Worker, 5.0);
+        let before_losses = sim.colonies[0].combat_losses;
+
+        for _ in 0..20 {
+            sim.combat_tick();
+        }
+        assert_eq!(
+            sim.colonies[0].combat_losses, before_losses,
+            "friendly fire must not happen"
+        );
     }
 }

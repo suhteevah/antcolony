@@ -126,6 +126,21 @@ pub struct ColonyState {
     /// K5: tick of the most recent nuptial launch (0 = never).
     #[serde(default)]
     pub last_nuptial_flight_tick: u64,
+    /// P4: this colony is driven by the red-colony AI loop instead of a
+    /// human player. Flips the economy's behavior/caste auto-adjust on.
+    #[serde(default)]
+    pub is_ai_controlled: bool,
+    /// P4: cross-colony kills the sim has resolved against this colony
+    /// so far. Cumulative.
+    #[serde(default)]
+    pub combat_losses: u32,
+    /// P4: cross-colony kills this colony has inflicted. Cumulative.
+    #[serde(default)]
+    pub combat_kills: u32,
+    /// P4: combat deaths observed THIS tick (cleared at the end of every
+    /// tick). Red AI reads this to escalate soldier production.
+    #[serde(default)]
+    pub combat_losses_this_tick: u32,
 }
 
 impl ColonyState {
@@ -158,6 +173,10 @@ impl ColonyState {
             daughter_colonies_founded: 0,
             nuptial_predation_deaths: 0,
             last_nuptial_flight_tick: 0,
+            is_ai_controlled: false,
+            combat_losses: 0,
+            combat_kills: 0,
+            combat_losses_this_tick: 0,
         }
     }
 

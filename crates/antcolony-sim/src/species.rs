@@ -216,6 +216,7 @@ impl Species {
             soldier_attack: self.combat.soldier_attack,
             worker_health: self.combat.worker_health,
             soldier_health: self.combat.soldier_health,
+            ..CombatConfig::default()
         };
 
         let cfg = SimConfig {

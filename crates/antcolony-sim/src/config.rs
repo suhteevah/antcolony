@@ -107,6 +107,16 @@ pub struct CombatConfig {
     pub soldier_attack: f32,
     pub worker_health: f32,
     pub soldier_health: f32,
+    /// P4: grid-distance (cells) at which two cross-colony ants start
+    /// dealing damage to each other each tick.
+    pub interaction_radius: f32,
+    /// P4: multiplier on soldier attack when the target is a worker.
+    pub soldier_vs_worker_bonus: f32,
+    /// P4: units of terrain food left when an ant dies. Applied at the
+    /// grid cell where the ant was standing, iff that cell is Empty.
+    pub corpse_food_units: u32,
+    /// P4: alarm pheromone amount deposited at a death site.
+    pub alarm_deposit_on_death: f32,
 }
 
 impl Default for SimConfig {
@@ -196,6 +206,10 @@ impl Default for CombatConfig {
             soldier_attack: 3.0,
             worker_health: 10.0,
             soldier_health: 25.0,
+            interaction_radius: 1.2,
+            soldier_vs_worker_bonus: 3.0,
+            corpse_food_units: 1,
+            alarm_deposit_on_death: 2.0,
         }
     }
 }
