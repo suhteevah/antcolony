@@ -8,7 +8,7 @@ This document contains everything needed to implement the ant colony simulation 
 2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 complete.** 70 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 6 complete: spider/antlion predator sprites track position + state colour, rain overlay fades in on surface modules during rainfall, lawnmower blade indicator shows warning stripe then sweep blade.
+🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 + P7 (sim half) complete.** 74 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. P7 sim: possess/recruit/beacon helpers + follower steering + beacon decay + player-heading FSM guard. Plus a **critical starvation cliff fix** (colonies no longer wipe in one tick when food runs out — capped at 5% of population per tick). Input + render for P7 still pending.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -39,7 +39,7 @@ None.
 Priority order for next session:
 
 1. **P5 follow-ups** — ants transitioning *between* layers via the nest entrance (currently surface and underground are disjoint — diggers that happen to be on the underground module stay there; there's no teleport-down mechanic yet). Auto-assign some workers to `AntState::Digging` when `behavior_weights.dig > 0` so excavation actually happens without a player tool. Underground pheromone trails are isolated (no port-bleed) — decide whether that's the desired behavior. Render: per-cell tile sprites for Chambers at ~0.5 alpha are readable but could use the chamber labels / icons on top.
-2. **Phase 7 — player interaction** (next main-game phase): yellow-ant avatar (possession, WASD override of FSM), recruit command (`R` pulls N nearby idle ants into a follow group), pheromone beacons (right-click to place "gather here" / "attack here" markers), per-colony behaviour triangle UI (forage / dig / nurse). Exchange mechanic: `E` lets the player jump into any nearby ant.
+2. **P7 input + render** (sim half shipped): WASD → `sim.set_player_heading`, `R`/`Shift+R` → `sim.recruit_nearby`, right-click → `sim.place_beacon` (toggle Gather/Attack with a key), `E` → `sim.possess_nearest` on cursor position. Render: yellow tint on `is_player` ant, beacon sprite per active beacon, follower highlight ring on bonded ants, status line on HUD.
 3. **P4 polish** — combat kill banner/sfx, Avenger highlight sprite (crown/ring), per-colony panel split in the HUD, per-colony nuptial flight attribution (currently `nuptial_flight_tick` only books stats on `colonies[0]`), upgrade Avenger targeting from nearest-enemy to highest-food-carried ("most valuable" mechanic).
 3. **K5 follow-up** — when a nuptial flight succeeds, actually spawn a new `ColonyState` + nest module in the topology rather than just bumping `daughter_colonies_founded`. Blocker was keeping the milestone-tracker `seen_counts` keyed by vector position; now even more relevant since Phase 4 already proves multi-colony state works.
 4. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
@@ -259,6 +259,21 @@ Priority order for next session:
 - **Rain overlay**: one `RainOverlay(ModuleId)` sprite per surface module spawned in `spawn_formicarium` (skipped for UndergroundNest). `update_rain_overlay` scales alpha by `weather.rain_ticks_remaining / cfg.rain_duration_ticks` up to 0.35. Zero alpha when dry.
 - **Lawnmower blade**: single `LawnmowerBlade` sprite spawned at setup, hidden. `update_lawnmower_blade` shows it during warning (dim orange stripe at y=0) or sweep (bright red blade at `weather.lawnmower_y`), sized to the target module's width.
 - No new tests — render is visual and covered by the 7s smoke run (no panics when a hazard-enabled sim is active).
+
+## Phase 7 — Player Interaction (sim helpers + starvation fix COMPLETE; input/render pending)
+
+**The player can now possess an ant, recruit followers, and drop pheromone beacons.** Input + render layers still to wire up.
+
+- **Ant flags** (`ant.rs`): new `is_player: bool` (#[serde(default)]) for the yellow-ant avatar, `follow_leader: Option<u32>` for recruit bonds.
+- **Beacons** (new `player.rs`): `BeaconKind { Gather, Attack }` → layer mapping (`Gather → FoodTrail`, `Attack → Alarm`), `Beacon { id, kind, module_id, position, amount_per_tick, ticks_remaining, owner_colony }`. Persisted via Snapshot (#[serde(default)] so pre-P7 snapshots load with an empty beacon list).
+- **Simulation helpers**: `possess_nearest(colony, module, pos) → Option<u32>`, `player_ant_index() → Option<usize>`, `set_player_heading(f32)`, `recruit_nearby(leader_id, radius, max_count) → u32`, `dismiss_followers(leader_id)`, `place_beacon(kind, module, pos, amount, ticks, owner) → u32`.
+- **Pipeline**: `follower_steering()` (between `sense_and_decide` and `movement`) snaps every bonded ant's heading toward its leader's position; drops the bond if the leader is gone or on a different module. `beacon_tick()` (same slot) deposits each active beacon's layer at its cell and decrements `ticks_remaining`, dropping expired beacons.
+- **`sense_and_decide` guard**: the player avatar's heading is NOT overwritten by the FSM (`if !ant.is_player { ant.heading = new_headings[i]; }`). State transitions still run so food pickup / nest drop-off work.
+- **+4 tests (74 total sim)**: `possess_picks_nearest_non_queen`, `player_heading_is_not_overridden_by_fsm`, `recruit_nearby_bonds_workers_and_they_steer_to_leader`, `beacon_deposits_pheromone_and_expires`.
+
+### Starvation cliff fix (shipped alongside P7)
+- **Bug**: in `colony_economy_tick`, `deaths = (deficit / cost).ceil()` was wiping entire colonies in a single tick. With default `adult_food_consumption=0.01` and 20 workers, one tick of deficit = 0.2 food → 20 deaths. Players saw "63 eggs, 0 workers" after the food reserve ran out — queen kept laying, workers mass-died on the very next tick.
+- **Fix**: clamp starvation deaths to `max(1, ceil(adult_total * 0.05))` per tick — at most 5% of the population dies each tick. Sustained starvation still wipes the colony, but over many ticks, giving foragers time to replenish food. No other behavior changes.
 
 ---
 

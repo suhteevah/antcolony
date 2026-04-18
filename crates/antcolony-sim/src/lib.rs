@@ -13,6 +13,7 @@ pub mod milestones;
 pub mod module;
 pub mod persist;
 pub mod pheromone;
+pub mod player;
 pub mod simulation;
 pub mod spatial;
 pub mod species;
@@ -29,6 +30,7 @@ pub use config::{
 pub use environment::{Climate, Environment, Season, TimeScale};
 pub use error::SimError;
 pub use hazards::{Predator, PredatorKind, PredatorState, Weather};
+pub use player::{Beacon, BeaconKind};
 pub use module::{Module, ModuleId, ModuleKind, PortPos};
 pub use pheromone::{PheromoneGrid, PheromoneLayer};
 pub use simulation::Simulation;

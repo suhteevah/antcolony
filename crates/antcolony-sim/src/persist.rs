@@ -52,6 +52,12 @@ pub struct Snapshot {
     pub next_predator_id: u32,
     #[serde(default)]
     pub weather: crate::hazards::Weather,
+    /// P7: beacon roster. `#[serde(default)]` so pre-P7 snapshots still
+    /// deserialize into an empty beacon list.
+    #[serde(default)]
+    pub beacons: Vec<crate::player::Beacon>,
+    #[serde(default)]
+    pub next_beacon_id: u32,
 }
 
 impl Snapshot {
@@ -76,6 +82,8 @@ impl Snapshot {
             predators: sim.predators.clone(),
             next_predator_id: sim.next_predator_id_value(),
             weather: sim.weather.clone(),
+            beacons: sim.beacons.clone(),
+            next_beacon_id: sim.next_beacon_id_value(),
         }
     }
 }

@@ -57,6 +57,10 @@ pub struct Simulation {
     next_predator_id: u32,
     /// P6: weather timers + cumulative event counters.
     pub weather: crate::hazards::Weather,
+    /// P7: player-placed pheromone beacons.
+    pub beacons: Vec<crate::player::Beacon>,
+    /// Monotonic id generator for new beacons.
+    next_beacon_id: u32,
 }
 
 impl Simulation {
@@ -131,6 +135,8 @@ impl Simulation {
             predators: Vec::new(),
             next_predator_id: 0,
             weather: crate::hazards::Weather::default(),
+            beacons: Vec::new(),
+            next_beacon_id: 0,
         }
     }
 
@@ -228,6 +234,8 @@ impl Simulation {
             predators: Vec::new(),
             next_predator_id: 0,
             weather: crate::hazards::Weather::default(),
+            beacons: Vec::new(),
+            next_beacon_id: 0,
         }
     }
 
@@ -235,6 +243,211 @@ impl Simulation {
     #[inline]
     pub fn next_predator_id_value(&self) -> u32 {
         self.next_predator_id
+    }
+
+    /// Expose the internal beacon-id counter for snapshotting.
+    #[inline]
+    pub fn next_beacon_id_value(&self) -> u32 {
+        self.next_beacon_id
+    }
+
+    /// P7: possess the nearest non-queen ant of the given colony to the
+    /// given world position on the given module. Clears any prior
+    /// `is_player` flag first. Returns the possessed ant's id, or
+    /// `None` if no candidate exists.
+    pub fn possess_nearest(
+        &mut self,
+        colony_id: u8,
+        module: ModuleId,
+        pos: Vec2,
+    ) -> Option<u32> {
+        // Clear any current avatar.
+        for a in self.ants.iter_mut() {
+            a.is_player = false;
+        }
+        let mut best: Option<(f32, usize)> = None;
+        for (i, ant) in self.ants.iter().enumerate() {
+            if ant.colony_id != colony_id
+                || ant.module_id != module
+                || ant.is_in_transit()
+                || matches!(ant.caste, AntCaste::Queen)
+            {
+                continue;
+            }
+            let d2 = (ant.position - pos).length_squared();
+            if best.map(|(bd, _)| d2 < bd).unwrap_or(true) {
+                best = Some((d2, i));
+            }
+        }
+        if let Some((_, idx)) = best {
+            self.ants[idx].is_player = true;
+            let id = self.ants[idx].id;
+            tracing::info!(ant_id = id, colony_id, "possessed ant");
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    /// P7: the current player-avatar ant, if any. Just a helper so the
+    /// render layer doesn't have to loop.
+    pub fn player_ant_index(&self) -> Option<usize> {
+        self.ants.iter().position(|a| a.is_player)
+    }
+
+    /// P7: set the player avatar's heading directly (WASD override).
+    pub fn set_player_heading(&mut self, heading: f32) {
+        if let Some(i) = self.player_ant_index() {
+            self.ants[i].heading = heading;
+        }
+    }
+
+    /// P7: recruit up to `max_count` nearby non-queen, non-transit ants
+    /// of the leader's colony into a follow bond. Returns the number
+    /// actually recruited. Already-bonded ants are replaced; the player
+    /// avatar is never recruited (it's its own master).
+    pub fn recruit_nearby(&mut self, leader_id: u32, radius: f32, max_count: u32) -> u32 {
+        // Find leader first.
+        let Some(leader) = self.ants.iter().find(|a| a.id == leader_id).cloned() else {
+            return 0;
+        };
+        let r2 = radius * radius;
+        // Collect candidate indices sorted by distance.
+        let mut candidates: Vec<(f32, usize)> = self
+            .ants
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| {
+                a.id != leader_id
+                    && a.colony_id == leader.colony_id
+                    && a.module_id == leader.module_id
+                    && !a.is_in_transit()
+                    && !a.is_player
+                    && !matches!(a.caste, AntCaste::Queen)
+            })
+            .map(|(i, a)| ((a.position - leader.position).length_squared(), i))
+            .filter(|(d2, _)| *d2 <= r2)
+            .collect();
+        candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let take = (max_count as usize).min(candidates.len());
+        for &(_, i) in &candidates[..take] {
+            self.ants[i].follow_leader = Some(leader_id);
+        }
+        tracing::info!(leader_id, recruited = take, "recruit_nearby");
+        take as u32
+    }
+
+    /// P7: dismiss any follower bond tied to the given leader.
+    pub fn dismiss_followers(&mut self, leader_id: u32) {
+        let mut released = 0;
+        for a in self.ants.iter_mut() {
+            if a.follow_leader == Some(leader_id) {
+                a.follow_leader = None;
+                released += 1;
+            }
+        }
+        if released > 0 {
+            tracing::info!(leader_id, released, "dismiss_followers");
+        }
+    }
+
+    /// P7: place a pheromone beacon. Returns its id.
+    pub fn place_beacon(
+        &mut self,
+        kind: crate::player::BeaconKind,
+        module_id: ModuleId,
+        pos: Vec2,
+        amount_per_tick: f32,
+        ticks_remaining: u32,
+        owner_colony: u8,
+    ) -> u32 {
+        let id = self.next_beacon_id;
+        self.next_beacon_id += 1;
+        let beacon = crate::player::Beacon {
+            id,
+            kind,
+            module_id,
+            position: pos,
+            amount_per_tick,
+            ticks_remaining,
+            owner_colony,
+        };
+        tracing::info!(
+            id,
+            ?kind,
+            module_id,
+            ticks = ticks_remaining,
+            "place_beacon"
+        );
+        self.beacons.push(beacon);
+        id
+    }
+
+    /// P7 beacon tick: deposit each active beacon's layer at its cell,
+    /// tick down the counter, and drop expired beacons.
+    fn beacon_tick(&mut self) {
+        if self.beacons.is_empty() {
+            return;
+        }
+        let max_intensity = self.config.pheromone.max_intensity;
+        for b in self.beacons.iter_mut() {
+            if b.ticks_remaining == 0 {
+                continue;
+            }
+            let Some(module) = self.topology.try_module(b.module_id) else {
+                b.ticks_remaining = 0;
+                continue;
+            };
+            let (gx, gy) = module.pheromones.world_to_grid(b.position);
+            if !module.pheromones.in_bounds(gx, gy) {
+                b.ticks_remaining = 0;
+                continue;
+            }
+            let (ux, uy) = (gx as usize, gy as usize);
+            drop(module);
+            self.topology.module_mut(b.module_id).pheromones.deposit(
+                ux,
+                uy,
+                b.kind.layer(),
+                b.amount_per_tick,
+                max_intensity,
+            );
+            b.ticks_remaining -= 1;
+        }
+        self.beacons.retain(|b| b.ticks_remaining > 0);
+    }
+
+    /// P7 follower steering: followers' heading gets overridden to
+    /// point at their leader's position each tick. Called between
+    /// sense_and_decide and movement so recruits actually turn.
+    fn follower_steering(&mut self) {
+        // Snapshot leader positions first.
+        use std::collections::HashMap;
+        let mut leader_pos: HashMap<u32, (Vec2, ModuleId)> = HashMap::new();
+        for a in &self.ants {
+            leader_pos.insert(a.id, (a.position, a.module_id));
+        }
+        for ant in self.ants.iter_mut() {
+            let Some(leader_id) = ant.follow_leader else {
+                continue;
+            };
+            if ant.is_in_transit() || ant.is_player {
+                continue;
+            }
+            let Some(&(lpos, lmod)) = leader_pos.get(&leader_id) else {
+                // Leader gone — drop the bond.
+                ant.follow_leader = None;
+                continue;
+            };
+            if lmod != ant.module_id {
+                // Leader left our module — keep bond but don't steer.
+                continue;
+            }
+            let delta = lpos - ant.position;
+            if delta.length_squared() > 0.25 {
+                ant.heading = delta.y.atan2(delta.x);
+            }
+        }
     }
 
     /// P6: spawn a predator on the given module at the given cell.
@@ -296,6 +509,8 @@ impl Simulation {
             predators,
             next_predator_id,
             weather,
+            beacons,
+            next_beacon_id,
         } = snapshot;
 
         // Rebuild pheromone scratch buffers (not serialized).
@@ -317,6 +532,8 @@ impl Simulation {
             predators,
             next_predator_id,
             weather,
+            beacons,
+            next_beacon_id,
         };
         tracing::info!(
             tick = sim.tick,
@@ -658,6 +875,8 @@ impl Simulation {
         self.temperature_tick();
         self.sense_and_decide();
         self.avenger_tick();
+        self.follower_steering();
+        self.beacon_tick();
         self.movement();
         self.combat_tick();
         self.deposit_and_interact();
@@ -764,7 +983,11 @@ impl Simulation {
 
         for (i, ant) in self.ants.iter_mut().enumerate() {
             if !ant.is_in_transit() {
-                ant.heading = new_headings[i];
+                // P7: player avatar keeps its player-set heading; the FSM
+                // still runs so food pickup / nest drop-off work.
+                if !ant.is_player {
+                    ant.heading = new_headings[i];
+                }
                 if let Some(ns) = new_states[i] {
                     ant.transition(ns);
                 }
@@ -2066,7 +2289,14 @@ impl Simulation {
             if colony.food_stored < 0.0 {
                 let deficit = -colony.food_stored;
                 let cost = ccfg.adult_food_consumption.max(1e-6);
-                let mut deaths = (deficit / cost).ceil() as u32;
+                let raw = (deficit / cost).ceil() as u32;
+                // Starvation should be a slow crisis, not a single-tick
+                // cliff: cap deaths to 5% of the adult population per
+                // tick (rounded up, minimum 1). A sustained food deficit
+                // still wipes the colony, but workers have time to find
+                // food / the player has time to intervene.
+                let cap = ((adult_total as f32 * 0.05).ceil() as u32).max(1);
+                let mut deaths = raw.min(cap);
                 if deaths > adult_total {
                     deaths = adult_total;
                 }
@@ -2077,7 +2307,8 @@ impl Simulation {
                         colony_id = colony.id,
                         deaths,
                         adult_total,
-                        "starvation deaths"
+                        raw,
+                        "starvation deaths (capped per tick)"
                     );
                 }
             }
@@ -2431,6 +2662,8 @@ pub fn spawn_initial_ants(
         module_id: 0,
         transit: None,
         is_avenger: false,
+        is_player: false,
+        follow_leader: None,
     });
 
     for i in 0..config.ant.initial_count {
@@ -3336,6 +3569,134 @@ mod tests {
         // worker heads roughly west (cos < 0).
         assert!(sh.cos() > 0.3, "soldier heading should face east, got {}", sh);
         assert!(wh.cos() < -0.3, "worker heading should face west, got {}", wh);
+    }
+
+    // ===================== Phase 7 player-interaction tests =====================
+
+    #[test]
+    fn possess_picks_nearest_non_queen() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new(cfg, 1);
+        // Two workers and a queen.
+        let mut a = Ant::new_worker(7301, 0, Vec2::new(10.0, 10.0), 0.0, 10.0);
+        a.module_id = 0;
+        sim.ants.push(a);
+        let mut b = Ant::new_worker(7302, 0, Vec2::new(20.0, 20.0), 0.0, 10.0);
+        b.module_id = 0;
+        sim.ants.push(b);
+        let mut q = Ant::new_with_caste(
+            7303,
+            0,
+            Vec2::new(11.0, 11.0),
+            0.0,
+            100.0,
+            AntCaste::Queen,
+        );
+        q.module_id = 0;
+        sim.ants.push(q);
+
+        let possessed = sim.possess_nearest(0, 0, Vec2::new(10.5, 10.5));
+        assert_eq!(possessed, Some(7301));
+        assert!(sim.ants.iter().filter(|a| a.is_player).count() == 1);
+        // Repossess somewhere else — old avatar should be released.
+        sim.possess_nearest(0, 0, Vec2::new(19.5, 19.5));
+        assert_eq!(
+            sim.ants.iter().filter(|a| a.is_player).count(),
+            1,
+            "only one avatar at a time"
+        );
+    }
+
+    #[test]
+    fn player_heading_is_not_overridden_by_fsm() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new(cfg, 1);
+        let mut a = Ant::new_worker(7401, 0, Vec2::new(10.0, 10.0), 0.0, 10.0);
+        a.module_id = 0;
+        sim.ants.push(a);
+        sim.possess_nearest(0, 0, Vec2::new(10.0, 10.0));
+        sim.set_player_heading(std::f32::consts::FRAC_PI_2); // north
+        sim.sense_and_decide();
+        // Heading should still be pi/2 even though FSM ran.
+        let pi = sim.player_ant_index().expect("avatar was possessed");
+        let h = sim.ants[pi].heading;
+        assert!(
+            (h - std::f32::consts::FRAC_PI_2).abs() < 1e-4,
+            "player heading must survive sense_and_decide, got {}",
+            h
+        );
+    }
+
+    #[test]
+    fn recruit_nearby_bonds_workers_and_they_steer_to_leader() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new(cfg, 1);
+        // Leader at origin-ish.
+        let mut leader = Ant::new_worker(7501, 0, Vec2::new(10.0, 10.0), 0.0, 10.0);
+        leader.module_id = 0;
+        sim.ants.push(leader);
+        // 4 nearby workers.
+        for i in 0..4u32 {
+            let mut w = Ant::new_worker(
+                7600 + i,
+                0,
+                Vec2::new(12.0 + i as f32 * 0.5, 10.0),
+                std::f32::consts::PI, // facing west, opposite of leader
+                10.0,
+            );
+            w.module_id = 0;
+            sim.ants.push(w);
+        }
+
+        let got = sim.recruit_nearby(7501, 5.0, 3);
+        assert_eq!(got, 3, "should recruit max_count=3");
+        let bonded = sim.ants.iter().filter(|a| a.follow_leader == Some(7501)).count();
+        assert_eq!(bonded, 3);
+
+        // After follower_steering, the bonded workers face east (toward leader).
+        sim.follower_steering();
+        let heads: Vec<f32> = sim
+            .ants
+            .iter()
+            .filter(|a| a.follow_leader == Some(7501))
+            .map(|a| a.heading)
+            .collect();
+        // All 3 should face roughly west (leader is west of them) — cos < 0.
+        for h in heads {
+            assert!(h.cos() < 0.0, "recruit should turn toward leader (west), got {}", h);
+        }
+    }
+
+    #[test]
+    fn beacon_deposits_pheromone_and_expires() {
+        use crate::player::BeaconKind;
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new(cfg, 1);
+
+        let bid = sim.place_beacon(
+            BeaconKind::Attack,
+            0,
+            Vec2::new(5.5, 5.5),
+            3.0,
+            2, // expires after 2 ticks
+            0,
+        );
+        assert_eq!(sim.beacons.len(), 1);
+        sim.beacon_tick();
+        sim.beacon_tick();
+        let alarm = sim
+            .topology
+            .module(0)
+            .pheromones
+            .read(5, 5, PheromoneLayer::Alarm);
+        assert!(alarm > 0.0, "alarm should be > 0 after beacon ticks");
+        // Third tick — beacon should be gone.
+        sim.beacon_tick();
+        assert!(sim.beacons.iter().find(|b| b.id == bid).is_none(), "beacon expired");
     }
 
     // ===================== Phase 6 hazards tests =====================

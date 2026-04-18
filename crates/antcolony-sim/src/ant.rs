@@ -65,6 +65,16 @@ pub struct Ant {
     /// surviving non-queen sibling.
     #[serde(default)]
     pub is_avenger: bool,
+    /// P7: the yellow-ant avatar. Exactly one ant may carry this flag
+    /// at a time. Its heading is set directly by WASD input; the FSM
+    /// does NOT override it while possessed.
+    #[serde(default)]
+    pub is_player: bool,
+    /// P7: when `Some`, this ant is in a recruit bond — each tick its
+    /// heading points at the leader's position (override of FSM).
+    /// Queens and the player avatar ignore the bond.
+    #[serde(default)]
+    pub follow_leader: Option<u32>,
 }
 
 impl Ant {
@@ -94,6 +104,8 @@ impl Ant {
             module_id: 0,
             transit: None,
             is_avenger: false,
+            is_player: false,
+            follow_leader: None,
         }
     }
 
