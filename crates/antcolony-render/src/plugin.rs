@@ -85,6 +85,19 @@ pub(crate) struct PheromoneTextures(pub Vec<(ModuleId, Handle<Image>)>);
 #[derive(Resource)]
 pub(crate) struct TemperatureTextures(pub Vec<(ModuleId, Handle<Image>)>);
 
+/// P4: texture handle for each module's colony-territory overlay.
+#[derive(Resource)]
+pub(crate) struct TerritoryTextures(pub Vec<(ModuleId, Handle<Image>)>);
+
+/// P4: overlay sprite tag — visibility driven by `TerritoryOverlayState`.
+#[derive(Component)]
+pub(crate) struct TerritoryOverlay(pub ModuleId);
+
+#[derive(Resource, Default)]
+struct TerritoryOverlayState {
+    pub visible: bool,
+}
+
 /// World-space (pixel) origin of each module's (0,0) corner, computed at setup.
 #[derive(Resource)]
 pub(crate) struct ModuleLayout(pub Vec<(ModuleId, Vec2)>);
@@ -118,6 +131,7 @@ impl Plugin for RenderPlugin {
             .insert_resource(ClearColor(Color::srgb(0.09, 0.07, 0.05)))
             .insert_resource(OverlayState { visible: true })
             .insert_resource(TempOverlayState { visible: false })
+            .insert_resource(TerritoryOverlayState { visible: false })
             .insert_resource(OverviewState::default())
             .insert_resource(TopologyDirty::default())
             .add_systems(OnEnter(AppState::Running), setup)
@@ -130,8 +144,10 @@ impl Plugin for RenderPlugin {
                     update_food_indicators,
                     update_pheromone_textures,
                     update_temperature_textures,
+                    update_territory_textures,
                     toggle_overlay_input,
                     toggle_temperature_input,
+                    toggle_territory_input,
                     toggle_overview_input,
                     camera_controls,
                 )
@@ -191,6 +207,7 @@ pub(crate) fn spawn_formicarium(
 
     let mut textures: Vec<(ModuleId, Handle<Image>)> = Vec::new();
     let mut temp_textures: Vec<(ModuleId, Handle<Image>)> = Vec::new();
+    let mut territory_textures: Vec<(ModuleId, Handle<Image>)> = Vec::new();
 
     let nest_mat = materials.add(Color::srgb(0.55, 0.35, 0.15));
     let food_mat = materials.add(Color::srgb(0.15, 0.85, 0.2));
@@ -308,6 +325,35 @@ pub(crate) fn spawn_formicarium(
             FormicariumEntity,
         ));
         temp_textures.push((mid, ttex));
+
+        // P4 territory overlay texture. Starts hidden; `G` toggles.
+        let mut gimg = Image::new_fill(
+            Extent3d {
+                width: mw,
+                height: mh,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0u8, 0, 0, 0],
+            TextureFormat::Rgba8UnormSrgb,
+            bevy::render::render_asset::RenderAssetUsages::RENDER_WORLD
+                | bevy::render::render_asset::RenderAssetUsages::MAIN_WORLD,
+        );
+        gimg.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+        let gtex = images.add(gimg);
+        commands.spawn((
+            Sprite {
+                image: gtex.clone(),
+                custom_size: Some(Vec2::new(mww, mhh)),
+                color: Color::srgba(1.0, 1.0, 1.0, 0.55),
+                ..default()
+            },
+            Transform::from_xyz(origin.x + mww * 0.5, origin.y + mhh * 0.5, -0.4),
+            TerritoryOverlay(mid),
+            Visibility::Hidden,
+            FormicariumEntity,
+        ));
+        territory_textures.push((mid, gtex));
 
         // Food: berry-cluster (dark base + bright core + tiny highlight).
         // Nest entrance: crater (dark rim / shadow / pit / bright inner dot).
@@ -545,6 +591,7 @@ pub(crate) fn spawn_formicarium(
 
     commands.insert_resource(PheromoneTextures(textures));
     commands.insert_resource(TemperatureTextures(temp_textures));
+    commands.insert_resource(TerritoryTextures(territory_textures));
     commands.insert_resource(ModuleLayout(layout.clone()));
 
     tracing::info!(
@@ -976,6 +1023,77 @@ fn toggle_temperature_input(
     if keys.just_pressed(KeyCode::KeyT) {
         overlay.visible = !overlay.visible;
         tracing::info!(visible = overlay.visible, "temperature overlay toggled");
+    }
+}
+
+/// P4: paint each module's territory overlay. Signed colony_scent maps
+/// to a colour wash: positive (colony 0) → the species' chosen colour
+/// at reduced saturation; negative (colony 1) → rust red. Alpha scales
+/// with |value|/max.
+fn update_territory_textures(
+    sim: Res<SimulationState>,
+    textures: Option<Res<TerritoryTextures>>,
+    mut images: ResMut<Assets<Image>>,
+    overlay: Res<TerritoryOverlayState>,
+    mut q: Query<&mut Visibility, With<TerritoryOverlay>>,
+) {
+    for mut v in q.iter_mut() {
+        *v = if overlay.visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+    if !overlay.visible {
+        return;
+    }
+    let Some(textures) = textures else {
+        return;
+    };
+    let max = sim.sim.config.pheromone.max_intensity.max(0.001);
+    // Species colour for colony 0's tint, red for colony 1.
+    let species = crate::picker::parse_hex(&sim.species.appearance.color_hex);
+    let s0 = species.to_srgba();
+    let (r0, g0, b0) = (s0.red, s0.green, s0.blue);
+    // Colony 1 territory: bright rust.
+    let (r1, g1, b1) = (0.85f32, 0.18, 0.12);
+
+    for (mid, handle) in &textures.0 {
+        let Some(img) = images.get_mut(handle) else {
+            continue;
+        };
+        let Some(module) = sim.sim.topology.try_module(*mid) else {
+            continue;
+        };
+        let w = module.pheromones.width;
+        let h = module.pheromones.height;
+        let scent = &module.pheromones.colony_scent;
+        let data = &mut img.data;
+        data.resize(w * h * 4, 0);
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                let v = scent[i];
+                let mag = (v.abs() / max).clamp(0.0, 1.0);
+                let (r, g, b) = if v >= 0.0 { (r0, g0, b0) } else { (r1, g1, b1) };
+                let alpha = (mag * 200.0).clamp(0.0, 200.0) as u8;
+                let o = i * 4;
+                data[o] = (r * 255.0) as u8;
+                data[o + 1] = (g * 255.0) as u8;
+                data[o + 2] = (b * 255.0) as u8;
+                data[o + 3] = alpha;
+            }
+        }
+    }
+}
+
+fn toggle_territory_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut overlay: ResMut<TerritoryOverlayState>,
+) {
+    if keys.just_pressed(KeyCode::KeyG) {
+        overlay.visible = !overlay.visible;
+        tracing::info!(visible = overlay.visible, "territory overlay toggled");
     }
 }
 

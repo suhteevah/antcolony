@@ -605,6 +605,7 @@ impl Simulation {
         self.movement();
         self.combat_tick();
         self.deposit_and_interact();
+        self.territory_deposit_tick();
         self.feeding_dish_tick();
         self.red_ai_tick();
         self.colony_economy_tick();
@@ -1129,6 +1130,34 @@ impl Simulation {
         idxs.sort_unstable();
         for i in idxs.into_iter().rev() {
             self.ants.swap_remove(i);
+        }
+    }
+
+    /// P4 territory: each non-transit, non-diapause ant leaves a small
+    /// signed mark on its cell's `ColonyScent` layer. Sign is determined
+    /// by `colony_id` (0 = positive, any other = negative). Combined
+    /// with the existing evaporate + diffuse, this produces smooth
+    /// territory blobs that shrink when a colony pulls out of an area.
+    fn territory_deposit_tick(&mut self) {
+        const DEPOSIT_AMOUNT: f32 = 0.08;
+        let cap = self.config.pheromone.max_intensity;
+        for ant in &self.ants {
+            if ant.is_in_transit() || ant.state == AntState::Diapause {
+                continue;
+            }
+            let module = self.topology.module(ant.module_id);
+            let (gx, gy) = module.pheromones.world_to_grid(ant.position);
+            if !module.pheromones.in_bounds(gx, gy) {
+                continue;
+            }
+            let (ux, uy) = (gx as usize, gy as usize);
+            self.topology.module_mut(ant.module_id).pheromones.deposit_territory(
+                ux,
+                uy,
+                ant.colony_id,
+                DEPOSIT_AMOUNT,
+                cap,
+            );
         }
     }
 
@@ -2826,6 +2855,24 @@ mod tests {
         // worker heads roughly west (cos < 0).
         assert!(sh.cos() > 0.3, "soldier heading should face east, got {}", sh);
         assert!(wh.cos() < -0.3, "worker heading should face west, got {}", wh);
+    }
+
+    #[test]
+    fn territory_deposits_signed_by_colony() {
+        let mut sim = two_colony_sim_for_combat();
+        // Stand a black worker on module 1 (outworld), cell (5,5).
+        place_combatant(&mut sim, 9701, 0, Vec2::new(5.5, 5.5), AntCaste::Worker, 10.0);
+        // Stand a red worker on module 1, cell (20, 20).
+        place_combatant(&mut sim, 9702, 1, Vec2::new(20.5, 20.5), AntCaste::Worker, 10.0);
+
+        for _ in 0..40 {
+            sim.territory_deposit_tick();
+        }
+        let m = sim.topology.module(1);
+        let black = m.pheromones.read(5, 5, PheromoneLayer::ColonyScent);
+        let red = m.pheromones.read(20, 20, PheromoneLayer::ColonyScent);
+        assert!(black > 0.0, "black cell should be positive, got {}", black);
+        assert!(red < 0.0, "red cell should be negative, got {}", red);
     }
 
     #[test]

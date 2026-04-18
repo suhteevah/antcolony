@@ -8,7 +8,7 @@ This document contains everything needed to implement the ant colony simulation 
 2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 (sim + render + alarm + Avenger) complete.** 61 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 4 is playable: `V` in the picker launches the two-colony arena (black vs red AI), red ants render in a distinct rust tint, soldiers converge on alarm trails while workers flee, one avenger per AI colony hunts the nearest player ant and transfers the role on death. Territory overlay still to do.
+🟢 **Phases 1-3 + K1-K5 + P4 complete.** 62 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 4 is playable end-to-end: `V` in the picker launches the two-colony arena (black vs red AI), red ants render in a distinct rust tint, soldiers converge on alarm trails while workers flee, one avenger per AI colony hunts the nearest player ant and transfers the role on death, and `G` toggles a territory overlay driven by signed colony-scent.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -38,8 +38,8 @@ None.
 ## What's Next
 Priority order for next session:
 
-1. **P4 render + UI follow-ups** — territory overlay driven by the `ColonyScent` pheromone layer (deposit + visualize per-colony tile control), combat kill banner/sfx, per-colony panel split rather than a single line. Avenger highlight sprite (small crown / ring).
-2. **P4 sim polish** — per-colony nuptial flight attribution (currently nuptial_flight_tick only books stats on `colonies[0]`). Currently Avenger tracks nearest enemy; upgrade to track highest-food-carried or oldest worker for the "most valuable" behavior.
+1. **Phase 5 — underground nest layer** (next main-game phase): diggable tunnels, chambers (FoodStorage / BroodNursery / QueenChamber / Waste), Tab-key view toggle between surface and underground, ants transition between layers via nest entrances. Sim-side `WorldGrid::cells` can stay; a separate underground grid per colony will need a new component on `Module` or a new `ModuleKind::Underground`.
+2. **P4 polish** (optional before Phase 5) — combat kill banner/sfx, Avenger highlight sprite (crown/ring), per-colony panel split in the HUD, per-colony nuptial flight attribution (currently `nuptial_flight_tick` only books stats on `colonies[0]`), upgrade Avenger targeting from nearest-enemy to highest-food-carried ("most valuable" mechanic).
 3. **K5 follow-up** — when a nuptial flight succeeds, actually spawn a new `ColonyState` + nest module in the topology rather than just bumping `daughter_colonies_founded`. Blocker was keeping the milestone-tracker `seen_counts` keyed by vector position; now even more relevant since Phase 4 already proves multi-colony state works.
 4. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
 
@@ -202,6 +202,11 @@ Priority order for next session:
 - **Avenger** (`simulation.rs::avenger_tick`, called between `sense_and_decide` and `movement`). Every AI-controlled colony keeps exactly one ant tagged `Ant.is_avenger = true`. Promotion happens at two-colony spawn (first non-queen red ant) and inside `avenger_tick` if the role is vacant (random surviving non-queen non-transit ant in that colony). Each tick the avenger's heading is pointed at the nearest enemy ant on its module (queens ignored; tube-transit ants ignored). State/FSM is untouched — the avenger still lays trails, still fights, still returns food; only its heading is overridden when an enemy is in sight.
 - **Serde**: `Ant.is_avenger` is `#[serde(default)]` so existing K4 snapshots still load (the flag comes back as false; `avenger_tick` re-promotes on load).
 - **+3 tests (61 total sim)**: `soldier_steers_toward_alarm_worker_steers_away` (direct helper check with east-facing alarm blob), `avenger_is_assigned_and_tracks_enemy` (spawn an enemy east of the avenger, assert avenger heading points east after one tick), `avenger_role_transfers_when_killed` (swap_remove the avenger, verify a replacement is promoted).
+
+### P4 territory overlay (this session)
+- **Sim**: existing `PheromoneLayer::ColonyScent` repurposed as signed per-colony territory scalar. Colony 0 deposits positive, colony 1+ deposits negative via new `PheromoneGrid::deposit_territory`. `Simulation::territory_deposit_tick` runs each tick after `deposit_and_interact`; each non-transit non-Diapause ant drops `0.08` of signed scent on its cell (clamped to ±`max_intensity`). `PheromoneGrid::evaporate` updated to `v.abs() < threshold` so the negative half of the scale decays correctly.
+- **Render**: new `TerritoryTextures` resource + `TerritoryOverlay` component following the `TemperatureOverlay` / `PheromoneOverlay` pattern. Toggle with `G` (starts hidden). Colour wash uses the species' chosen colour for positive scent (colony 0) and bright rust for negative scent (colony 1+). Alpha scales with `|scent|/max` up to ~0.78.
+- **+1 test (62 total sim)**: `territory_deposits_signed_by_colony` stands one ant from each colony on distinct cells on the shared outworld, runs 40 deposit ticks, asserts the colony 0 cell is positive and the colony 1 cell is negative.
 
 ---
 

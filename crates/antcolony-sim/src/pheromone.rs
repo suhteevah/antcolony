@@ -112,6 +112,11 @@ impl PheromoneGrid {
     }
 
     /// Exponential decay per tick, clamp near-zero to zero for sparsity.
+    ///
+    /// Uses `v.abs() < threshold` so it works correctly for the signed
+    /// `colony_scent` layer (P4 territory): negative red-colony territory
+    /// values still decay toward zero rather than being clipped on the
+    /// wrong side.
     pub fn evaporate(&mut self, rate: f32, threshold: f32) {
         let k = 1.0 - rate;
         for slice in [
@@ -122,11 +127,25 @@ impl PheromoneGrid {
         ] {
             for v in slice.iter_mut() {
                 *v *= k;
-                if *v < threshold {
+                if v.abs() < threshold {
                     *v = 0.0;
                 }
             }
         }
+    }
+
+    /// P4 territory: colony-signed deposit into `colony_scent`. Colony 0
+    /// adds positive, colony 1 adds negative — so a single f32 per cell
+    /// resolves to "which colony dominates this tile" by sign.
+    /// Amplitude is clamped to ±`cap`.
+    pub fn deposit_territory(&mut self, x: usize, y: usize, colony_id: u8, amount: f32, cap: f32) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let i = self.idx(x, y);
+        let signed = if colony_id == 0 { amount } else { -amount };
+        let v = (self.colony_scent[i] + signed).clamp(-cap, cap);
+        self.colony_scent[i] = v;
     }
 
     /// 5-point Laplacian diffusion, double-buffered. Applied to every layer.
