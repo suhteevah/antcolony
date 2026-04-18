@@ -8,7 +8,7 @@ This document contains everything needed to implement the ant colony simulation 
 2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) complete.** 65 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 5 MVP: each starter/arena nest auto-spawns an UndergroundNest module (queen + brood + food-storage + waste chambers pre-carved, rest Solid earth), ants in `AntState::Digging` excavate adjacent Solid cells, Solid terrain blocks movement, Tab swaps the camera between surface and underground layers. Chamber-type-colored tiles render on the underground view.
+🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 (sim core) complete.** 70 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 6 sim: spider predator with Patrol→Hunt→Eat FSM, antlion stationary kill-tile, rain event wipes surface pheromones and floods underground bottom-row cells, lawnmower sweeps a warning-then-blade line across a surface module killing ants in its path. Predator render sprites still to do.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -39,7 +39,7 @@ None.
 Priority order for next session:
 
 1. **P5 follow-ups** — ants transitioning *between* layers via the nest entrance (currently surface and underground are disjoint — diggers that happen to be on the underground module stay there; there's no teleport-down mechanic yet). Auto-assign some workers to `AntState::Digging` when `behavior_weights.dig > 0` so excavation actually happens without a player tool. Underground pheromone trails are isolated (no port-bleed) — decide whether that's the desired behavior. Render: per-cell tile sprites for Chambers at ~0.5 alpha are readable but could use the chamber labels / icons on top.
-2. **Phase 6 — hazards + predators**: spider (patrol→hunt→eat→patrol), antlion (stationary pit, permanent kill), rain (wipes surface pheromones + floods lowest underground chambers), lawnmower (kills surface ants in a sweep). Telegraphed with warning period.
+2. **P6 render**: spider and antlion sprites (one per predator, position-synced each frame), rain overlay (blue wash on surface modules while `weather.rain_ticks_remaining > 0`), lawnmower warning banner + blade indicator during sweep. Sim is already in — render is the last P6 leg.
 3. **P4 polish** — combat kill banner/sfx, Avenger highlight sprite (crown/ring), per-colony panel split in the HUD, per-colony nuptial flight attribution (currently `nuptial_flight_tick` only books stats on `colonies[0]`), upgrade Avenger targeting from nearest-enemy to highest-food-carried ("most valuable" mechanic).
 3. **K5 follow-up** — when a nuptial flight succeeds, actually spawn a new `ColonyState` + nest module in the topology rather than just bumping `daughter_colonies_founded`. Blocker was keeping the milestone-tracker `seen_counts` keyed by vector position; now even more relevant since Phase 4 already proves multi-colony state works.
 4. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
@@ -230,6 +230,29 @@ Priority order for next session:
 - `UndergroundNest` modules are not reachable from editor palette (locked). Editor can still drag-place them via the existing API, but the palette button greys out.
 - `port_bleed` doesn't run between surface and underground layers — underground nests are pheromone-isolated. Fine for MVP; may want to change later when layer transition exists.
 - Render tile sprites use 2D `Sprite`s for each non-Empty terrain cell. At starter scale (~40x24 underground) that's ~800 sprites per underground module; fine. Would become a hot spot at 512x512 — revisit as a single texture if Phase 8 scales world size up.
+
+## Phase 6 — Hazards + Predators (sim core COMPLETE; render pending)
+
+**Something to fear.** The colony now has predators and weather events pressuring it.
+
+- **Data model** (new file `crates/antcolony-sim/src/hazards.rs`): `PredatorKind { Spider, Antlion }`, `PredatorState { Patrol, Hunt { target_ant_id }, Eat { remaining_ticks }, Dead { respawn_in_ticks } }`, `Predator { id, kind, module_id, position, heading, state, health }`, `Weather { rain_ticks_remaining, last_rain_start_tick, lawnmower_warning_remaining, lawnmower_sweep_remaining, lawnmower_module, lawnmower_y, total_mower_kills, total_rain_events }`. All derive Serialize/Deserialize. Exported from `lib.rs`.
+- **`HazardConfig`** (`config.rs`): `spider_speed` (3.0), `spider_attack` (4.0), `spider_health` (40.0), `spider_sense_radius` (8.0), `spider_eat_ticks` (60), `spider_respawn_ticks` (600), `spider_corpse_food_units` (6), `rain_period_ticks` (0 = never by default), `rain_duration_ticks` (120), `rain_flood_damage` (0.5), `lawnmower_period_ticks` (0 = never), `lawnmower_warning_ticks` (60), `lawnmower_speed` (1.0), `lawnmower_half_width` (1.2). Defaults shipped as **opt-in** — rain + mower are `0` so existing Keeper sims don't start spawning events unprompted. Tests + future hazard-enabled sims set these explicitly.
+- **`Simulation::spawn_predator(kind, module_id, pos)` → `u32`**: external helper; tests use it, and future gameplay will seed spiders via spawn events.
+- **`Simulation::hazards_tick`** (runs after `red_ai_tick`, before `colony_economy_tick`): iterates predators, drives per-kind FSM, batches ant-deaths, runs `weather_tick`. Deaths drop `Terrain::Food(corpse_food_units)` + `alarm_deposit_on_death` pheromone at the victim cell (same recipe as Phase 4 combat), decrement the right population counter, then swap_remove.
+- **Spider FSM** (`spider_tick`): picks the nearest non-transit non-queen ant on the same module within `spider_sense_radius` → enters Hunt, steers toward them at `spider_speed`. Inside 1.0 cell → records a kill and enters Eat for `spider_eat_ticks`. Eat blocks all other behavior until the timer expires. No target → Patrol (random wander with `±0.3` turn jitter, half-speed). On `Dead { respawn_in_ticks }` → ticks down, respawns at last position with full health if `spider_respawn_ticks > 0`.
+- **Antlion** (`antlion_tick`): stationary. Any non-queen, non-transit ant whose distance to the antlion ≤ 0.75 cells dies. Antlions have `health = f32::INFINITY` — never destructible in MVP.
+- **Rain** (`weather_tick`): every `rain_period_ticks` the event starts, lasts `rain_duration_ticks`. While active, all three trail layers (FoodTrail/HomeTrail/Alarm) on every non-UndergroundNest module are zeroed per-tick. Ants standing in the bottom row (`y < 1.0`) of any UndergroundNest module take `rain_flood_damage` per tick. ColonyScent (territory) is preserved — it's not a surface trail.
+- **Lawnmower** (`weather_tick`): every `lawnmower_period_ticks` a warning period begins (`lawnmower_warning_ticks`). When the warning ends the blade starts sweeping south→north through the first surface module at `lawnmower_speed` cells/tick, killing any non-queen ant whose `|y - blade_y| ≤ lawnmower_half_width`. Kills tracked on `weather.total_mower_kills`.
+- **Snapshot** (`persist.rs`): `Snapshot` gained `predators` (`#[serde(default)]`), `next_predator_id`, `weather` (`#[serde(default)]`). Pre-P6 snapshots load cleanly — predators default to empty vec, weather default to zero timers.
+- **+5 tests (70 total sim)**: `antlion_kills_ant_on_its_cell`, `spider_hunts_and_eats_nearby_ant` (spider closes distance, bites, enters Eat), `rain_wipes_surface_pheromones_and_leaves_underground` (surface pheromones → 0 after a rain fires, underground preserved), `lawnmower_warns_then_sweeps_and_kills_surface_ants` (full warning + sweep timeline, some ants die), `dead_spider_respawns_after_cooldown` (Dead → Patrol via `respawn_in_ticks`).
+
+**Notes / deferred:**
+- No render: predators don't have sprites yet. Running a hazard-enabled sim with `cargo run` shows nothing visual for the spider — you see the ant kills happen (ants vanish, corpses + alarm deposit at death sites) but no spider silhouette. Render is the next P6 step.
+- Predators are not auto-spawned in any starter — tests seed them directly via `spawn_predator`. A future `from_species_with_hazards` (or just setting the hazards config + seeding via an editor tool) will add them to gameplay sims.
+- Spider respawns at its *last position* when killed. No "respawn elsewhere" logic yet.
+- Lawnmower picks `surface_mods.first()` — always the same module. If the sim has more than one non-underground module (e.g. outworld + feeder), later passes could randomize this.
+- Rain flood damage hits only `y < 1.0` (cell-space), i.e. the very bottom row of each underground module. Spec said "lowest chambers" — this approximation is good enough for MVP since carved chambers are well off the bottom row.
+- Combat + predator deaths both deposit `combat.alarm_deposit_on_death`. Keeps the behaviors consistent (a dying ant signals danger regardless of who killed it).
 
 ---
 

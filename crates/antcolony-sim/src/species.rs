@@ -225,6 +225,7 @@ impl Species {
             ant,
             colony,
             combat,
+            hazards: crate::config::HazardConfig::default(),
         };
 
         tracing::info!(

@@ -51,6 +51,12 @@ pub struct Simulation {
     /// K3: in-game seconds elapsed per sim tick. Default 1.0; set by
     /// `set_environment` to `time_scale.multiplier() / tick_rate_hz`.
     pub in_game_seconds_per_tick: f32,
+    /// P6: predator agents (spiders, antlions) living on modules.
+    pub predators: Vec<crate::hazards::Predator>,
+    /// Monotonic id generator for newly spawned predators.
+    next_predator_id: u32,
+    /// P6: weather timers + cumulative event counters.
+    pub weather: crate::hazards::Weather,
 }
 
 impl Simulation {
@@ -122,6 +128,9 @@ impl Simulation {
             next_ant_id,
             climate: Climate::default(),
             in_game_seconds_per_tick: 1.0,
+            predators: Vec::new(),
+            next_predator_id: 0,
+            weather: crate::hazards::Weather::default(),
         }
     }
 
@@ -216,7 +225,48 @@ impl Simulation {
             next_ant_id,
             climate: Climate::default(),
             in_game_seconds_per_tick: 1.0,
+            predators: Vec::new(),
+            next_predator_id: 0,
+            weather: crate::hazards::Weather::default(),
         }
+    }
+
+    /// Expose the internal predator-id counter for snapshotting.
+    #[inline]
+    pub fn next_predator_id_value(&self) -> u32 {
+        self.next_predator_id
+    }
+
+    /// P6: spawn a predator on the given module at the given cell.
+    /// Returns the new predator id.
+    pub fn spawn_predator(
+        &mut self,
+        kind: crate::hazards::PredatorKind,
+        module_id: ModuleId,
+        pos: Vec2,
+    ) -> u32 {
+        use crate::hazards::{Predator, PredatorState};
+        let id = self.next_predator_id;
+        self.next_predator_id += 1;
+        let health = match kind {
+            crate::hazards::PredatorKind::Spider => self.config.hazards.spider_health,
+            // Antlions are indestructible from combat — only the game
+            // mechanic of "an ant clears the pit" removes them. For MVP
+            // antlions live forever.
+            crate::hazards::PredatorKind::Antlion => f32::INFINITY,
+        };
+        let predator = Predator {
+            id,
+            kind,
+            module_id,
+            position: pos,
+            heading: 0.0,
+            state: PredatorState::Patrol,
+            health,
+        };
+        tracing::info!(id, ?kind, module_id, ?pos, "predator spawned");
+        self.predators.push(predator);
+        id
     }
 
     /// Expose the internal ant-id counter for snapshotting.
@@ -243,6 +293,9 @@ impl Simulation {
             ants,
             colonies,
             saved_at_unix_secs: _,
+            predators,
+            next_predator_id,
+            weather,
         } = snapshot;
 
         // Rebuild pheromone scratch buffers (not serialized).
@@ -261,6 +314,9 @@ impl Simulation {
             next_ant_id,
             climate,
             in_game_seconds_per_tick,
+            predators,
+            next_predator_id,
+            weather,
         };
         tracing::info!(
             tick = sim.tick,
@@ -609,6 +665,7 @@ impl Simulation {
         self.feeding_dish_tick();
         self.dig_tick();
         self.red_ai_tick();
+        self.hazards_tick();
         self.colony_economy_tick();
 
         let evap_rate = self.config.pheromone.evaporation_rate;
@@ -1143,6 +1200,370 @@ impl Simulation {
         idxs.sort_unstable();
         for i in idxs.into_iter().rev() {
             self.ants.swap_remove(i);
+        }
+    }
+
+    /// P6: drive every predator one tick + run weather events.
+    ///
+    /// Spiders: Patrol (random wander) → Hunt (steer toward nearest
+    /// enemy ant, i.e. any ant on the same module) → Eat (hold for
+    /// `spider_eat_ticks`, during which the spider is stationary and
+    /// one ant has been removed). If a spider's health reaches 0 it
+    /// enters `Dead` with `spider_respawn_ticks` cooldown, then respawns
+    /// at its last position. A dead spider also drops food at its cell.
+    ///
+    /// Antlions: stationary. Any non-queen ant on the same cell dies.
+    /// Antlions don't take damage from ants in this MVP (they're
+    /// permanent environmental hazards).
+    ///
+    /// Weather: advances rain/lawnmower timers + triggers new events at
+    /// their configured periods.
+    pub fn hazards_tick(&mut self) {
+        use crate::hazards::{PredatorKind, PredatorState};
+        let cfg = self.config.hazards.clone();
+        let pcfg = self.config.pheromone.clone();
+        let combat = self.config.combat.clone();
+
+        // --- 1. Advance predator FSMs. ---
+        let mut killed_ants: Vec<usize> = Vec::new();
+
+        for pi in 0..self.predators.len() {
+            let predator = self.predators[pi].clone();
+            match predator.kind {
+                PredatorKind::Spider => self.spider_tick(pi, &cfg, &mut killed_ants),
+                PredatorKind::Antlion => self.antlion_tick(pi, &mut killed_ants),
+            }
+        }
+
+        // --- 2. Resolve ant deaths (antlion + spider eat). Duplicates
+        //       are possible if two predators targeted the same ant; a
+        //       HashSet de-dupes. ---
+        if !killed_ants.is_empty() {
+            killed_ants.sort_unstable();
+            killed_ants.dedup();
+            // Drop corpses + alarm at the victim cells before removing.
+            for &idx in killed_ants.iter().rev() {
+                if idx >= self.ants.len() {
+                    continue;
+                }
+                let ant = &self.ants[idx];
+                let module = self.topology.module_mut(ant.module_id);
+                let (gx, gy) = module.world.world_to_grid(ant.position);
+                if module.world.in_bounds(gx, gy) {
+                    let (ux, uy) = (gx as usize, gy as usize);
+                    if module.world.get(ux, uy) == Terrain::Empty && combat.corpse_food_units > 0 {
+                        module.world.set(ux, uy, Terrain::Food(combat.corpse_food_units));
+                    }
+                    module.pheromones.deposit(
+                        ux,
+                        uy,
+                        PheromoneLayer::Alarm,
+                        combat.alarm_deposit_on_death,
+                        pcfg.max_intensity,
+                    );
+                }
+                // Decrement population counts on the victim's colony.
+                let cid = ant.colony_id;
+                let caste = ant.caste;
+                for c in self.colonies.iter_mut() {
+                    if c.id == cid {
+                        match caste {
+                            AntCaste::Worker => c.population.workers = c.population.workers.saturating_sub(1),
+                            AntCaste::Soldier => c.population.soldiers = c.population.soldiers.saturating_sub(1),
+                            AntCaste::Breeder => c.population.breeders = c.population.breeders.saturating_sub(1),
+                            AntCaste::Queen => c.queen_health = 0.0,
+                        }
+                    }
+                }
+                self.ants.swap_remove(idx);
+            }
+            tracing::info!(
+                tick = self.tick,
+                deaths = killed_ants.len(),
+                "hazards_tick: predator kills resolved"
+            );
+        }
+
+        // --- 3. Tick spider respawn timers / drop corpses. ---
+        for p in self.predators.iter_mut() {
+            if let PredatorState::Dead { respawn_in_ticks } = p.state {
+                if respawn_in_ticks > 0 {
+                    p.state = PredatorState::Dead { respawn_in_ticks: respawn_in_ticks - 1 };
+                } else if cfg.spider_respawn_ticks > 0 {
+                    p.state = PredatorState::Patrol;
+                    p.health = cfg.spider_health;
+                    tracing::info!(id = p.id, "spider respawned");
+                }
+            }
+        }
+
+        // --- 4. Weather events. ---
+        self.weather_tick(&cfg);
+    }
+
+    fn spider_tick(
+        &mut self,
+        idx: usize,
+        cfg: &crate::config::HazardConfig,
+        killed: &mut Vec<usize>,
+    ) {
+        use crate::hazards::PredatorState;
+        let predator = self.predators[idx].clone();
+        // Dead spiders skip — respawn is handled in step 3.
+        if matches!(predator.state, PredatorState::Dead { .. }) {
+            return;
+        }
+
+        // Currently eating? Just tick down the timer.
+        if let PredatorState::Eat { remaining_ticks } = predator.state {
+            let next = remaining_ticks.saturating_sub(1);
+            self.predators[idx].state = if next == 0 {
+                PredatorState::Patrol
+            } else {
+                PredatorState::Eat { remaining_ticks: next }
+            };
+            return;
+        }
+
+        // Find nearest ant on the spider's module.
+        let module = self.topology.module(predator.module_id);
+        let mw = module.width() as f32;
+        let mh = module.height() as f32;
+        let mut nearest: Option<(f32, usize, u32)> = None;
+        for (ai, ant) in self.ants.iter().enumerate() {
+            if ant.module_id != predator.module_id || ant.is_in_transit() {
+                continue;
+            }
+            if matches!(ant.caste, AntCaste::Queen) {
+                continue;
+            }
+            let d2 = (ant.position - predator.position).length_squared();
+            if nearest.map(|(bd, _, _)| d2 < bd).unwrap_or(true) {
+                nearest = Some((d2, ai, ant.id));
+            }
+        }
+
+        let sense_r2 = cfg.spider_sense_radius * cfg.spider_sense_radius;
+        let mut new_state = predator.state;
+        let mut new_pos = predator.position;
+        let mut new_heading = predator.heading;
+
+        match nearest {
+            Some((d2, ai, aid)) if d2 <= sense_r2 => {
+                // Ant detected in range → hunt mode.
+                let delta = self.ants[ai].position - predator.position;
+                let dist = delta.length().max(0.001);
+                new_heading = delta.y.atan2(delta.x);
+                new_state = PredatorState::Hunt { target_ant_id: aid };
+
+                if dist <= 1.0 {
+                    // Close enough to bite — eat the ant.
+                    killed.push(ai);
+                    new_state = PredatorState::Eat {
+                        remaining_ticks: cfg.spider_eat_ticks.max(1),
+                    };
+                    tracing::info!(
+                        spider = predator.id,
+                        ant_id = aid,
+                        "spider ate an ant"
+                    );
+                } else {
+                    // Chase.
+                    let step = cfg.spider_speed.min(dist);
+                    new_pos = predator.position + (delta / dist) * step;
+                }
+            }
+            _ => {
+                // No target — patrol: small random-wander step.
+                if matches!(predator.state, PredatorState::Patrol) {
+                    let turn = self.rng.gen_range(-0.3f32..0.3);
+                    new_heading = predator.heading + turn;
+                } else {
+                    // Just dropped Hunt (target gone) — revert to patrol.
+                    new_state = PredatorState::Patrol;
+                }
+                let step = cfg.spider_speed * 0.5;
+                new_pos = predator.position
+                    + Vec2::new(new_heading.cos(), new_heading.sin()) * step;
+            }
+        }
+
+        // Clamp to module bounds.
+        new_pos.x = new_pos.x.clamp(0.5, mw - 0.5);
+        new_pos.y = new_pos.y.clamp(0.5, mh - 0.5);
+
+        let p = &mut self.predators[idx];
+        p.position = new_pos;
+        p.heading = new_heading;
+        p.state = new_state;
+    }
+
+    fn antlion_tick(&mut self, idx: usize, killed: &mut Vec<usize>) {
+        let p = &self.predators[idx];
+        let pos = p.position;
+        let mod_id = p.module_id;
+        // Any non-queen ant on the antlion's grid cell dies.
+        for (ai, ant) in self.ants.iter().enumerate() {
+            if ant.module_id != mod_id || ant.is_in_transit() {
+                continue;
+            }
+            if matches!(ant.caste, AntCaste::Queen) {
+                continue;
+            }
+            if (ant.position - pos).length() <= 0.75 {
+                killed.push(ai);
+                tracing::info!(
+                    antlion = p.id,
+                    ant_id = ant.id,
+                    "antlion claimed an ant"
+                );
+            }
+        }
+    }
+
+    /// P6 weather: drive rain and lawnmower timers + apply effects.
+    fn weather_tick(&mut self, cfg: &crate::config::HazardConfig) {
+        // --- Rain ---
+        if cfg.rain_period_ticks > 0 {
+            let time_to_rain = self.tick
+                .saturating_sub(self.weather.last_rain_start_tick)
+                >= cfg.rain_period_ticks;
+            let no_rain_yet = self.weather.last_rain_start_tick == 0 && self.weather.total_rain_events == 0;
+            let should_start = self.weather.rain_ticks_remaining == 0
+                && cfg.rain_duration_ticks > 0
+                && (time_to_rain || no_rain_yet);
+            if should_start && self.tick > cfg.rain_period_ticks.saturating_sub(1) {
+                self.weather.rain_ticks_remaining = cfg.rain_duration_ticks;
+                self.weather.last_rain_start_tick = self.tick;
+                self.weather.total_rain_events += 1;
+                tracing::warn!(
+                    tick = self.tick,
+                    duration = cfg.rain_duration_ticks,
+                    "rain event triggered — surface pheromones clearing"
+                );
+            }
+        }
+
+        if self.weather.rain_ticks_remaining > 0 {
+            self.weather.rain_ticks_remaining -= 1;
+            // Wipe all pheromones on surface (non-UndergroundNest) modules.
+            for m in self.topology.modules.iter_mut() {
+                if m.kind != crate::module::ModuleKind::UndergroundNest {
+                    for slice in [
+                        &mut m.pheromones.food_trail,
+                        &mut m.pheromones.home_trail,
+                        &mut m.pheromones.alarm,
+                    ] {
+                        for v in slice.iter_mut() {
+                            *v = 0.0;
+                        }
+                    }
+                }
+            }
+            // Flood: any ant on the bottom row of any UndergroundNest
+            // module takes damage.
+            let dmg = cfg.rain_flood_damage;
+            if dmg > 0.0 {
+                for ant in self.ants.iter_mut() {
+                    let module = self.topology.module(ant.module_id);
+                    if module.kind != crate::module::ModuleKind::UndergroundNest {
+                        continue;
+                    }
+                    // Bottom row = y < 1.0 in local cell-space.
+                    if ant.position.y < 1.0 {
+                        ant.health -= dmg;
+                    }
+                }
+            }
+        }
+
+        // --- Lawnmower ---
+        if cfg.lawnmower_period_ticks > 0 {
+            let period = cfg.lawnmower_period_ticks;
+            let active = self.weather.lawnmower_warning_remaining > 0
+                || self.weather.lawnmower_sweep_remaining > 0;
+            if !active
+                && self.tick > 0
+                && self.tick % period == 0
+            {
+                // Pick a surface module with at least one port.
+                let surface_mods: Vec<ModuleId> = self
+                    .topology
+                    .modules
+                    .iter()
+                    .filter(|m| m.kind != crate::module::ModuleKind::UndergroundNest)
+                    .map(|m| m.id)
+                    .collect();
+                if let Some(&mid) = surface_mods.first() {
+                    self.weather.lawnmower_warning_remaining = cfg.lawnmower_warning_ticks;
+                    self.weather.lawnmower_sweep_remaining = 0;
+                    self.weather.lawnmower_module = mid;
+                    self.weather.lawnmower_y = 0.0;
+                    tracing::warn!(
+                        tick = self.tick,
+                        module = mid,
+                        warning_ticks = cfg.lawnmower_warning_ticks,
+                        "lawnmower warning — sweep incoming"
+                    );
+                }
+            }
+
+            if self.weather.lawnmower_warning_remaining > 0 {
+                self.weather.lawnmower_warning_remaining -= 1;
+                if self.weather.lawnmower_warning_remaining == 0 {
+                    // Warning over — start sweeping.
+                    let mid = self.weather.lawnmower_module;
+                    let h = self
+                        .topology
+                        .try_module(mid)
+                        .map(|m| m.height() as f32)
+                        .unwrap_or(0.0);
+                    let sweep_ticks = if cfg.lawnmower_speed > 0.0 {
+                        (h / cfg.lawnmower_speed).ceil() as u32
+                    } else {
+                        0
+                    };
+                    self.weather.lawnmower_sweep_remaining = sweep_ticks;
+                    self.weather.lawnmower_y = 0.0;
+                    tracing::warn!(
+                        module = mid,
+                        sweep_ticks,
+                        "lawnmower sweep started"
+                    );
+                }
+            } else if self.weather.lawnmower_sweep_remaining > 0 {
+                // Advance blade + kill any surface ant under it.
+                let mid = self.weather.lawnmower_module;
+                let half = cfg.lawnmower_half_width;
+                let blade_y = self.weather.lawnmower_y;
+                let mut kills: Vec<usize> = Vec::new();
+                for (ai, ant) in self.ants.iter().enumerate() {
+                    if ant.module_id != mid || ant.is_in_transit() {
+                        continue;
+                    }
+                    if matches!(ant.caste, AntCaste::Queen) {
+                        continue;
+                    }
+                    if (ant.position.y - blade_y).abs() <= half {
+                        kills.push(ai);
+                    }
+                }
+                // Apply kills (descending).
+                kills.sort_unstable();
+                for &i in kills.iter().rev() {
+                    self.ants.swap_remove(i);
+                }
+                self.weather.total_mower_kills += kills.len() as u32;
+                self.weather.lawnmower_y += cfg.lawnmower_speed;
+                self.weather.lawnmower_sweep_remaining -= 1;
+                if self.weather.lawnmower_sweep_remaining == 0 {
+                    tracing::warn!(
+                        module = mid,
+                        total_kills = self.weather.total_mower_kills,
+                        "lawnmower sweep complete"
+                    );
+                }
+            }
         }
     }
 
@@ -2915,6 +3336,174 @@ mod tests {
         // worker heads roughly west (cos < 0).
         assert!(sh.cos() > 0.3, "soldier heading should face east, got {}", sh);
         assert!(wh.cos() < -0.3, "worker heading should face west, got {}", wh);
+    }
+
+    // ===================== Phase 6 hazards tests =====================
+
+    #[test]
+    fn antlion_kills_ant_on_its_cell() {
+        use crate::hazards::PredatorKind;
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new(cfg, 1);
+
+        // Stand a worker on cell (10, 10).
+        let mut ant = Ant::new_worker(7001, 0, Vec2::new(10.5, 10.5), 0.0, 10.0);
+        ant.module_id = 0;
+        sim.ants.push(ant);
+
+        // Place an antlion on the same cell.
+        sim.spawn_predator(PredatorKind::Antlion, 0, Vec2::new(10.5, 10.5));
+
+        sim.hazards_tick();
+
+        assert!(
+            sim.ants.iter().find(|a| a.id == 7001).is_none(),
+            "worker should have been claimed by the antlion"
+        );
+    }
+
+    #[test]
+    fn spider_hunts_and_eats_nearby_ant() {
+        use crate::hazards::{PredatorKind, PredatorState};
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.hazards.spider_speed = 5.0;
+        cfg.hazards.spider_sense_radius = 20.0;
+        cfg.hazards.spider_eat_ticks = 3;
+        let mut sim = Simulation::new(cfg, 1);
+
+        let mut ant = Ant::new_worker(7101, 0, Vec2::new(15.0, 10.0), 0.0, 10.0);
+        ant.module_id = 0;
+        sim.ants.push(ant);
+
+        let sid = sim.spawn_predator(PredatorKind::Spider, 0, Vec2::new(10.0, 10.0));
+
+        // A couple of ticks should close the distance and bite.
+        for _ in 0..6 {
+            sim.hazards_tick();
+        }
+        assert!(
+            sim.ants.iter().find(|a| a.id == 7101).is_none(),
+            "spider should have eaten the worker"
+        );
+        let sp = sim.predators.iter().find(|p| p.id == sid).unwrap();
+        assert!(
+            matches!(sp.state, PredatorState::Eat { .. } | PredatorState::Patrol),
+            "spider state should be Eat (recent kill) or Patrol (eat finished): {:?}",
+            sp.state
+        );
+    }
+
+    #[test]
+    fn rain_wipes_surface_pheromones_and_leaves_underground() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.hazards.rain_period_ticks = 5;
+        cfg.hazards.rain_duration_ticks = 3;
+        let mut topology = Topology::starter_formicarium((24, 24), (24, 24));
+        let ug = topology.attach_underground(0, 0, 24, 24);
+        let mut sim = Simulation::new_with_topology(cfg, topology, 1);
+
+        // Deposit pheromones on surface + underground.
+        sim.topology
+            .module_mut(0)
+            .pheromones
+            .deposit(5, 5, PheromoneLayer::FoodTrail, 5.0, 10.0);
+        sim.topology
+            .module_mut(ug)
+            .pheromones
+            .deposit(5, 5, PheromoneLayer::FoodTrail, 5.0, 10.0);
+        let underground_before = sim
+            .topology
+            .module(ug)
+            .pheromones
+            .read(5, 5, PheromoneLayer::FoodTrail);
+        assert!(underground_before > 0.0);
+
+        // Run ticks past the rain trigger (period=5). Use sim.tick() so
+        // the tick counter actually advances.
+        for _ in 0..10 {
+            sim.tick();
+        }
+        assert!(sim.weather.total_rain_events >= 1, "rain should have fired");
+        let surface_after = sim
+            .topology
+            .module(0)
+            .pheromones
+            .read(5, 5, PheromoneLayer::FoodTrail);
+        let underground_after = sim
+            .topology
+            .module(ug)
+            .pheromones
+            .read(5, 5, PheromoneLayer::FoodTrail);
+        assert!(surface_after.abs() < 0.01, "surface should be wiped, got {}", surface_after);
+        assert!(
+            underground_after > 0.0,
+            "underground should be untouched by rain, got {}",
+            underground_after
+        );
+    }
+
+    #[test]
+    fn lawnmower_warns_then_sweeps_and_kills_surface_ants() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.hazards.lawnmower_period_ticks = 3;
+        cfg.hazards.lawnmower_warning_ticks = 2;
+        cfg.hazards.lawnmower_speed = 2.0;
+        cfg.hazards.lawnmower_half_width = 1.5;
+        let mut sim = Simulation::new(cfg, 1);
+
+        // Surface workers spread out along y.
+        for i in 0..5u32 {
+            let mut a = Ant::new_worker(
+                7200 + i,
+                0,
+                Vec2::new(5.0 + i as f32, i as f32 * 2.0 + 2.0),
+                0.0,
+                10.0,
+            );
+            a.module_id = 0;
+            sim.ants.push(a);
+        }
+        let initial = sim.ants.len();
+
+        // Run enough ticks for the warning + full sweep to complete.
+        for _ in 0..60 {
+            sim.tick();
+        }
+        assert!(
+            sim.weather.total_mower_kills > 0,
+            "lawnmower should have claimed at least one ant"
+        );
+        assert!(sim.ants.len() < initial, "ant count should drop");
+    }
+
+    #[test]
+    fn dead_spider_respawns_after_cooldown() {
+        use crate::hazards::{PredatorKind, PredatorState};
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.hazards.spider_respawn_ticks = 3;
+        let mut sim = Simulation::new(cfg, 1);
+        let sid = sim.spawn_predator(PredatorKind::Spider, 0, Vec2::new(5.0, 5.0));
+
+        // Force the spider dead.
+        if let Some(p) = sim.predators.iter_mut().find(|p| p.id == sid) {
+            p.state = PredatorState::Dead { respawn_in_ticks: 3 };
+            p.health = 0.0;
+        }
+        for _ in 0..5 {
+            sim.hazards_tick();
+        }
+        let sp = sim.predators.iter().find(|p| p.id == sid).unwrap();
+        assert!(
+            matches!(sp.state, PredatorState::Patrol),
+            "spider should have respawned, state = {:?}",
+            sp.state
+        );
+        assert!(sp.health > 0.0);
     }
 
     #[test]

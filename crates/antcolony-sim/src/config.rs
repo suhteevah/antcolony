@@ -11,6 +11,73 @@ pub struct SimConfig {
     pub ant: AntConfig,
     pub colony: ColonyConfig,
     pub combat: CombatConfig,
+    #[serde(default)]
+    pub hazards: HazardConfig,
+}
+
+/// Phase 6: environmental hazards — predator and weather-event tuning.
+/// Defaults are relatively gentle (no auto-spawns unless the sim
+/// explicitly asks) so pre-P6 tests and Keeper-mode sessions stay
+/// unchanged until hazards are opted into.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct HazardConfig {
+    /// Spider maximum speed (world cells per tick). Defaults faster than
+    /// a worker ant so the chase feels tense.
+    pub spider_speed: f32,
+    /// Damage dealt by a spider per tick while adjacent to its target.
+    pub spider_attack: f32,
+    /// Health of a newly-spawned spider.
+    pub spider_health: f32,
+    /// Sensing radius (cells) used by spiders to find a target ant.
+    pub spider_sense_radius: f32,
+    /// Ticks a spider spends in the `Eat` state before resuming patrol.
+    pub spider_eat_ticks: u32,
+    /// Ticks until a dead spider respawns (0 = never).
+    pub spider_respawn_ticks: u32,
+    /// Units of terrain food left by a dead spider (larger than an ant
+    /// corpse).
+    pub spider_corpse_food_units: u32,
+    /// Ticks between rain events (0 = never rains).
+    pub rain_period_ticks: u64,
+    /// Duration of a single rain event (during which pheromones are
+    /// continually wiped and underground floor cells flood).
+    pub rain_duration_ticks: u32,
+    /// Extra damage per tick dealt to ants standing in a flooded
+    /// (bottom-row) underground cell during rain.
+    pub rain_flood_damage: f32,
+    /// Ticks between lawnmower events (0 = never).
+    pub lawnmower_period_ticks: u64,
+    /// Warning period before a sweep starts, in ticks.
+    pub lawnmower_warning_ticks: u32,
+    /// Sweep travel speed — cells per tick the blade advances south→north.
+    pub lawnmower_speed: f32,
+    /// Blade half-width (cells) — any surface ant whose |y - blade_y| <=
+    /// half-width at the sweep time dies.
+    pub lawnmower_half_width: f32,
+}
+
+impl Default for HazardConfig {
+    fn default() -> Self {
+        Self {
+            spider_speed: 3.0,
+            spider_attack: 4.0,
+            spider_health: 40.0,
+            spider_sense_radius: 8.0,
+            spider_eat_ticks: 60,
+            spider_respawn_ticks: 600,
+            spider_corpse_food_units: 6,
+            // Rain + mower are OPT-IN: 0 here means never fire. Callers
+            // building a hazard-enabled sim must set these explicitly.
+            rain_period_ticks: 0,
+            rain_duration_ticks: 120,
+            rain_flood_damage: 0.5,
+            lawnmower_period_ticks: 0,
+            lawnmower_warning_ticks: 60,
+            lawnmower_speed: 1.0,
+            lawnmower_half_width: 1.2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,6 +194,7 @@ impl Default for SimConfig {
             ant: AntConfig::default(),
             colony: ColonyConfig::default(),
             combat: CombatConfig::default(),
+            hazards: HazardConfig::default(),
         }
     }
 }

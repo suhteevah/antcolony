@@ -8,6 +8,7 @@ pub mod colony;
 pub mod config;
 pub mod environment;
 pub mod error;
+pub mod hazards;
 pub mod milestones;
 pub mod module;
 pub mod persist;
@@ -27,6 +28,7 @@ pub use config::{
 };
 pub use environment::{Climate, Environment, Season, TimeScale};
 pub use error::SimError;
+pub use hazards::{Predator, PredatorKind, PredatorState, Weather};
 pub use module::{Module, ModuleId, ModuleKind, PortPos};
 pub use pheromone::{PheromoneGrid, PheromoneLayer};
 pub use simulation::Simulation;

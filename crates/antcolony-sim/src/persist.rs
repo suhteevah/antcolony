@@ -44,6 +44,14 @@ pub struct Snapshot {
     /// Wall-clock seconds since UNIX_EPOCH at save time. Used to compute
     /// the catch-up tick count on load.
     pub saved_at_unix_secs: i64,
+    /// P6: predator roster. `#[serde(default)]` so pre-P6 snapshots still
+    /// deserialize into an empty predator list.
+    #[serde(default)]
+    pub predators: Vec<crate::hazards::Predator>,
+    #[serde(default)]
+    pub next_predator_id: u32,
+    #[serde(default)]
+    pub weather: crate::hazards::Weather,
 }
 
 impl Snapshot {
@@ -65,6 +73,9 @@ impl Snapshot {
             ants: sim.ants.clone(),
             colonies: sim.colonies.clone(),
             saved_at_unix_secs,
+            predators: sim.predators.clone(),
+            next_predator_id: sim.next_predator_id_value(),
+            weather: sim.weather.clone(),
         }
     }
 }
