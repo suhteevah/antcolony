@@ -8,7 +8,7 @@ This document contains everything needed to implement the ant colony simulation 
 2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 + P7 (sim half) complete.** 74 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. P7 sim: possess/recruit/beacon helpers + follower steering + beacon decay + player-heading FSM guard. Plus a **critical starvation cliff fix** (colonies no longer wipe in one tick when food runs out — capped at 5% of population per tick). Input + render for P7 still pending.
+🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 + P7 (sim half) + biology-grounded economy complete.** 78 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. P7 sim: possess/recruit/beacon helpers. Economy rebuild: queen laying now throttles with food inflow (vitellogenin-pipeline model), brood cannibalism spares adults when food_stored goes negative, trophic eggs give a small background food income, `TechUnlock` enum with `tech_unlocks` on `ColonyState` lets future PvP mode gate these behind research. Default Keeper starter is self-sustaining. See `docs/biology.md` for the research log backing these mechanics.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -274,6 +274,21 @@ Priority order for next session:
 ### Starvation cliff fix (shipped alongside P7)
 - **Bug**: in `colony_economy_tick`, `deaths = (deficit / cost).ceil()` was wiping entire colonies in a single tick. With default `adult_food_consumption=0.01` and 20 workers, one tick of deficit = 0.2 food → 20 deaths. Players saw "63 eggs, 0 workers" after the food reserve ran out — queen kept laying, workers mass-died on the very next tick.
 - **Fix**: clamp starvation deaths to `max(1, ceil(adult_total * 0.05))` per tick — at most 5% of the population dies each tick. Sustained starvation still wipes the colony, but over many ticks, giving foragers time to replenish food. No other behavior changes.
+
+### Biology-grounded economy (docs/biology.md — session 2026-04-18)
+
+Added after the user pushed back: "shouldn't the colony be self-sufficient out of the gate? does a queen actually lay until her workers all die?" Short answer: no — real colonies regulate via feedback. Implementation mirrors that.
+
+- **`docs/biology.md`** created as the canonical biology research log. Format: *what it is → mechanism → sim implication → source*. Append-only. Matt asked that any ant biology we learn in future sessions goes here and gets cross-referenced into species TOMLs / encyclopedia / sim code.
+- **`TechUnlock` enum** (`colony.rs`): `TrophicEggs`, `BroodCannibalism`, `FoodInflowThrottle`. `ColonyState.tech_unlocks: Vec<TechUnlock>` defaults to `all_defaults()` (Keeper mode = everything on). Future PvP/versus mode will construct colonies with a restricted set and let players unlock techs via research. `has_tech(kind) → bool` query.
+- **Food-inflow throttle** (biology: vitellogenin pipeline cap). `ColonyState.food_inflow_recent` is bumped on `accept_food` and decays 0.7%/tick in `colony_economy_tick`. Queen's effective lay rate = `queen_egg_rate × clamp(inflow / (consumption × 2), 0.2, 1.0)`. The 0.2 floor represents endogenous reserves (wing-muscle catabolism in founding queens, stored fat in established ones) — matches real biology where a starving queen slows but never stops entirely.
+- **Brood cannibalism** (biology: survival cannibalism is normal under stress). When `food_stored < 0` and `TechUnlock::BroodCannibalism` is on, the sim consumes brood in priority order — eggs first (90% nutrient recovery), then larvae (80%), then pupae (65%) — until the deficit is covered or brood runs out. Adults only start starving after the brood is exhausted. Recovery factors approximate "younger brood has less nutrient invested, higher fractional recovery."
+- **Trophic eggs** (biology: queens produce non-viable nutritive eggs as food). Background contribution to `food_stored` each tick while queen is alive and has >0.5 food — `queen_egg_rate × 0.1 × (0.4 - 0.2)` food/tick net. Small but real — gives the colony a survivable baseline when foraging is temporarily interrupted.
+- **+4 tests (78 total)**: `brood_cannibalism_spares_adults_under_starvation`, `queen_lay_rate_throttled_by_food_inflow`, `trophic_eggs_produce_small_net_food_income`, `tech_gate_disables_brood_cannibalism` (verifies the PvP-style gate works).
+
+**Gameplay impact.** Default Keeper starter is now self-sustaining: the queen throttles down when food isn't flowing, trophic eggs top up small shortages, and brood gets consumed before adults in real starvation. The "63 eggs, 0 workers" scenario is no longer reproducible with default config unless the colony is completely cut off from food AND has no brood to eat.
+
+**PvP design hook.** `TechUnlock` is in place but no research/progression UI yet. Withholding `FoodInflowThrottle` gives a harsher economy (queen lays full rate regardless of inflow — can death-spiral). Withholding `BroodCannibalism` means no nutrient recycling. Withholding `TrophicEggs` means no background income. Future PvP mode will construct colonies with `tech_unlocks = vec![]` and let players earn these via gameplay.
 
 ---
 

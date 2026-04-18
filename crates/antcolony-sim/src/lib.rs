@@ -23,7 +23,7 @@ pub mod unlocks;
 pub mod world;
 
 pub use ant::{Ant, AntCaste, AntState};
-pub use colony::{BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, PopulationCounts};
+pub use colony::{BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, PopulationCounts, TechUnlock};
 pub use config::{
     AntConfig, ColonyConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig,
 };

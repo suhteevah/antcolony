@@ -6,6 +6,35 @@ use serde::{Deserialize, Serialize};
 use crate::ant::AntCaste;
 use crate::milestones::Milestone;
 
+/// Phase-7+ tech unlocks: biology mechanics that are ON by default in
+/// Keeper mode and can be withheld/unlocked in a future PvP/versus
+/// mode. See `docs/biology.md` → "Tech Unlocks for PvP".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TechUnlock {
+    /// Queen produces non-viable nutritive eggs. See biology.md →
+    /// "Trophic eggs".
+    TrophicEggs,
+    /// Workers cannibalize brood to feed adults when food_stored runs
+    /// low. See biology.md → "Survival cannibalism of brood is normal".
+    BroodCannibalism,
+    /// Queen lay rate scales with incoming food over a rolling window.
+    /// See biology.md → "Queen egg-laying is throttled by recent food
+    /// intake, not static reserve".
+    FoodInflowThrottle,
+}
+
+impl TechUnlock {
+    /// The full set of unlocks, used as the default in Keeper mode.
+    pub fn all_defaults() -> Vec<TechUnlock> {
+        vec![
+            TechUnlock::TrophicEggs,
+            TechUnlock::BroodCannibalism,
+            TechUnlock::FoodInflowThrottle,
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BroodStage {
     Egg,
@@ -141,6 +170,18 @@ pub struct ColonyState {
     /// tick). Red AI reads this to escalate soldier production.
     #[serde(default)]
     pub combat_losses_this_tick: u32,
+    /// P7+: exponentially-decaying running average of food delivered
+    /// per tick. Units = food/tick. Drives queen-laying throttle
+    /// (`TechUnlock::FoodInflowThrottle`) and is a cheap mirror of the
+    /// real-biology trophallaxis pipeline — the queen can only lay as
+    /// many eggs as the protein pipeline supports.
+    #[serde(default)]
+    pub food_inflow_recent: f32,
+    /// P7+: unlocked biology mechanics. Defaults to "everything on"
+    /// (Keeper mode). In a PvP sim, construct the colony with a subset
+    /// (e.g. via a research tree). See `docs/biology.md`.
+    #[serde(default)]
+    pub tech_unlocks: Vec<TechUnlock>,
 }
 
 impl ColonyState {
@@ -177,7 +218,14 @@ impl ColonyState {
             combat_losses: 0,
             combat_kills: 0,
             combat_losses_this_tick: 0,
+            food_inflow_recent: 0.0,
+            tech_unlocks: TechUnlock::all_defaults(),
         }
+    }
+
+    /// P7+: is this mechanic unlocked for this colony?
+    pub fn has_tech(&self, tech: TechUnlock) -> bool {
+        self.tech_unlocks.iter().any(|t| *t == tech)
     }
 
     /// Was this milestone already awarded?
@@ -188,6 +236,10 @@ impl ColonyState {
     pub fn accept_food(&mut self, amount: f32) {
         self.food_stored += amount;
         self.food_returned += amount as u32;
+        // Food-inflow pulse: instantaneous bump. The exponential decay
+        // is applied per-tick in colony_economy_tick so a steady
+        // stream of deliveries keeps the running average high.
+        self.food_inflow_recent += amount;
     }
 
     /// Sum of all live adult ants tracked in `population`.

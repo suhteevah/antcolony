@@ -2285,31 +2285,113 @@ impl Simulation {
                     * ccfg.adult_food_consumption
                     * ccfg.soldier_food_multiplier;
             colony.food_stored -= consumption;
+            // Decay the food-inflow running average toward zero — half
+            // life ~100 ticks. A colony that stopped delivering food
+            // sees its running average fade, which in turn throttles
+            // the queen (see biology.md → food-inflow throttle).
+            colony.food_inflow_recent *= 0.993;
+
             let mut starve_count: u32 = 0;
             if colony.food_stored < 0.0 {
-                let deficit = -colony.food_stored;
-                let cost = ccfg.adult_food_consumption.max(1e-6);
-                let raw = (deficit / cost).ceil() as u32;
-                // Starvation should be a slow crisis, not a single-tick
-                // cliff: cap deaths to 5% of the adult population per
-                // tick (rounded up, minimum 1). A sustained food deficit
-                // still wipes the colony, but workers have time to find
-                // food / the player has time to intervene.
-                let cap = ((adult_total as f32 * 0.05).ceil() as u32).max(1);
-                let mut deaths = raw.min(cap);
-                if deaths > adult_total {
-                    deaths = adult_total;
+                // P7+ biology: before killing adults, cannibalize
+                // brood if the tech is unlocked. Eggs first, then
+                // larvae, then pupae — younger brood has less nutrient
+                // invested, so cost-of-recovery is lowest.
+                //
+                // Recovery factors approximate real literature: eggs
+                // and young larvae have near-complete protein recovery
+                // when digested; older pupae have already put their
+                // nutrients into structural tissue and give back less.
+                if colony.has_tech(crate::colony::TechUnlock::BroodCannibalism) {
+                    let deficit_before = -colony.food_stored;
+                    let mut recovered = 0.0f32;
+                    // Sort brood so we consume the earliest stages first.
+                    // Using swap_remove on the Vec; iterate safely by
+                    // collecting indices first.
+                    let mut idx_by_priority: Vec<(u8, usize)> = colony
+                        .brood
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| {
+                            let pri = match b.stage {
+                                crate::colony::BroodStage::Egg => 0u8,
+                                crate::colony::BroodStage::Larva => 1,
+                                crate::colony::BroodStage::Pupa => 2,
+                            };
+                            (pri, i)
+                        })
+                        .collect();
+                    idx_by_priority.sort_by_key(|(p, _)| *p);
+                    // Consume one-by-one until deficit covered.
+                    let mut to_remove: Vec<usize> = Vec::new();
+                    for (pri, idx) in idx_by_priority {
+                        if recovered >= deficit_before {
+                            break;
+                        }
+                        let recovery_factor = match pri {
+                            0 => 0.90, // egg
+                            1 => 0.80, // larva
+                            _ => 0.65, // pupa
+                        };
+                        let recovered_here = ccfg.egg_cost * recovery_factor;
+                        recovered += recovered_here;
+                        to_remove.push(idx);
+                        match pri {
+                            0 => {
+                                if colony.eggs > 0 {
+                                    colony.eggs -= 1;
+                                }
+                            }
+                            1 => {
+                                if colony.larvae > 0 {
+                                    colony.larvae -= 1;
+                                }
+                            }
+                            _ => {
+                                if colony.pupae > 0 {
+                                    colony.pupae -= 1;
+                                }
+                            }
+                        }
+                    }
+                    // Remove in descending-index order for swap_remove safety.
+                    to_remove.sort_unstable();
+                    for i in to_remove.iter().rev() {
+                        colony.brood.swap_remove(*i);
+                    }
+                    if recovered > 0.0 {
+                        colony.food_stored += recovered;
+                        tracing::info!(
+                            colony_id = colony.id,
+                            recovered,
+                            brood_consumed = to_remove.len(),
+                            "brood cannibalism — adults spared"
+                        );
+                    }
                 }
-                starve_count = deaths;
-                colony.food_stored = 0.0;
-                if deaths > 0 {
-                    tracing::warn!(
-                        colony_id = colony.id,
-                        deaths,
-                        adult_total,
-                        raw,
-                        "starvation deaths (capped per tick)"
-                    );
+                // Any remaining deficit falls through to worker
+                // starvation (capped per tick to avoid a single-tick
+                // colony wipe).
+                if colony.food_stored < 0.0 {
+                    let deficit = -colony.food_stored;
+                    let cost = ccfg.adult_food_consumption.max(1e-6);
+                    let raw = (deficit / cost).ceil() as u32;
+                    let cap = ((adult_total as f32 * 0.05).ceil() as u32).max(1);
+                    let mut deaths = raw.min(cap);
+                    if deaths > adult_total {
+                        deaths = adult_total;
+                    }
+                    starve_count = deaths;
+                    colony.food_stored = 0.0;
+                    if deaths > 0 {
+                        tracing::warn!(
+                            colony_id = colony.id,
+                            deaths,
+                            adult_total,
+                            raw,
+                            "starvation deaths (capped per tick; brood exhausted)"
+                        );
+                    }
                 }
             }
             starve.push((colony.id, starve_count));
@@ -2320,8 +2402,51 @@ impl Simulation {
             }
             colony.queen_alive_last_tick = queen_alive;
 
+            // P7+ biology: queen lay rate is throttled by recent food
+            // inflow when the tech is unlocked. Models the vitellogenin
+            // pipeline — queens physiologically can't lay faster than
+            // their protein pipeline supports. See biology.md →
+            // "Queen egg-laying is throttled by recent food intake".
+            //
+            // throttle = clamp(inflow / (consumption * 2), FLOOR, 1).
+            // Biologically: the FLOOR of ~0.2 mirrors endogenous
+            // reserves — even a starving queen lays a trickle of eggs
+            // from her own metabolized tissue (wing muscle catabolism
+            // in founding queens, stored fat in established queens).
+            // See biology.md → "Claustral vs semi-claustral founding".
+            let throttle = if colony.has_tech(crate::colony::TechUnlock::FoodInflowThrottle) {
+                const ENDOGENOUS_FLOOR: f32 = 0.2;
+                let baseline = (consumption * 2.0).max(1e-4);
+                (colony.food_inflow_recent / baseline).clamp(ENDOGENOUS_FLOOR, 1.0)
+            } else {
+                1.0
+            };
+            let effective_egg_rate = ccfg.queen_egg_rate * throttle;
+
+            // P7+ biology: trophic eggs — queen converts some stored
+            // food into "free" food packets deposited directly into
+            // storage, modelling the real-biology nutritive-egg pathway.
+            // Rate is ~10% of the regular egg rate, always on while the
+            // queen is alive and has any food.
+            if queen_alive
+                && colony.food_stored > 0.5
+                && colony.has_tech(crate::colony::TechUnlock::TrophicEggs)
+            {
+                const TROPHIC_RATE: f32 = 0.1; // relative to queen_egg_rate
+                const TROPHIC_YIELD: f32 = 0.4; // food returned per trophic egg
+                const TROPHIC_COST: f32 = 0.2; // food consumed to produce one
+                let trophic_attempt = ccfg.queen_egg_rate * TROPHIC_RATE;
+                // Fold into an accumulator on food_stored directly for
+                // simplicity (no new state field). Expected net effect
+                // per tick: +0.1 * 0.05 * (0.4 - 0.2) = ~0.001 food/tick
+                // at default rates — a small but real background income.
+                if colony.food_stored >= TROPHIC_COST {
+                    colony.food_stored += trophic_attempt * (TROPHIC_YIELD - TROPHIC_COST);
+                }
+            }
+
             if queen_alive && !colony.fertility_suppressed && colony.food_stored >= ccfg.egg_cost {
-                colony.egg_accumulator += ccfg.queen_egg_rate;
+                colony.egg_accumulator += effective_egg_rate;
                 let mut laid_this_tick: u32 = 0;
                 while colony.egg_accumulator >= 1.0
                     && colony.food_stored >= ccfg.egg_cost
@@ -3569,6 +3694,139 @@ mod tests {
         // worker heads roughly west (cos < 0).
         assert!(sh.cos() > 0.3, "soldier heading should face east, got {}", sh);
         assert!(wh.cos() < -0.3, "worker heading should face west, got {}", wh);
+    }
+
+    // ===================== Biology-grounded tests =====================
+
+    #[test]
+    fn brood_cannibalism_spares_adults_under_starvation() {
+        use crate::colony::{Brood, BroodStage};
+
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.adult_food_consumption = 0.5; // aggressive burn
+        cfg.colony.queen_egg_rate = 0.0;
+        let mut sim = Simulation::new(cfg, 1);
+        // Seed 20 workers + a queen at the nest.
+        let nest = Vec2::new(32.0, 32.0);
+        for i in 0..20u32 {
+            let mut a = Ant::new_worker(8000 + i, 0, nest, 0.0, 10.0);
+            a.module_id = 0;
+            sim.ants.push(a);
+        }
+        sim.colonies[0].population.workers = 20;
+        sim.colonies[0].food_stored = 0.1; // one tick's deficit incoming
+        // Stuff the brood pile with eggs so cannibalism has something to eat.
+        for _ in 0..30 {
+            sim.colonies[0].brood.push(Brood::new_egg(AntCaste::Worker));
+            sim.colonies[0].eggs += 1;
+        }
+
+        let adults_before = sim.colonies[0].adult_total();
+        let eggs_before = sim.colonies[0].eggs;
+        sim.colony_economy_tick();
+        let adults_after = sim.colonies[0].adult_total();
+        let eggs_after = sim.colonies[0].eggs;
+        assert_eq!(
+            adults_before, adults_after,
+            "adults should be spared when brood is cannibalized"
+        );
+        assert!(
+            eggs_after < eggs_before,
+            "some eggs should be consumed (before={}, after={})",
+            eggs_before,
+            eggs_after
+        );
+    }
+
+    #[test]
+    fn queen_lay_rate_throttled_by_food_inflow() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 1.0; // fast — want to see throttle clearly
+        cfg.colony.adult_food_consumption = 0.0; // isolate throttle
+        let mut sim = Simulation::new(cfg, 1);
+        sim.colonies[0].food_stored = 1000.0;
+
+        // Zero food inflow → throttle to endogenous floor (0.2).
+        sim.colonies[0].food_inflow_recent = 0.0;
+        let eggs_before = sim.colonies[0].eggs;
+        for _ in 0..10 {
+            sim.colony_economy_tick();
+        }
+        let laid_slow = sim.colonies[0].eggs - eggs_before;
+
+        // High food inflow → throttle to 1.0 — should lay significantly more.
+        sim.colonies[0].food_inflow_recent = 100.0;
+        let eggs_before = sim.colonies[0].eggs;
+        for _ in 0..10 {
+            sim.colony_economy_tick();
+        }
+        let laid_fast = sim.colonies[0].eggs - eggs_before;
+
+        assert!(
+            laid_fast > laid_slow,
+            "throttled queen should lay fewer eggs with no inflow (slow={}, fast={})",
+            laid_slow,
+            laid_fast
+        );
+    }
+
+    #[test]
+    fn trophic_eggs_produce_small_net_food_income() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 1.0; // fast so trophic is nontrivial
+        cfg.colony.adult_food_consumption = 0.0;
+        let mut sim = Simulation::new(cfg, 1);
+        sim.colonies[0].food_stored = 10.0;
+        // Suppress fertile-egg laying by zeroing food temporarily each
+        // tick — or simpler: disable via fertility_suppressed.
+        sim.colonies[0].fertility_suppressed = true;
+        sim.colonies[0].food_inflow_recent = 0.0;
+
+        let before = sim.colonies[0].food_stored;
+        for _ in 0..500 {
+            sim.colony_economy_tick();
+        }
+        let after = sim.colonies[0].food_stored;
+        assert!(
+            after > before,
+            "trophic eggs should nudge food_stored up over time ({} -> {})",
+            before,
+            after
+        );
+    }
+
+    #[test]
+    fn tech_gate_disables_brood_cannibalism() {
+        use crate::colony::{Brood, TechUnlock};
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.adult_food_consumption = 0.5;
+        cfg.colony.queen_egg_rate = 0.0;
+        let mut sim = Simulation::new(cfg, 1);
+        // Withhold the cannibalism tech — simulate a PvP colony that
+        // hasn't researched Nutrient Recycling yet.
+        sim.colonies[0]
+            .tech_unlocks
+            .retain(|t| *t != TechUnlock::BroodCannibalism);
+        let nest = Vec2::new(32.0, 32.0);
+        for i in 0..5u32 {
+            let mut a = Ant::new_worker(8500 + i, 0, nest, 0.0, 10.0);
+            a.module_id = 0;
+            sim.ants.push(a);
+        }
+        sim.colonies[0].population.workers = 5;
+        sim.colonies[0].food_stored = 0.1;
+        for _ in 0..20 {
+            sim.colonies[0].brood.push(Brood::new_egg(AntCaste::Worker));
+            sim.colonies[0].eggs += 1;
+        }
+        let eggs_before = sim.colonies[0].eggs;
+        sim.colony_economy_tick();
+        // Without the tech, brood is untouched — adults starve directly.
+        assert_eq!(sim.colonies[0].eggs, eggs_before, "brood must survive without the tech");
     }
 
     // ===================== Phase 7 player-interaction tests =====================
