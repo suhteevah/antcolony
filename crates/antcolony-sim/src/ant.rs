@@ -59,6 +59,12 @@ pub struct Ant {
     pub module_id: ModuleId,
     /// `Some` when the ant is inside a tube (K2), `None` on a grid.
     pub transit: Option<TubeTransit>,
+    /// P4 Avenger mechanic: exactly one ant per AI colony carries this
+    /// flag. The avenger's heading is overridden each tick to track the
+    /// nearest player ant. On death the role transfers to a random
+    /// surviving non-queen sibling.
+    #[serde(default)]
+    pub is_avenger: bool,
 }
 
 impl Ant {
@@ -87,6 +93,7 @@ impl Ant {
             state_timer: 0,
             module_id: 0,
             transit: None,
+            is_avenger: false,
         }
     }
 

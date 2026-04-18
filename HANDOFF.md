@@ -8,7 +8,7 @@ This document contains everything needed to implement the ant colony simulation 
 2026-04-18
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 (sim + basic render) complete.** 58 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 4 is playable: `V` in the picker launches the two-colony arena (black vs red AI), red ants render in a distinct rust tint, combat stats appear in the HUD. Territory overlay and Avenger mechanic still to do.
+🟢 **Phases 1-3 + K1-K5 + P4 (sim + render + alarm + Avenger) complete.** 61 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. Phase 4 is playable: `V` in the picker launches the two-colony arena (black vs red AI), red ants render in a distinct rust tint, soldiers converge on alarm trails while workers flee, one avenger per AI colony hunts the nearest player ant and transfers the role on death. Territory overlay still to do.
 
 ## What Was Done This Session
 Massive single-session build-out from empty directory to shipping sim. Seven commits.
@@ -38,8 +38,8 @@ None.
 ## What's Next
 Priority order for next session:
 
-1. **P4 render + UI follow-ups** — territory overlay driven by the `ColonyScent` pheromone layer (deposit + visualize per-colony tile control), combat kill banner/sfx, per-colony panel split rather than a single line.
-2. **P4 sim polish** — Avenger mechanic (one red ant tagged, hunts the player's most-valuable ant, role transfers on death), alarm-pheromone steering (soldiers bias toward alarm gradient, workers flee), per-colony nuptial flight attribution (currently nuptial_flight_tick only books stats on `colonies[0]`).
+1. **P4 render + UI follow-ups** — territory overlay driven by the `ColonyScent` pheromone layer (deposit + visualize per-colony tile control), combat kill banner/sfx, per-colony panel split rather than a single line. Avenger highlight sprite (small crown / ring).
+2. **P4 sim polish** — per-colony nuptial flight attribution (currently nuptial_flight_tick only books stats on `colonies[0]`). Currently Avenger tracks nearest enemy; upgrade to track highest-food-carried or oldest worker for the "most valuable" behavior.
 3. **K5 follow-up** — when a nuptial flight succeeds, actually spawn a new `ColonyState` + nest module in the topology rather than just bumping `daughter_colonies_founded`. Blocker was keeping the milestone-tracker `seen_counts` keyed by vector position; now even more relevant since Phase 4 already proves multi-colony state works.
 4. **K3 follow-ups** worth picking up: multi-entrance diapause polling (all nest entrances, not just module 0), unlock tooltips in the editor palette (`unlocks::unlock_hint` is exported but not rendered).
 
@@ -196,6 +196,12 @@ Priority order for next session:
 - Picker: pressing `V` (with a species selected) boots straight into the two-colony arena, bypassing Confirm. No extra UI — intentional; a full two-colony mode-switch panel can come later.
 - Per-colony ant tint: plugin builds one `body_mat` + `limb_color` per colony. Colony 0 wears the species' chosen hex; every subsequent colony wears a bright rust-red (`srgb(0.85, 0.18, 0.12)`). All child leg/antenna sprites pull from the same per-colony handle.
 - HUD: when `colonies.len() >= 2`, a `Red: N alive | kills vs you: X | losses: Y  ·  Your kills: X | losses: Y` line appears between the queen-HP line and the nuptial line.
+
+### P4 alarm steering + Avenger (this session, sim-side only)
+- **Alarm response** (`simulation.rs::alarm_response_heading`). Called per-ant from `sense_and_decide` right after `choose_direction`. Samples the Alarm cone; if peak intensity > `pheromone.min_threshold * 8`, overrides the ACO heading: Soldiers face toward the strongest alarm cell (converge on the fight), Workers and Breeders face directly away (flee). Queens ignore alarm. Below the trigger threshold the default ACO heading stands.
+- **Avenger** (`simulation.rs::avenger_tick`, called between `sense_and_decide` and `movement`). Every AI-controlled colony keeps exactly one ant tagged `Ant.is_avenger = true`. Promotion happens at two-colony spawn (first non-queen red ant) and inside `avenger_tick` if the role is vacant (random surviving non-queen non-transit ant in that colony). Each tick the avenger's heading is pointed at the nearest enemy ant on its module (queens ignored; tube-transit ants ignored). State/FSM is untouched — the avenger still lays trails, still fights, still returns food; only its heading is overridden when an enemy is in sight.
+- **Serde**: `Ant.is_avenger` is `#[serde(default)]` so existing K4 snapshots still load (the flag comes back as false; `avenger_tick` re-promotes on load).
+- **+3 tests (61 total sim)**: `soldier_steers_toward_alarm_worker_steers_away` (direct helper check with east-facing alarm blob), `avenger_is_assigned_and_tracks_enemy` (spawn an enemy east of the avenger, assert avenger heading points east after one tick), `avenger_role_transfers_when_killed` (swap_remove the avenger, verify a replacement is promoted).
 
 ---
 

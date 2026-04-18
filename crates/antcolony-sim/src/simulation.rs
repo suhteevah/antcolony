@@ -196,6 +196,16 @@ impl Simulation {
         );
 
         let next_ant_id = ants.len() as u32;
+
+        // Promote one red avenger: first non-queen ant on the red nest.
+        if let Some(idx) = ants
+            .iter()
+            .position(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen))
+        {
+            ants[idx].is_avenger = true;
+            tracing::info!(ant = ants[idx].id, "avenger assigned (red colony)");
+        }
+
         Self {
             config,
             topology,
@@ -591,6 +601,7 @@ impl Simulation {
 
         self.temperature_tick();
         self.sense_and_decide();
+        self.avenger_tick();
         self.movement();
         self.combat_tick();
         self.deposit_and_interact();
@@ -679,7 +690,14 @@ impl Simulation {
                     continue;
                 }
             }
-            let h = choose_direction(ant, &module.pheromones, &cfg.ant, &mut self.rng);
+            let mut h = choose_direction(ant, &module.pheromones, &cfg.ant, &mut self.rng);
+            // P4: alarm-pheromone response. Soldiers hunt alarm; workers
+            // and breeders flee it. Only kicks in when the ant is actually
+            // sensing alarm (> min_threshold); otherwise the default ACO
+            // heading stands.
+            if let Some(alarm_h) = alarm_response_heading(ant, module, &cfg.ant, &cfg.pheromone) {
+                h = alarm_h;
+            }
             new_headings.push(h);
             let next = decide_next_state(ant, &module.world, &module.pheromones, cfg);
             new_states.push(next);
@@ -1111,6 +1129,83 @@ impl Simulation {
         idxs.sort_unstable();
         for i in idxs.into_iter().rev() {
             self.ants.swap_remove(i);
+        }
+    }
+
+    /// P4 Avenger.
+    ///
+    /// Each AI colony keeps exactly one avenger at any time. The avenger's
+    /// heading is overridden each tick to point at the nearest enemy ant
+    /// on its module. If the avenger is gone (combat-killed) the role
+    /// transfers to a random surviving non-queen colony-mate.
+    ///
+    /// The avenger's *state* is left alone — the normal FSM still runs —
+    /// so a healthy avenger still wanders via ACO when no enemy is in
+    /// sight. This keeps trail laying + food return intact.
+    pub fn avenger_tick(&mut self) {
+        for cid in 0..self.colonies.len() {
+            if !self.colonies[cid].is_ai_controlled {
+                continue;
+            }
+            let colony_id = self.colonies[cid].id;
+            // Ensure exactly one avenger exists. If none, promote.
+            let avenger_idx = self
+                .ants
+                .iter()
+                .position(|a| a.colony_id == colony_id && a.is_avenger);
+            let avenger_idx = match avenger_idx {
+                Some(i) => i,
+                None => {
+                    // No avenger — promote a random surviving non-queen.
+                    let candidates: Vec<usize> = self
+                        .ants
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| {
+                            a.colony_id == colony_id
+                                && !matches!(a.caste, AntCaste::Queen)
+                                && !a.is_in_transit()
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    if candidates.is_empty() {
+                        continue;
+                    }
+                    let pick_idx = self.rng.gen_range(0..candidates.len());
+                    let idx = candidates[pick_idx];
+                    self.ants[idx].is_avenger = true;
+                    tracing::info!(
+                        colony = colony_id,
+                        ant = self.ants[idx].id,
+                        "avenger role transferred"
+                    );
+                    idx
+                }
+            };
+
+            // Find nearest enemy ant on the avenger's module.
+            let avenger_pos = self.ants[avenger_idx].position;
+            let avenger_mod = self.ants[avenger_idx].module_id;
+            let mut best: Option<(f32, Vec2)> = None;
+            for a in &self.ants {
+                if a.colony_id == colony_id
+                    || a.module_id != avenger_mod
+                    || a.is_in_transit()
+                    || matches!(a.caste, AntCaste::Queen)
+                {
+                    continue;
+                }
+                let d2 = (a.position - avenger_pos).length_squared();
+                if best.map(|(bd, _)| d2 < bd).unwrap_or(true) {
+                    best = Some((d2, a.position));
+                }
+            }
+            if let Some((_, target)) = best {
+                let delta = target - avenger_pos;
+                if delta.length_squared() > 1e-6 {
+                    self.ants[avenger_idx].heading = delta.y.atan2(delta.x);
+                }
+            }
         }
     }
 
@@ -1679,6 +1774,59 @@ fn diffuse_scalar_grid(data: &mut Vec<f32>, width: usize, height: usize, rate: f
     }
 }
 
+/// P4 alarm-pheromone steering.
+///
+/// Returns `Some(heading)` when the ant's local alarm field is strong
+/// enough to override its normal ACO steering, or `None` to leave the
+/// default heading in place. Soldiers steer toward the strongest alarm
+/// cell in their sensing cone (converging on the fight). Workers and
+/// breeders pick the heading that best points AWAY from the mean alarm
+/// source (flight). Queens are never moved by alarm (they're usually
+/// Idle and don't walk anyway).
+fn alarm_response_heading(
+    ant: &Ant,
+    module: &crate::module::Module,
+    ant_cfg: &crate::config::AntConfig,
+    pher_cfg: &crate::config::PheromoneConfig,
+) -> Option<f32> {
+    use crate::ant::AntCaste;
+    if matches!(ant.caste, AntCaste::Queen) {
+        return None;
+    }
+    let samples = module.pheromones.sample_cone(
+        ant.position,
+        ant.heading,
+        ant_cfg.sense_angle.to_radians(),
+        ant_cfg.sense_radius as f32,
+        PheromoneLayer::Alarm,
+    );
+    // Pick the strongest sample as the alarm source.
+    let mut best: Option<(Vec2, f32)> = None;
+    let mut total = 0.0f32;
+    for (cell, intensity) in &samples {
+        total += intensity;
+        if best.map(|(_, bi)| *intensity > bi).unwrap_or(true) {
+            best = Some((*cell, *intensity));
+        }
+    }
+    let (src, peak) = best?;
+    // Ignore faint background alarm (close to the evap floor).
+    let trigger = (pher_cfg.min_threshold * 8.0).max(0.1);
+    if peak < trigger || total < trigger {
+        return None;
+    }
+    let delta = src - ant.position;
+    if delta.length_squared() < 1e-6 {
+        return None;
+    }
+    let toward = delta.y.atan2(delta.x);
+    match ant.caste {
+        AntCaste::Soldier => Some(toward),
+        AntCaste::Worker | AntCaste::Breeder => Some(toward + std::f32::consts::PI),
+        AntCaste::Queen => None,
+    }
+}
+
 fn decide_next_state(
     ant: &Ant,
     world: &WorldGrid,
@@ -1772,6 +1920,7 @@ pub fn spawn_initial_ants(
         state_timer: 0,
         module_id: 0,
         transit: None,
+        is_avenger: false,
     });
 
     for i in 0..config.ant.initial_count {
@@ -2522,8 +2671,8 @@ mod tests {
 
     fn two_colony_sim_for_combat() -> Simulation {
         let mut cfg = small_config();
-        // No initial spawn — tests seed their own ants at known positions.
-        cfg.ant.initial_count = 0;
+        // Small initial spawn — needed so the Avenger role has a candidate.
+        cfg.ant.initial_count = 3;
         cfg.combat.interaction_radius = 1.5;
         let topology = Topology::two_colony_arena((24, 24), (32, 32));
         // Module 0 = black nest, 1 = outworld, 2 = red nest.
@@ -2626,6 +2775,112 @@ mod tests {
         assert!(after <= 0.5, "cap at 0.5 (got {})", after);
         // And the tick-local counter is cleared.
         assert_eq!(sim.colonies[1].combat_losses_this_tick, 0);
+    }
+
+    #[test]
+    fn soldier_steers_toward_alarm_worker_steers_away() {
+        use crate::ant::AntCaste;
+        let cfg = small_config();
+        let mut module = crate::module::Module::new(
+            0,
+            ModuleKind::Outworld,
+            40,
+            40,
+            Vec2::ZERO,
+            "Test",
+        );
+        // Lay down a strong alarm blob to the east of the ant's cell.
+        for dx in 0..3 {
+            module.pheromones.deposit(
+                12 + dx,
+                10,
+                PheromoneLayer::Alarm,
+                5.0,
+                cfg.pheromone.max_intensity,
+            );
+        }
+
+        let soldier = Ant::new_with_caste(
+            1,
+            0,
+            Vec2::new(10.5, 10.5),
+            0.0, // heading east — alarm is in-cone
+            25.0,
+            AntCaste::Soldier,
+        );
+        let worker = Ant::new_with_caste(
+            2,
+            0,
+            Vec2::new(10.5, 10.5),
+            0.0,
+            10.0,
+            AntCaste::Worker,
+        );
+
+        let sh = alarm_response_heading(&soldier, &module, &cfg.ant, &cfg.pheromone)
+            .expect("soldier should respond to strong alarm");
+        let wh = alarm_response_heading(&worker, &module, &cfg.ant, &cfg.pheromone)
+            .expect("worker should respond to strong alarm");
+
+        // Alarm is east → soldier heads roughly east (cos > 0),
+        // worker heads roughly west (cos < 0).
+        assert!(sh.cos() > 0.3, "soldier heading should face east, got {}", sh);
+        assert!(wh.cos() < -0.3, "worker heading should face west, got {}", wh);
+    }
+
+    #[test]
+    fn avenger_is_assigned_and_tracks_enemy() {
+        let mut sim = two_colony_sim_for_combat();
+        // Starter already spawned both colonies — verify an avenger exists
+        // on the red side.
+        let avenger_count = sim
+            .ants
+            .iter()
+            .filter(|a| a.colony_id == 1 && a.is_avenger)
+            .count();
+        assert_eq!(avenger_count, 1, "exactly one red avenger at spawn");
+
+        // Put a black worker on the same module as the avenger and check
+        // the avenger heads toward it after one avenger_tick.
+        let av_idx = sim
+            .ants
+            .iter()
+            .position(|a| a.is_avenger)
+            .expect("avenger exists");
+        sim.ants[av_idx].position = Vec2::new(5.0, 5.0);
+        sim.ants[av_idx].module_id = 1;
+        place_combatant(
+            &mut sim,
+            9501,
+            0,
+            Vec2::new(8.0, 5.0), // due east of avenger
+            AntCaste::Worker,
+            10.0,
+        );
+        sim.avenger_tick();
+        let h = sim.ants[av_idx].heading;
+        assert!(h.cos() > 0.7, "avenger heading should point east, got {}", h);
+    }
+
+    #[test]
+    fn avenger_role_transfers_when_killed() {
+        let mut sim = two_colony_sim_for_combat();
+        // Kill the current avenger.
+        let av_idx = sim
+            .ants
+            .iter()
+            .position(|a| a.is_avenger)
+            .expect("avenger exists");
+        sim.ants.swap_remove(av_idx);
+
+        // Next avenger_tick should promote a replacement.
+        sim.avenger_tick();
+        let count = sim
+            .ants
+            .iter()
+            .filter(|a| a.colony_id == 1 && a.is_avenger)
+            .count();
+        assert_eq!(count, 1, "a replacement avenger must be promoted");
     }
 
     #[test]
