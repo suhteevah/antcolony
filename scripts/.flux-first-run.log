@@ -1,0 +1,8 @@
+`CLIPImageProcessor` requires torchvision (not installed); falling back to `CLIPImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `CLIPImageProcessorPil` directly to silence this warning.
+`SiglipImageProcessor` requires torchvision (not installed); falling back to `SiglipImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `SiglipImageProcessorPil` directly to silence this warning.
+[flux] VRAM free: 6.92 GB
+[flux] Model:  black-forest-labs/FLUX.1-schnell
+[flux] Prompt: pixel art ant worker, top-down orthogonal view, 6 legs, black segmented body with red abdomen, crisp pixels, transparent background, game sprite
+[flux] Out:    J:\antcolony\assets\gen\1776574059_pixel_art_ant_worker__top_down_orthogona.png
+[flux] loading pipeline (bf16)…
+Fetching 23 files:   0%|          | 0/23 [00:00<?, ?it/s]Fetching 23 files:   9%|8         | 2/23 [00:00<00:02,  9.51it/s]Fetching 23 files:  17%|#7        | 4/23 [01:54<10:39, 33.67s/it]Fetching 23 files:  26%|##6       | 6/23 [22:45<1:26:05, 303.87s/it]Fetching 23 files:  30%|###       | 7/23 [24:48<1:09:10, 259.43s/it]
