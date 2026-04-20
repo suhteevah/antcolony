@@ -35,3 +35,17 @@ lpt9
 VOXCLAW.md
 scratch/
 *.local
+
+# FLUX sprite regeneration outputs (can always be re-rendered from scripts)
+assets/gen/lasius_niger/raw/
+assets/gen/lasius_niger/raw_v2/
+assets/gen/lasius_niger/raw_clean/
+assets/gen/**/raw_retry*/
+# Sprite-generation logs
+scripts/.sprites-run*.log
+scripts/.brood-retry.log
+scripts/.queen-retry.log
+scripts/.flux-*.log
+# HuggingFace + torch caches (if they end up in tree)
+.cache/
+*.safetensors

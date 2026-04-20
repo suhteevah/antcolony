@@ -26,7 +26,7 @@ from diffusers import FluxPipeline
 from optimum.quanto import freeze, qint8, quantize
 
 MODEL_ID = os.environ.get("FLUX_MODEL", "black-forest-labs/FLUX.1-schnell")
-OUT = Path(__file__).resolve().parents[1] / "assets" / "gen" / "lasius_niger" / "raw"
+DEFAULT_OUT = Path(__file__).resolve().parents[1] / "assets" / "gen" / "lasius_niger" / "raw"
 
 # Shared style anchor: Lasius niger palette + pixel-art constraints
 STYLE = (
@@ -127,6 +127,7 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=4)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--quant", choices=["int8", "none"], default="int8")
+    ap.add_argument("--out-dir", type=str, default=None, help="Override output dir")
     args = ap.parse_args()
 
     targets = args.names if args.names else list(SPRITES)
@@ -134,6 +135,7 @@ def main() -> None:
     if unknown:
         sys.exit(f"unknown sprite names: {unknown}. known: {list(SPRITES)}")
 
+    OUT = Path(args.out_dir) if args.out_dir else DEFAULT_OUT
     OUT.mkdir(parents=True, exist_ok=True)
 
     log(f"VRAM free: {vram_gb():.2f} GB")

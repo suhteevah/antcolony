@@ -1,30 +1,0 @@
-`CLIPImageProcessor` requires torchvision (not installed); falling back to `CLIPImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `CLIPImageProcessorPil` directly to silence this warning.
-`SiglipImageProcessor` requires torchvision (not installed); falling back to `SiglipImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `SiglipImageProcessorPil` directly to silence this warning.
-[queen-retry] VRAM free: 6.92 GB
-[queen-retry] loading FLUX pipeline (bf16)...
-Loading pipeline components...:   0%|          | 0/7 [00:00<?, ?it/s]
-Loading weights:   0%|          | 0/196 [00:00<?, ?it/s][ALoading weights: 100%|##########| 196/196 [00:00<00:00, 4415.13it/s]
-Loading pipeline components...:  29%|##8       | 2/7 [00:00<00:00, 10.23it/s]
-Loading weights:   0%|          | 0/219 [00:00<?, ?it/s][ALoading weights: 100%|##########| 219/219 [00:00<00:00, 3378.92it/s]
-
-Loading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s][A
-Loading checkpoint shards:  67%|######6   | 2/3 [00:00<00:00, 12.70it/s][ALoading checkpoint shards: 100%|##########| 3/3 [00:00<00:00, 16.89it/s]
-Loading pipeline components...:  57%|#####7    | 4/7 [00:00<00:00,  6.26it/s]Loading pipeline components...:  71%|#######1  | 5/7 [00:00<00:00,  6.58it/s]Loading pipeline components...: 100%|##########| 7/7 [00:00<00:00,  8.53it/s]
-[queen-retry] quantizing transformer to int8...
-[queen-retry] [seed=42] 768x768 @ 10 steps -> queen_alate_retry_s42.png
-Token indices sequence length is longer than the specified maximum sequence length for this model (93 > 77). Running this sequence through the model will result in indexing errors
-The following part of your input was truncated because CLIP can only handle sequences up to 77 tokens: ['visible from side, two antennae forward, jet - black body with chocolate - brown highlights']
-  0%|          | 0/10 [00:00<?, ?it/s] 10%|#         | 1/10 [00:43<06:34, 43.80s/it] 20%|##        | 2/10 [00:48<02:45, 20.68s/it] 30%|###       | 3/10 [01:24<03:12, 27.56s/it] 40%|####      | 4/10 [01:59<03:04, 30.80s/it] 50%|#####     | 5/10 [02:35<02:42, 32.59s/it] 60%|######    | 6/10 [03:11<02:14, 33.67s/it] 70%|#######   | 7/10 [03:47<01:43, 34.36s/it] 80%|########  | 8/10 [04:22<01:09, 34.84s/it] 90%|######### | 9/10 [04:58<00:35, 35.14s/it]100%|##########| 10/10 [05:34<00:00, 35.34s/it]100%|##########| 10/10 [05:34<00:00, 33.46s/it]
-[queen-retry] [seed=42] done in 401.7s
-[queen-retry] [seed=137] 768x768 @ 10 steps -> queen_alate_retry_s137.png
-The following part of your input was truncated because CLIP can only handle sequences up to 77 tokens: ['visible from side, two antennae forward, jet - black body with chocolate - brown highlights']
-  0%|          | 0/10 [00:00<?, ?it/s] 10%|#         | 1/10 [00:11<01:39, 11.11s/it] 20%|##        | 2/10 [00:46<03:25, 25.67s/it] 30%|###       | 3/10 [01:22<03:31, 30.28s/it] 40%|####      | 4/10 [01:58<03:14, 32.45s/it] 50%|#####     | 5/10 [02:34<02:48, 33.67s/it] 60%|######    | 6/10 [03:10<02:17, 34.40s/it] 70%|#######   | 7/10 [03:46<01:44, 34.87s/it] 80%|########  | 8/10 [04:21<01:10, 35.16s/it] 90%|######### | 9/10 [04:57<00:35, 35.36s/it]100%|##########| 10/10 [05:33<00:00, 35.50s/it]100%|##########| 10/10 [05:33<00:00, 33.34s/it]
-[queen-retry] [seed=137] done in 376.0s
-[queen-retry] [seed=1955] 768x768 @ 10 steps -> queen_alate_retry_s1955.png
-The following part of your input was truncated because CLIP can only handle sequences up to 77 tokens: ['visible from side, two antennae forward, jet - black body with chocolate - brown highlights']
-  0%|          | 0/10 [00:00<?, ?it/s] 10%|#         | 1/10 [00:09<01:24,  9.37s/it] 20%|##        | 2/10 [00:45<03:19, 24.91s/it] 30%|###       | 3/10 [01:20<03:29, 29.86s/it] 40%|####      | 4/10 [01:56<03:12, 32.16s/it] 50%|#####     | 5/10 [02:32<02:47, 33.46s/it] 60%|######    | 6/10 [03:08<02:16, 34.25s/it] 70%|#######   | 7/10 [03:43<01:44, 34.72s/it] 80%|########  | 8/10 [04:19<01:10, 35.05s/it] 90%|######### | 9/10 [04:55<00:35, 35.26s/it]100%|##########| 10/10 [05:31<00:00, 35.42s/it]100%|##########| 10/10 [05:31<00:00, 33.11s/it]
-[queen-retry] [seed=1955] done in 372.4s
-[queen-retry] all seeds done. inspect outputs:
-[queen-retry]   J:\antcolony\assets\gen\lasius_niger\raw\queen_alate_retry_s42.png
-[queen-retry]   J:\antcolony\assets\gen\lasius_niger\raw\queen_alate_retry_s137.png
-[queen-retry]   J:\antcolony\assets\gen\lasius_niger\raw\queen_alate_retry_s1955.png

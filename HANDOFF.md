@@ -5,12 +5,42 @@ This document contains everything needed to implement the ant colony simulation 
 ---
 
 ## Last Updated
-2026-04-18
+2026-04-20
 
 ## Project Status
 🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 + P7 (sim half) + biology-grounded economy complete.** 78 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. P7 sim: possess/recruit/beacon helpers. Economy rebuild: queen laying now throttles with food inflow (vitellogenin-pipeline model), brood cannibalism spares adults when food_stored goes negative, trophic eggs give a small background food income, `TechUnlock` enum with `tech_unlocks` on `ColonyState` lets future PvP mode gate these behind research. Default Keeper starter is self-sustaining. See `docs/biology.md` for the research log backing these mechanics.
 
-## What Was Done This Session
+## Lasius niger Sprite Generation (2026-04-19/20)
+
+FLUX.1-schnell pipeline stood up on kokonoe (3070 Ti, int8 via optimum-quanto + cpu_offload). Scripts in `scripts/`:
+
+- `flux_gen.py` — single-prompt smoke generator
+- `lasius_niger_sprites.py` — full 8-sprite batch (worker, queen_alate, queen_dealate, drone, egg, larva, pupa, corpse). Now supports `--out-dir` + `--seed` + `--steps`.
+- `queen_retry.py` — targeted regen of queen_alate with side-profile + wings-perpendicular fix (FLUX-schnell at 4 steps duplicates gasters on top-down wing views; 10 steps + side profile resolves it)
+- `brood_retry.py` — environment-stripped regen of egg/larva/pupa/corpse (STYLE prefix puts "solid flat black background" FIRST so it survives CLIP 77-token truncation; per-sprite prompts now omit "on soil" / "chamber floor" / "bare ground")
+- `palette_lock.py` — post-pass that quantizes generated PNGs to the fixed Lasius niger 8-color palette
+- `run_queen_retry_after_batch.sh`, `run_brood_retry_after_v2.sh` — wait-and-kick sequencers
+
+Current A/B state (all at `assets/gen/lasius_niger/` — gitignored, regenerable):
+- `raw/` — v1 batch (seed=42, 4 steps)
+- `raw_v2/` — v2 batch (seed=137, 4 steps)
+- `raw_clean/` — brood retry (seeds 42+137, 6 steps, environment-stripped) — use these for egg/larva/pupa/corpse
+- Retry variants: `queen_alate_retry_s{42,137,1955}.png` — queen_alate at 10 steps, side-profile, wings-perpendicular
+
+Lessons (burned into memory):
+1. FLUX-schnell at 4 steps duplicates complex insect body parts (double gasters) on top-down winged views — use side profile + ≥8 steps for any ant with wings
+2. CLIP 77-token truncation eats the END of the prompt. Put background/critical directives FIRST in the STYLE prefix.
+3. Environment language ("on soil", "chamber floor", "bare ground") makes FLUX fill the frame with texture instead of isolating the subject. For game-asset sprites, use "no environment, no ground texture, empty black background, centered subject".
+4. `flux_gen.py` uses `guidance_scale=0.0` — FLUX-schnell requires it; do not set to a real CFG value.
+
+Winners per sprite (pending final user review):
+- worker → `raw/worker.png` (A better than B)
+- drone → either works (A and B both good)
+- queen_alate → `raw_v2/queen_alate.png` OR `queen_alate_retry_s137.png` (seed 137 is the sweet spot)
+- queen_dealate → `raw_v2/queen_dealate.png` pending review
+- egg / larva / pupa / corpse → pick from `raw_clean/*_s42.png` vs `raw_clean/*_s137.png`
+
+## What Was Done This Session (simulation)
 Eleven commits, Phase 4 through Phase 7 (sim half) plus a biology-grounded economy rewrite. Previous sessions covered Phases 1-3 and Keeper K1-K5; this session picked up with K5 shipped but uncommitted and drove straight through the main-game phases.
 
 - **K5 commit (`fd76cf0`):** landed the inspector + timeline + nuptial flight + queen entity + procedural leg art work that had accumulated uncommitted from the prior session.
