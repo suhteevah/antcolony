@@ -5,10 +5,20 @@ This document contains everything needed to implement the ant colony simulation 
 ---
 
 ## Last Updated
-2026-04-20
+2026-04-21
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4 + P5 (MVP) + P6 + P7 (sim half) + biology-grounded economy complete.** 78 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. P7 sim: possess/recruit/beacon helpers. Economy rebuild: queen laying now throttles with food inflow (vitellogenin-pipeline model), brood cannibalism spares adults when food_stored goes negative, trophic eggs give a small background food income, `TechUnlock` enum with `tech_unlocks` on `ColonyState` lets future PvP mode gate these behind research. Default Keeper starter is self-sustaining. See `docs/biology.md` for the research log backing these mechanics.
+🟢 **Phases 1-3 + K1-K5 + P4-P7 (full) + biology-grounded economy complete.** 78 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. P7 player-facing half (input + render) landed this session and user-confirmed working ("I was able to steer the ant"). Keys live: `F` possess-at-cursor, `WASD` steer avatar (auto-suppresses camera pan; arrows still pan), `R` recruit, `Shift+R` dismiss, `Q` toggle beacon mode, `RMB` place beacon. Render: yellow halo on possessed ant, cyan follower ring on bonded ants, beacon sprites with alpha-fade on `ticks_remaining`, HUD status line (avatar id/state/hp/food/followers + beacon mode + active count).
+
+## Session 2026-04-21 — P7 input + render
+
+Single-commit-worth of work (uncommitted at time of writing — user asked for the handoff first):
+
+- **New file:** `crates/antcolony-render/src/player_input.rs` — `PlayerInputPlugin` with 9 systems (`possess_at_cursor`, `toggle_beacon_mode`, `place_beacon_at_cursor`, `steer_avatar_with_wasd`, `recruit_or_dismiss`, `sync_player_overlay_visibility`, `sync_follower_ring_visibility`, `sync_beacon_sprites`, `update_player_status_text`) + `BeaconMode` + `PlayerColony(u8)` resources + `PlayerAvatarOverlay`/`FollowerRing`/`BeaconSprite`/`PlayerStatusText` components. Uses `cursor_to_module_cell` helper to translate world-space clicks into `(ModuleId, cell)` via `ModuleRect` hit tests.
+- **plugin.rs:** registered `PlayerInputPlugin`, added two child sprites to `spawn_ant_parts` (yellow halo + cyan ring, hidden by default), modified `camera_controls` to skip WASD pan (`!possessed && keys.pressed(...)`) while keeping arrow keys always active. `SimulationState` now injected into `camera_controls`.
+- **lib.rs:** exposed `player_input` module + `PlayerInputPlugin` re-export.
+- **ui.rs:** updated help text to document all P7 keys. `F` chosen for possess to avoid collision with existing `E` = encyclopedia toggle.
+- **Verification:** `cargo build --workspace`, `cargo test --workspace` (78+1 green), `cargo build --release`, 7s smoke all clean. User played the build and confirmed steering works.
 
 ## Lasius niger Sprite Generation (2026-04-19/20)
 
@@ -71,9 +81,9 @@ None.
 ## What's Next
 Priority order for next session:
 
-1. **P7 input + render** — the user-facing half of player interaction. The sim already has `possess_nearest` / `recruit_nearby` / `place_beacon` / `set_player_heading` and they're all tested. Missing: WASD → player heading, `R` / `Shift+R` → recruit, right-click → beacon placement (with a key to toggle Gather/Attack), `E` → possess-nearest at cursor. Render: yellow tint on `is_player`, beacon sprite per active beacon, follower highlight ring, HUD avatar status line.
-2. **PvP / versus scoping.** The `TechUnlock` groundwork is in (`tech_unlocks` on `ColonyState`; `has_tech()` check points already live in economy). Next step: a research-tree UI, food-over-time currency, lock default `tech_unlocks = []` when entering versus mode, and the matching Marketplace-style "unlock this tech" interaction. Also lockstep-multiplayer groundwork (see the separate note in MEMORY) would live near here.
-3. **P5 follow-ups.** Surface↔underground ant traversal through the nest entrance. Auto-assign some workers to `AntState::Digging` from `behavior_weights.dig` so excavation happens organically. Chamber label/icon overlays on the underground view. Decide whether to bleed pheromones across layers.
+1. **P7 polish.** Camera soft-follow on possessed avatar (lerp toward `avatar_world_pos`, don't snap — small deadzone so the camera only chases when the avatar moves out of the central ~30% of the viewport). Avatar-carries-food visual nudge (bump the food indicator size). Optional: hover-tooltip over ants when not possessed showing id/caste/state to help the player pick a target before pressing `F`.
+2. **P5 follow-ups.** Surface↔underground ant traversal through the nest entrance — biggest gameplay win after P7, turns `Tab` from a pure camera toggle into a real layer transition (would also let the avatar descend). Auto-assign workers to `AntState::Digging` from `behavior_weights.dig`. Chamber label/icon overlays on the underground view. Decide whether to bleed pheromones across layers.
+3. **PvP / versus scoping.** The `TechUnlock` groundwork is in (`tech_unlocks` on `ColonyState`; `has_tech()` check points already live in economy). Next step: a research-tree UI, food-over-time currency, lock default `tech_unlocks = []` when entering versus mode, and the matching Marketplace-style "unlock this tech" interaction. Also lockstep-multiplayer groundwork (see the separate note in MEMORY) would live near here.
 4. **Phase 8 — full game mode.** Grid-based map with 192 squares (12×16), mating flights spawn daughter colonies in adjacent squares, red colonies occupy some squares, win condition = clear all squares. Depends on finishing daughter-colony spawning (K5 follow-up below).
 5. **P4 polish.** Combat kill banner/sfx, Avenger highlight sprite, per-colony HUD panel split, per-colony nuptial attribution, Avenger targets "most valuable" enemy instead of nearest.
 6. **K5 follow-up.** When a nuptial flight succeeds, spawn a new `ColonyState` + nest module instead of just bumping `daughter_colonies_founded`. Blocker was milestone-tracker keying by vector position; Phase 4's multi-colony plumbing already demonstrates the reshape is safe.
@@ -93,6 +103,8 @@ Priority order for next session:
 - **Tech-unlock hook.** `ColonyState.tech_unlocks: Vec<TechUnlock>` defaults to all-on (Keeper). Economy currently gates `TrophicEggs`, `BroodCannibalism`, `FoodInflowThrottle` via `colony.has_tech(...)`. When wiring PvP, construct colonies with a smaller starting set and drive unlocks from gameplay.
 - **No new crate deps this session.** Everything is on workspace crates. Do not add new deps without discussion — the workspace already has serde/serde_json/anyhow/glam/rand/rand_chacha/toml/tracing/thiserror/bevy.
 - **Multiplayer.** Matt floated "could the red team be a remote player?" — yes; the sim is headless + deterministic + seeded, and two-colony already works. Would be a Phase 9 lockstep transport (per-tick input exchange, desync detection). Not in the current roadmap.
+- **P7 keybinding map (current).** `F` possess-at-cursor / `WASD` steer (or pan if not possessed) / `R` recruit / `Shift+R` dismiss / `Q` toggle beacon mode / `RMB` place beacon. `E` is taken (encyclopedia) so possess went to `F`. Arrow keys always pan regardless of possession — use them to look around the map while controlling an ant.
+- **P7 architecture.** All P7 player input + overlay rendering lives in a single file: `crates/antcolony-render/src/player_input.rs`. The avatar halo + follower ring are spawned as child sprites in `spawn_ant_parts` (plugin.rs), driven by two visibility-sync systems reading `ant.is_player` and `ant.follow_leader.is_some()`. Beacon sprites are diff-spawned against `Simulation::beacons` by id, same pattern as `sync_predator_sprites`. Cursor-to-world uses the same `viewport_to_world_2d` helper pattern as editor.rs; `cursor_to_module_cell` hit-tests `ModuleRect` components to map world→(ModuleId, cell).
 
 ---
 
