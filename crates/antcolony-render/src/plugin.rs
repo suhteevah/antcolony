@@ -143,6 +143,7 @@ impl Plugin for RenderPlugin {
             .add_plugins(crate::save_ui::SaveUiPlugin)
             .add_plugins(crate::inspector::InspectorPlugin)
             .add_plugins(crate::timeline::TimelinePlugin)
+            .add_plugins(crate::player_input::PlayerInputPlugin)
             .init_state::<AppState>()
             .insert_resource(ClearColor(Color::srgb(0.09, 0.07, 0.05)))
             .insert_resource(OverlayState { visible: true })
@@ -806,6 +807,35 @@ fn spawn_ant_parts(
         Visibility::Hidden,
         FoodCarryIndicator { ant_idx },
     ));
+
+    // P7 avatar overlay: bright yellow halo, hidden unless this ant is
+    // the possessed player avatar. Rendered below the body so the
+    // body silhouette still reads clearly — it bleeds past the edges
+    // as a tinted ring.
+    c.spawn((
+        Sprite {
+            color: Color::srgba(1.0, 0.92, 0.15, 0.9),
+            custom_size: Some(Vec2::splat(s * 5.0)),
+            ..default()
+        },
+        Transform::from_translation(Vec3::new(0.0, 0.0, -0.3)),
+        Visibility::Hidden,
+        crate::player_input::PlayerAvatarOverlay { ant_idx },
+    ));
+
+    // P7 follower ring: thin cyan tag, hidden unless this ant has
+    // `follow_leader` set. Sits over the thorax so it reads as a
+    // collar on the recruit.
+    c.spawn((
+        Sprite {
+            color: Color::srgba(0.25, 0.85, 0.95, 0.85),
+            custom_size: Some(Vec2::splat(s * 2.2)),
+            ..default()
+        },
+        Transform::from_translation(Vec3::new(0.0, 0.0, -0.25)),
+        Visibility::Hidden,
+        crate::player_input::FollowerRing { ant_idx },
+    ));
 }
 
 /// Compute each module's world-space origin (in pixels) from its
@@ -1461,21 +1491,26 @@ fn toggle_overview_input(
 fn camera_controls(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    sim: Res<SimulationState>,
     mut scroll: EventReader<bevy::input::mouse::MouseWheel>,
     mut q: Query<(&mut Transform, &mut OrthographicProjection), With<Camera2d>>,
 ) {
     let dt = time.delta_secs();
+    // P7: when an ant is possessed, WASD steers the avatar instead of
+    // panning the camera. Arrow keys still pan so the player can look
+    // around while controlling an ant.
+    let possessed = sim.sim.player_ant_index().is_some();
     let mut pan = Vec2::ZERO;
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+    if (!possessed && keys.pressed(KeyCode::KeyW)) || keys.pressed(KeyCode::ArrowUp) {
         pan.y += 1.0;
     }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+    if (!possessed && keys.pressed(KeyCode::KeyS)) || keys.pressed(KeyCode::ArrowDown) {
         pan.y -= 1.0;
     }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+    if (!possessed && keys.pressed(KeyCode::KeyA)) || keys.pressed(KeyCode::ArrowLeft) {
         pan.x -= 1.0;
     }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+    if (!possessed && keys.pressed(KeyCode::KeyD)) || keys.pressed(KeyCode::ArrowRight) {
         pan.x += 1.0;
     }
     let mut zoom_delta = 0.0;
