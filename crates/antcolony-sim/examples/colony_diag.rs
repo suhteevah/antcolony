@@ -5,13 +5,31 @@
 //! N ticks. Use this to reason about food/brood/population dynamics
 //! without firing up the renderer.
 //!
-//! Usage: cargo run --release --example colony_diag -- [ticks] [log_every]
+//! Usage:
+//!   cargo run --release --example colony_diag -- [ticks] [log_every]
+//!   cargo run --release --example colony_diag -- --years 10
+//!   cargo run --release --example colony_diag -- --years 25 --scale timelapse
+//!   cargo run --release --example colony_diag -- --species camponotus_pennsylvanicus --years 10
 //!
-//! Defaults: 20000 ticks, log every 500.
+//! Time-scale defaults to Timelapse (1440×) for long-horizon runs:
+//! 1 in-game year ≈ 657k ticks at Timelapse vs 15.7M at Seasonal.
+//! Realtime/Brisk/Seasonal still selectable via --scale.
+//!
+//! Without --years, defaults to 20000 ticks at Timelapse to match
+//! the original short-horizon behavior.
 
 use antcolony_sim::{
     AntCaste, AntState, Environment, Simulation, Species, TimeScale, Topology, load_species_dir,
 };
+
+fn parse_scale(s: &str) -> TimeScale {
+    match s.to_ascii_lowercase().as_str() {
+        "realtime" | "real" | "1x" => TimeScale::Realtime,
+        "brisk" | "10x" => TimeScale::Brisk,
+        "seasonal" | "60x" => TimeScale::Seasonal,
+        "timelapse" | "1440x" | _ => TimeScale::Timelapse,
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     // Plain stdout tracing so we see every important log from the sim.
@@ -20,21 +38,69 @@ fn main() -> anyhow::Result<()> {
         .with_target(false)
         .init();
 
-    let mut args = std::env::args().skip(1);
-    let ticks: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(20_000);
-    let log_every: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(500);
+    // Two-mode arg parsing: legacy positional [ticks] [log_every] or
+    // --years/--scale/--species named args. They're mutually exclusive.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let has_named = raw_args.iter().any(|a| a.starts_with("--"));
+
+    let (ticks, log_every, scale, species_id);
+    if has_named {
+        let mut years: Option<f32> = None;
+        let mut scale_arg: TimeScale = TimeScale::Timelapse;
+        let mut species_arg: String = "lasius_niger".into();
+        let mut i = 0;
+        while i < raw_args.len() {
+            match raw_args[i].as_str() {
+                "--years" => {
+                    years = raw_args.get(i + 1).and_then(|s| s.parse().ok());
+                    i += 2;
+                }
+                "--scale" => {
+                    scale_arg = parse_scale(raw_args.get(i + 1).map(|s| s.as_str()).unwrap_or(""));
+                    i += 2;
+                }
+                "--species" => {
+                    species_arg = raw_args.get(i + 1).cloned().unwrap_or(species_arg);
+                    i += 2;
+                }
+                other => {
+                    eprintln!("colony_diag: unknown arg `{other}`");
+                    i += 1;
+                }
+            }
+        }
+        scale = scale_arg;
+        species_id = species_arg;
+        // Compute ticks from years using the chosen scale.
+        // ticks = years * 31_536_000 / (multiplier / tick_rate_hz)
+        // At default tick_rate_hz=30, that simplifies to:
+        // ticks = years * 31_536_000 * 30 / multiplier
+        let years_v = years.unwrap_or(10.0);
+        let mult = scale.multiplier();
+        ticks = (years_v as f64 * 31_536_000.0 * 30.0 / mult as f64).round() as u64;
+        // Aim for ~50 log lines regardless of run length.
+        log_every = (ticks / 50).max(1);
+    } else {
+        let mut a = raw_args.iter();
+        ticks = a.next().and_then(|s| s.parse().ok()).unwrap_or(20_000);
+        log_every = a.next().and_then(|s| s.parse().ok()).unwrap_or(500);
+        scale = TimeScale::Seasonal; // legacy default
+        species_id = "lasius_niger".into();
+    }
 
     // Load species catalog the same way the picker does. We just pick
     // Lasius niger because it's the default keeper starter.
     let species_list: Vec<Species> = load_species_dir("assets/species")?;
     let species = species_list
         .iter()
-        .find(|s| s.id == "lasius_niger")
+        .find(|s| s.id == species_id)
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("lasius_niger not found in assets/species"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("species '{species_id}' not found in assets/species")
+        })?;
 
     let env = Environment {
-        time_scale: TimeScale::Seasonal,
+        time_scale: scale,
         ..Environment::default()
     };
     let cfg = species.apply(&env);

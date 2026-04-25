@@ -10,6 +10,7 @@ worker_lifespan_months = 30.0
 founding = "parasitic"
 polymorphic = false
 hibernation_required = true
+min_diapause_days = 150
 
 [growth]
 egg_maturation_seconds = 1512000

@@ -47,6 +47,18 @@ pub struct Biology {
     /// Does the queen REQUIRE a winter diapause to lay viable eggs?
     #[serde(default)]
     pub hibernation_required: bool,
+    /// Minimum in-game days of diapause required per year for the
+    /// queen's fertility to remain viable. Only consulted when
+    /// `hibernation_required = true`. Defaults to 60 if absent — that
+    /// covers Lasius and most temperate beginners. Cold-temperate
+    /// species (Camponotus, Formica) want higher (~90-120); short-cycle
+    /// mediterranean species (Aphaenogaster) can run lower.
+    #[serde(default = "default_min_diapause_days")]
+    pub min_diapause_days: u32,
+}
+
+fn default_min_diapause_days() -> u32 {
+    60
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +194,7 @@ impl Species {
             hibernation_cold_threshold_c: 10.0,
             hibernation_warm_threshold_c: 12.0,
             hibernation_required: self.biology.hibernation_required,
+            min_diapause_days: self.biology.min_diapause_days,
         };
 
         // queen_egg_rate is fraction-of-egg-per-tick.
@@ -201,10 +214,14 @@ impl Species {
             initial_workers: self.growth.initial_workers,
             initial_food: 200.0,
             egg_cost: self.growth.egg_cost_food,
-            // Current economy uses two stage durations; fold egg→larva time into
-            // larva_maturation (classical brood timeline) and keep pupa separate.
-            larva_maturation_ticks: egg_ticks + larva_ticks,
-            pupa_maturation_ticks: pupa_ticks,
+            // Three independent stage durations, mapped 1:1 from the
+            // species TOML's egg/larva/pupa_maturation_seconds. Pre-fix
+            // these were folded into two fields and the pupa stage
+            // reused the larva duration, compressing the egg→adult
+            // pipeline by ~30%.
+            egg_stage_ticks: egg_ticks as u32,
+            larva_stage_ticks: larva_ticks as u32,
+            pupa_stage_ticks: pupa_ticks as u32,
             adult_food_consumption,
             soldier_food_multiplier: 1.5,
             queen_egg_rate,
@@ -234,8 +251,9 @@ impl Species {
             ticks_per_day,
             queen_egg_rate,
             adult_food_consumption,
-            larva_ticks = cfg.colony.larva_maturation_ticks,
-            pupa_ticks = cfg.colony.pupa_maturation_ticks,
+            egg_ticks = cfg.colony.egg_stage_ticks,
+            larva_ticks = cfg.colony.larva_stage_ticks,
+            pupa_ticks = cfg.colony.pupa_stage_ticks,
             "Species::apply folded biology into SimConfig"
         );
 
@@ -343,8 +361,9 @@ keeper_notes = "Docile, hardy, forgiving."
             ..Environment::default()
         };
         let cfg = s.apply(&env);
-        assert!(cfg.colony.larva_maturation_ticks > 0);
-        assert!(cfg.colony.pupa_maturation_ticks > 0);
+        assert!(cfg.colony.egg_stage_ticks > 0);
+        assert!(cfg.colony.larva_stage_ticks > 0);
+        assert!(cfg.colony.pupa_stage_ticks > 0);
         assert!(cfg.colony.queen_egg_rate > 0.0);
         assert!(cfg.colony.adult_food_consumption > 0.0);
     }
@@ -380,9 +399,11 @@ keeper_notes = "Docile, hardy, forgiving."
     }
 
     #[test]
-    fn realtime_larva_period_matches_14_days() {
-        // 2 weeks egg + 3 weeks larva in the sample TOML → 35 days total
-        // for larva_maturation_ticks at realtime/30Hz.
+    fn realtime_stage_periods_map_to_separate_durations() {
+        // Sample TOML has egg=14d, larva=21d, pupa=14d. Each stage maps
+        // to its own ticks field at realtime/30Hz. Pre-fix this test
+        // checked the combined 35d sum because egg + larva were folded
+        // into a single field; now each stage is independent.
         use crate::environment::{Environment, TimeScale};
         let s = Species::load_from_str(sample_toml()).expect("parse");
         let env = Environment {
@@ -391,7 +412,11 @@ keeper_notes = "Docile, hardy, forgiving."
             ..Environment::default()
         };
         let cfg = s.apply(&env);
-        // 35 days * 86400 s * 30 Hz = 90_720_000 ticks
-        assert_eq!(cfg.colony.larva_maturation_ticks, 90_720_000);
+        // 14d * 86400s * 30Hz = 36_288_000 ticks
+        assert_eq!(cfg.colony.egg_stage_ticks, 36_288_000);
+        // 21d * 86400s * 30Hz = 54_432_000 ticks
+        assert_eq!(cfg.colony.larva_stage_ticks, 54_432_000);
+        // 14d * 86400s * 30Hz = 36_288_000 ticks
+        assert_eq!(cfg.colony.pupa_stage_ticks, 36_288_000);
     }
 }

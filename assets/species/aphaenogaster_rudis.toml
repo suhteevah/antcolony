@@ -10,6 +10,7 @@ worker_lifespan_months = 12.0
 founding = "claustral"
 polymorphic = false
 hibernation_required = true
+min_diapause_days = 60
 
 [growth]
 egg_maturation_seconds = 1209600

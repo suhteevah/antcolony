@@ -130,6 +130,17 @@ pub struct AntConfig {
     /// K3: species requires a real winter diapause for queen fertility.
     #[serde(default)]
     pub hibernation_required: bool,
+    /// K3: minimum in-game days of diapause required per year before
+    /// the year-rollover fertility check is satisfied. Only consulted
+    /// when `hibernation_required = true`. Default 60 (matches Lasius
+    /// niger and most temperate beginners); cold-temperate species
+    /// (Camponotus, Formica) want higher.
+    #[serde(default = "default_min_diapause_days")]
+    pub min_diapause_days: u32,
+}
+
+fn default_min_diapause_days() -> u32 {
+    60
 }
 
 fn default_worker_size_mm() -> f32 {
@@ -150,8 +161,21 @@ pub struct ColonyConfig {
     pub initial_workers: u32,
     pub initial_food: f32,
     pub egg_cost: f32,
-    pub larva_maturation_ticks: u32,
-    pub pupa_maturation_ticks: u32,
+    /// Duration of the egg stage in ticks (egg → larva).
+    /// Previously misnamed `larva_maturation_ticks`.
+    #[serde(alias = "larva_maturation_ticks")]
+    pub egg_stage_ticks: u32,
+    /// Duration of the larva stage in ticks (larva → pupa).
+    /// Previously misnamed `pupa_maturation_ticks` — and that same value
+    /// was incorrectly reused as the pupa-stage duration too, compressing
+    /// the egg→adult pipeline by ~30%. See `pupa_stage_ticks` below.
+    #[serde(alias = "pupa_maturation_ticks")]
+    pub larva_stage_ticks: u32,
+    /// Duration of the pupa stage in ticks (pupa → adult). Pre-fix this
+    /// was conflated with `larva_stage_ticks`; species TOMLs already had
+    /// a separate `pupa_maturation_seconds` field that was being ignored
+    /// because the code reused the larva field.
+    pub pupa_stage_ticks: u32,
     pub adult_food_consumption: f32,
     pub soldier_food_multiplier: f32,
     pub queen_egg_rate: f32,
@@ -243,6 +267,7 @@ impl Default for AntConfig {
             hibernation_cold_threshold_c: 10.0,
             hibernation_warm_threshold_c: 12.0,
             hibernation_required: false,
+            min_diapause_days: 60,
         }
     }
 }
@@ -253,8 +278,9 @@ impl Default for ColonyConfig {
             initial_workers: 20,
             initial_food: 100.0,
             egg_cost: 5.0,
-            larva_maturation_ticks: 300,
-            pupa_maturation_ticks: 200,
+            egg_stage_ticks: 300,
+            larva_stage_ticks: 300,
+            pupa_stage_ticks: 200,
             adult_food_consumption: 0.01,
             soldier_food_multiplier: 1.5,
             queen_egg_rate: 0.05,
@@ -341,8 +367,9 @@ initial_count = 30
 initial_workers = 25
 initial_food = 150.0
 egg_cost = 5.0
-larva_maturation_ticks = 300
-pupa_maturation_ticks = 200
+egg_stage_ticks = 300
+larva_stage_ticks = 300
+pupa_stage_ticks = 200
 adult_food_consumption = 0.01
 soldier_food_multiplier = 1.5
 queen_egg_rate = 0.05

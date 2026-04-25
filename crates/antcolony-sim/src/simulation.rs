@@ -32,9 +32,12 @@ const PORT_BLEED_RATE: f32 = 0.35;
 /// K3: per-tick relaxation rate of a cell toward its `ambient_target`.
 const TEMP_DRIFT_RATE: f32 = 0.01;
 
-/// K3: how many in-game days in diapause are required per year for a
-/// species marked `hibernation_required` to keep queen fertility.
-const MIN_DIAPAUSE_DAYS: u32 = 60;
+/// K3 fallback: how many in-game days of diapause are required per year
+/// for a species marked `hibernation_required` to keep queen fertility.
+/// Used only as a safety floor if `AntConfig::min_diapause_days` is
+/// somehow zero. The active value comes from species TOML →
+/// `Species.biology.min_diapause_days` → `AntConfig::min_diapause_days`.
+const DEFAULT_MIN_DIAPAUSE_DAYS: u32 = 60;
 
 #[derive(Debug, Clone)]
 pub struct Simulation {
@@ -2267,7 +2270,12 @@ impl Simulation {
                 } else if colony.last_year_evaluated == 0 && current_year == 1 {
                     // Full first year — apply the same gate as later years.
                     if hibernation_required {
-                        let ok = colony.days_in_diapause_this_year >= MIN_DIAPAUSE_DAYS;
+                        let required = if self.config.ant.min_diapause_days == 0 {
+                            DEFAULT_MIN_DIAPAUSE_DAYS
+                        } else {
+                            self.config.ant.min_diapause_days
+                        };
+                        let ok = colony.days_in_diapause_this_year >= required;
                         let newly_suppressed = !ok && !colony.fertility_suppressed;
                         colony.fertility_suppressed = !ok;
                         if newly_suppressed {
@@ -2275,7 +2283,7 @@ impl Simulation {
                                 colony_id = colony.id,
                                 year = current_year,
                                 diapause_days = colony.days_in_diapause_this_year,
-                                required = MIN_DIAPAUSE_DAYS,
+                                required,
                                 "missed winter — queen fertility suppressed"
                             );
                         }
@@ -2283,7 +2291,12 @@ impl Simulation {
                         colony.fertility_suppressed = false;
                     }
                 } else if hibernation_required {
-                    let ok = colony.days_in_diapause_this_year >= MIN_DIAPAUSE_DAYS;
+                    let required = if self.config.ant.min_diapause_days == 0 {
+                        DEFAULT_MIN_DIAPAUSE_DAYS
+                    } else {
+                        self.config.ant.min_diapause_days
+                    };
+                    let ok = colony.days_in_diapause_this_year >= required;
                     let newly_suppressed = !ok && !colony.fertility_suppressed;
                     colony.fertility_suppressed = !ok;
                     if newly_suppressed {
@@ -2291,7 +2304,7 @@ impl Simulation {
                             colony_id = colony.id,
                             year = current_year,
                             diapause_days = colony.days_in_diapause_this_year,
-                            required = MIN_DIAPAUSE_DAYS,
+                            required,
                             "missed winter — queen fertility suppressed"
                         );
                     }
@@ -2504,7 +2517,8 @@ impl Simulation {
                 b.age = b.age.saturating_add(1);
                 match b.stage {
                     BroodStage::Egg => {
-                        if b.age >= ccfg.larva_maturation_ticks {
+                        // Egg stage: age until it matures into a larva.
+                        if b.age >= ccfg.egg_stage_ticks {
                             b.stage = BroodStage::Larva;
                             b.age = 0;
                             if colony.eggs > 0 {
@@ -2514,7 +2528,8 @@ impl Simulation {
                         }
                     }
                     BroodStage::Larva => {
-                        if b.age >= ccfg.pupa_maturation_ticks {
+                        // Larva stage: age until it matures into a pupa.
+                        if b.age >= ccfg.larva_stage_ticks {
                             b.stage = BroodStage::Pupa;
                             b.age = 0;
                             if colony.larvae > 0 {
@@ -2524,7 +2539,8 @@ impl Simulation {
                         }
                     }
                     BroodStage::Pupa => {
-                        if b.age >= ccfg.pupa_maturation_ticks {
+                        // Pupa stage: age until it ecloses into an adult.
+                        if b.age >= ccfg.pupa_stage_ticks {
                             matured_indices.push(idx);
                         }
                     }
@@ -2917,8 +2933,9 @@ mod tests {
         cfg.colony.queen_egg_rate = 0.5;
         cfg.colony.egg_cost = 1.0;
         cfg.colony.adult_food_consumption = 0.001;
-        cfg.colony.larva_maturation_ticks = 100;
-        cfg.colony.pupa_maturation_ticks = 100;
+        cfg.colony.egg_stage_ticks = 100;
+        cfg.colony.larva_stage_ticks = 100;
+        cfg.colony.pupa_stage_ticks = 100;
         let mut sim = Simulation::new(cfg, 42);
 
         let initial = sim.colonies[0].adult_total();
@@ -2971,8 +2988,9 @@ mod tests {
         cfg.colony.queen_egg_rate = 1.0;
         cfg.colony.egg_cost = 1.0;
         cfg.colony.adult_food_consumption = 0.0;
-        cfg.colony.larva_maturation_ticks = 10;
-        cfg.colony.pupa_maturation_ticks = 10;
+        cfg.colony.egg_stage_ticks = 10;
+        cfg.colony.larva_stage_ticks = 10;
+        cfg.colony.pupa_stage_ticks = 10;
         let mut sim = Simulation::new(cfg, 99);
         sim.colonies[0].caste_ratio = CasteRatio {
             worker: 0.0,
