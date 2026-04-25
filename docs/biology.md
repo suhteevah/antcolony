@@ -97,6 +97,68 @@ In a planned versus mode (two human players, two colonies), biological mechanics
 
 ---
 
+## Excavation & Nest Architecture (logged 2026-04-25)
+
+Notes for the dig-pipeline implementation. Real ant excavation is structurally different from "ant standing on Solid tile, tile becomes Empty." Capturing the actual workflow is what gives an ant farm its unmistakable look.
+
+### Soil pellets, not grains
+Workers don't transport substrate one grain at a time. They use mandibles + saliva + (in some species) prothoracic legs to roll a small **pellet** of cohesive soil — typically several to dozens of grains — and carry the pellet whole. The pellet is roughly the size of the worker's head. Lasius niger pellets are ~0.3-0.7mm; Pogonomyrmex (large workers, sandy substrate) can carry pellets up to 1.5mm.
+
+**Sim implication.** When a `Solid` tile is excavated, the digger gains a "carrying soil pellet" state — visually a small dark blob in the mandibles (we already have a food-carry indicator pattern; mirror it for soil). The pellet exists as a transferable load the ant must dispose of, not as an instant disappearance.
+
+**Source.** [Sudd, J.H. (1969). The excavation of soil by ants. *Zeitschrift für Tierpsychologie* 26: 257-276.](https://onlinelibrary.wiley.com/doi/10.1111/j.1439-0310.1969.tb01952.x) — foundational study of pellet rolling and carry behavior in Formica & Lasius. Also [Tschinkel, W.R. (2004). The nest architecture of the Florida harvester ant, *Pogonomyrmex badius*.](https://www.jstor.org/stable/25086323) for pellet sizes in granivores.
+
+### Kickout mound — the diagnostic visual
+When a pellet-carrying worker reaches the nest entrance, she does NOT just drop it on the threshold. Workers drop pellets a body-length or two **outside** the entrance, building a characteristic **donut-shaped mound** around the hole. The mound is the single most recognizable visual feature of an active ant nest — both in nature and in glass-front formicarium setups. In substrate ant farms (the iconic between-the-glass type), an equivalent **dump pile** accumulates against the inner wall closest to the entrance.
+
+**Sim implication.** Excavated pellets must accumulate in a visible pile — either at the surface entrance cell (outdoor mound logic) or along the underground module's "exit" wall. A `Terrain::SoilPile(intensity)` variant or a per-cell counter incremented by dump events gives the visual feedback. Without this the player doesn't see *why* digging matters; with it, the mound growing over time becomes a satisfying progress indicator.
+
+**Source.** [Tschinkel, W.R. (2003). Subterranean ant nests: trace fossils past and future?](https://www.sciencedirect.com/science/article/abs/pii/S0031018202005583) — extensive treatment of nest entrance architecture and kickout deposition. Also keeper visual reference: virtually any Uncle Milton sand-between-glass ant farm builds a visible dump pile within 24-48 hours of activity.
+
+### Chain-gang pipeline
+For tunnels longer than a few body lengths, excavation is **not solo work**. Digging is a pipeline: a frontline digger loosens material at the dig face, intermediate carriers shuttle pellets back along the tunnel, and entrance workers (often older / smaller individuals) take pellets the final distance to the kickout. Workers self-organize into these roles based on local task demand — there's no central dispatcher.
+
+**Sim implication.** A single ant doing the entire dig→carry→dump cycle works for short tunnels, but as the underground expands into long passages, the per-ant round trip becomes the bottleneck. The natural emergent behavior is for multiple workers to cluster at the dig face and chain pellets back. Easiest sim approximation: when an ant in `AntState::Returning` (carrying soil) encounters another worker in `Idle`/`Exploring`, hand off the pellet — a trophallaxis-style transfer. Skip in MVP; add when tunnels get long enough to see the queue.
+
+**Source.** [Buhl, J., Gautrais, J., Solé, R.V., Kuntz, P., Valverde, S., Deneubourg, J.L., & Theraulaz, G. (2004). Efficiency and robustness in ant networks of galleries. *European Physical Journal B* 42: 123-129.](https://link.springer.com/article/10.1140/epjb/e2004-00366-7) — formal analysis of worker pipelining in *Messor sancta*. Less formal but vivid: keeper Forum threads on Camponotus build-outs frequently note "two diggers up front, three carriers behind, one or two at the entrance" patterns visible in glass setups.
+
+### CO₂ and humidity gradients drive dig direction
+Where ants dig is not random. Multiple species are demonstrably attracted to **higher CO₂** (a proxy for "deeper / less ventilated / where the colony already is") and **higher humidity** when choosing a dig face. They are simultaneously repelled by exposed surface conditions. This produces nests that branch laterally at each chamber level and trend downward overall — the iconic vertical-shaft-plus-side-chambers architecture.
+
+**Sim implication.** Big design opportunity: the existing `PheromoneGrid` already supports per-cell scalar layers (Alarm, FoodTrail, HomeTrail, ColonyScent). Add a **`Dig` priority field** that ants deposit on Solid tiles adjacent to chambers/tunnels with high colony-scent or near brood. Diggers select the cell with the highest dig score. Result: nest expansion is biased toward existing population density — exactly the right look. Add a `Humidity` scalar field if we want CO₂/water gradients later (ties into K3 thermoregulation).
+
+**Source.** [Kleineidam, C. & Roces, F. (2000). Carbon dioxide concentrations and nest ventilation in nests of the leaf-cutting ant *Atta vollenweideri*. *Insectes Sociaux* 47: 241-248.](https://link.springer.com/article/10.1007/PL00001710). Also [Bollazzi, M. & Roces, F. (2002). Thermal preference for fungus culturing and brood location in *Acromyrmex ambiguus*.](https://link.springer.com/article/10.1007/s00040-002-8302-2) for humidity-driven chamber siting.
+
+### Chamber siting is functional, not random
+Ants don't excavate generically — different chambers serve different functions and get sited at predictable depths and humidities. **Brood nurseries** sit at the warmest, most humid level (typically near the surface in summer, deeper in winter). **Food storage / granaries** sit lower, drier, cooler. **Waste / midden** chambers sit OFF the main spine, away from brood, often near the lowest point. **Queen chamber** is the deepest, most defensible point. Workers actively move brood between chambers across seasons to track the optimal microclimate.
+
+**Sim implication.** P5's `attach_underground` already pre-carves QueenChamber, BroodNursery, FoodStorage, and Waste chambers — but workers don't choose to dig new chambers, and don't move brood between chambers. Phase B of dig: when colony population exceeds chamber capacity, designate a "dig new chamber" target with appropriate type based on what the colony lacks. When seasonal temperature shifts (K3 climate), workers shuttle brood from cold chambers to warm ones. This is the layer that turns the underground from "static carved environment" into "living architecture."
+
+**Source.** [Tschinkel, W.R. (2015). The architecture of subterranean ant nests: beauty and mystery underfoot. *Journal of Bioeconomics* 17: 271-291.](https://link.springer.com/article/10.1007/s10818-015-9203-6) — definitive review covering chamber function, depth-stratification, and seasonal brood relocation.
+
+### Excavation rate is slow
+A small *Lasius niger* founding colony excavates roughly **1-2 cm³ of substrate per day** under good conditions. A mature *Camponotus* colony in soft wood can excavate galleries totaling several liters but over many months. In sim terms, even compressed 60× time scale, this should be visible-but-not-frantic: a single digger should take dozens of ticks to remove a single tile, with the rate tunable per species via biology TOMLs (large-bodied species dig faster per worker; cohesive substrate slows everyone down).
+
+**Sim implication.** The current `dig_tick` excavates one neighbor per ant per tick (instantaneous from a player's perspective at 30Hz). That's too fast and breaks the "watch them work" appeal. Introduce a **dig progress counter** per (ant, target_cell) pair: each tick the digger spends adjacent to the target adds N progress; when progress crosses a threshold (e.g. 60 ticks ≈ 2 sim seconds at default scale), the tile flips. Threshold scales with `worker_size_mm` and a per-species `dig_speed_multiplier` to be added to `appearance` block.
+
+**Source.** [Sudd, J.H. (1972). The absence of social enhancement of digging in pairs of ants (Formica lemani). *Animal Behaviour* 20: 813-819.](https://www.sciencedirect.com/science/article/abs/pii/S0003347272802701) reports excavation rates for Formica lemani. AntKeeper community measurements ([formiculture.com forum](https://www.formiculture.com/) digging-rate threads) corroborate the order of magnitude for Lasius and Camponotus.
+
+### Substrate type changes everything
+Ants in **dry sand** dig fast but tunnels collapse easily — workers reinforce walls with saliva and packed pellets. **Clay or loam** holds tunnels better but takes more force per pellet. **Aerated concrete (Y-Tong)** is the keeper-favorite "permanent" substrate — ants chew tunnels slowly but the result is structurally indestructible. **Wood** (Camponotus) is excavated with mandibles only, no pellet rolling — sawdust-like frass is kicked out rather than packed. **Gel ant farms** are nutritive but biologically unnatural — ants eat the substrate AS they tunnel.
+
+**Sim implication.** The `ModuleKind::UndergroundNest` is currently substrate-agnostic. A future `substrate: SubstrateKind` field on the module — Sand / Loam / YTong / Wood / Gel — would let species like Camponotus dig through wood differently from how Lasius digs through soil. Keep MVP: assume Loam (the modal case). Future: substrate selection at editor placement time, with species-substrate compatibility (Camponotus prefers wood, Pogonomyrmex prefers sand, generic ants OK with anything).
+
+**Source.** Visual + behavioral differences are summarized in [Wilson, E.O. (1971). *The Insect Societies*, Chapter 5: Nest Construction.](https://www.hup.harvard.edu/file/feeds/PDF/9780674454903_sample.pdf) Modern keeper culture has documented substrate effects extensively on YouTube — Mikey Bustos (AntsCanada), Antiloquent, and Tracking Ants channels all cover species-substrate matching.
+
+### Antennation around the dig face
+Active dig sites have a noticeable density of **non-digging workers** clustered around the digger, antennating frequently. This appears to serve information transfer (recruit more diggers when work is heavy) and possibly debris-clearance coordination. The cluster is denser than typical worker density elsewhere in the nest — it's a real visual signature of an active site.
+
+**Sim implication.** Late-stage polish: idle workers should perform a short "investigate" walk toward the nearest active digger and linger for a few ticks. Won't change excavation rate but will produce the visible cluster around dig sites that real ant farms have. Skip in MVP, but add when render polish stage hits (B/C in the original digging plan).
+
+**Source.** [Theraulaz, G. & Bonabeau, E. (1999). A brief history of stigmergy. *Artificial Life* 5: 97-116.](https://www.mitpressjournals.org/doi/10.1162/106454699568700) covers stigmergic recruitment broadly. Specific antennation-density observations are in [Pratt, S.C. (2005). Quorum sensing by encounter rates in the ant *Temnothorax albipennis*.](https://academic.oup.com/beheco/article/16/2/488/195793).
+
+---
+
 ## How to Use This File
 
 1. **Reading.** Before implementing or modifying a sim mechanic that touches ant behavior, grep this file for relevant terms.
