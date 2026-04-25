@@ -73,10 +73,16 @@ fn load_atlas_for_species(
     atlas.sprites.clear();
     atlas.species_id = Some(species_id.clone());
 
-    // Disk path: assets/gen/<species_id>/design/. AssetServer.load() takes
-    // a path relative to `assets/`, so we use "gen/<id>/design/<file>".
-    // For the disk-existence check we need the full path.
-    let assets_root = std::env::current_dir().unwrap_or_default().join("assets");
+    // Disk path: <asset_root>/gen/<species_id>/design/. AssetServer.load()
+    // takes a path relative to `<asset_root>/`, so we use
+    // "gen/<id>/design/<file>". For the disk-existence check we need the
+    // full path. The `ANTCOLONY_ASSET_ROOT` env var is set in main.rs by
+    // `resolve_asset_root()` so this stays in sync with the AssetPlugin
+    // file_path. Falls back to cwd-relative `assets/` for tooling that
+    // links the render crate without going through the binary entry point.
+    let assets_root = std::env::var("ANTCOLONY_ASSET_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join("assets"));
     let design_dir = assets_root.join("gen").join(&species_id).join("design");
 
     if !design_dir.exists() {
