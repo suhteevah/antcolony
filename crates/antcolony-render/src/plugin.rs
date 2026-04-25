@@ -144,6 +144,7 @@ impl Plugin for RenderPlugin {
             .add_plugins(crate::inspector::InspectorPlugin)
             .add_plugins(crate::timeline::TimelinePlugin)
             .add_plugins(crate::player_input::PlayerInputPlugin)
+            .add_plugins(crate::atlas::SpriteAtlasPlugin)
             .init_state::<AppState>()
             .insert_resource(ClearColor(Color::srgb(0.09, 0.07, 0.05)))
             .insert_resource(OverlayState { visible: true })
@@ -181,12 +182,13 @@ impl Plugin for RenderPlugin {
 fn setup(
     mut commands: Commands,
     sim: Res<SimulationState>,
+    atlas: Res<crate::atlas::SpriteAtlas>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     commands.spawn(Camera2d);
-    spawn_formicarium(&mut commands, &sim, &mut images, &mut meshes, &mut materials);
+    spawn_formicarium(&mut commands, &sim, &atlas, &mut images, &mut meshes, &mut materials);
 }
 
 /// Rebuild system: when topology has mutated, despawn all formicarium
@@ -195,6 +197,7 @@ fn rebuild_formicarium_if_dirty(
     mut commands: Commands,
     mut dirty: ResMut<TopologyDirty>,
     sim: Res<SimulationState>,
+    atlas: Res<crate::atlas::SpriteAtlas>,
     q: Query<Entity, With<FormicariumEntity>>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -208,7 +211,7 @@ fn rebuild_formicarium_if_dirty(
         commands.entity(e).despawn_recursive();
     }
     tracing::info!(despawned = n, "rebuild_formicarium: topology dirty — respawning");
-    spawn_formicarium(&mut commands, &sim, &mut images, &mut meshes, &mut materials);
+    spawn_formicarium(&mut commands, &sim, &atlas, &mut images, &mut meshes, &mut materials);
     dirty.0 = false;
 }
 
@@ -218,6 +221,7 @@ fn rebuild_formicarium_if_dirty(
 pub(crate) fn spawn_formicarium(
     commands: &mut Commands,
     sim: &SimulationState,
+    atlas: &crate::atlas::SpriteAtlas,
     images: &mut Assets<Image>,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
@@ -655,6 +659,7 @@ pub(crate) fn spawn_formicarium(
             ))
             .with_children(|c| {
                 let cid = (ant.colony_id as usize).min(body_mats.len() - 1);
+                let sprite = atlas.lookup(&sim.species.id, ant.caste).cloned();
                 spawn_ant_parts(
                     c,
                     idx as u32,
@@ -663,6 +668,7 @@ pub(crate) fn spawn_formicarium(
                     &body_mats[cid],
                     limb_colors[cid],
                     &food_carry_mat,
+                    sprite.as_ref(),
                 );
             });
     }
@@ -711,6 +717,7 @@ fn spawn_ant_parts(
     body_mat: &Handle<ColorMaterial>,
     limb_color: Color,
     food_carry_mat: &Handle<ColorMaterial>,
+    atlas_sprite: Option<&Handle<Image>>,
 ) {
     // Caste-driven size + silhouette shaping.
     let (body_scale, head_boost, gaster_boost) = match caste {
@@ -721,6 +728,33 @@ fn spawn_ant_parts(
     };
     let s = TILE * 0.35 * body_scale;
 
+    // Atlas-rendered ants: spawn a single textured sprite covering the
+    // body footprint instead of the procedural primitives. Legs and
+    // antennae are baked into the image so leg animation is suppressed
+    // for atlas ants — the trade-off for high-quality art. Food-carry
+    // and player overlays still spawn procedurally further down.
+    let use_atlas = atlas_sprite.is_some();
+    if let Some(handle) = atlas_sprite {
+        let sprite_size = TILE * 4.0 * body_scale;
+        c.spawn((
+            Sprite {
+                image: handle.clone(),
+                custom_size: Some(Vec2::splat(sprite_size)),
+                ..default()
+            },
+            // -90deg: source images are drawn head-up (north); the parent
+            // entity rotates the sprite by ant.heading where 0 rad = +X
+            // (east). Pre-rotating -90deg maps north→east so heading
+            // values line up with the in-game travel direction.
+            Transform::from_translation(Vec3::new(0.0, 0.0, 0.0))
+                .with_rotation(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)),
+        ));
+    }
+
+    // Procedural body parts (gaster/thorax/head/antennae/legs). Skipped
+    // when an atlas sprite is present — the textured sprite already
+    // includes those features baked into the art.
+    if !use_atlas {
     // Gaster (rear, largest, elongated along body axis).
     let gx = -1.35 * s * gaster_boost;
     c.spawn((
@@ -797,6 +831,7 @@ fn spawn_ant_parts(
             ));
         }
     }
+    } // end if !use_atlas
 
     // Food carry indicator — bright green dot sitting on the gaster.
     c.spawn((
