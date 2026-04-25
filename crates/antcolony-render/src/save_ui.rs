@@ -204,8 +204,13 @@ fn handle_save_load_keys(
 }
 
 fn resolve_species(id: &str) -> Option<Species> {
-    // The picker uses `assets/species/` relative to the cwd. Match that.
-    let path = std::path::Path::new("assets/species");
+    // Resolve via ANTCOLONY_ASSET_ROOT (set in main.rs) so this works
+    // regardless of cwd. Falls back to "assets/species" relative to cwd
+    // for tooling that links the render crate without going through main.
+    let species_dir = std::env::var("ANTCOLONY_ASSET_ROOT")
+        .map(|root| format!("{root}/species"))
+        .unwrap_or_else(|_| "assets/species".to_string());
+    let path = std::path::Path::new(&species_dir);
     match load_species_dir(path) {
         Ok(list) => list.into_iter().find(|s| s.id == id),
         Err(e) => {

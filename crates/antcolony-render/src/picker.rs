@@ -111,7 +111,14 @@ struct DetailStats;
 // --- Setup ---
 
 fn load_species_catalog(mut commands: Commands) {
-    match load_species_dir(SPECIES_DIR) {
+    // Resolve via ANTCOLONY_ASSET_ROOT (set in main.rs) so this works
+    // regardless of cwd — running the release exe by double-click or from
+    // an installed location otherwise hits "io error 3" because
+    // "assets/species" is relative to cwd.
+    let species_path = std::env::var("ANTCOLONY_ASSET_ROOT")
+        .map(|root| format!("{root}/species"))
+        .unwrap_or_else(|_| SPECIES_DIR.to_string());
+    match load_species_dir(&species_path) {
         Ok(species) if !species.is_empty() => {
             tracing::info!(count = species.len(), "Picker: loaded species catalog");
             commands.insert_resource(SpeciesCatalog {
@@ -120,7 +127,7 @@ fn load_species_catalog(mut commands: Commands) {
             });
         }
         Ok(_) => {
-            let msg = format!("No species TOML files found in {SPECIES_DIR}");
+            let msg = format!("No species TOML files found in {species_path}");
             tracing::error!("{}", msg);
             commands.insert_resource(SpeciesCatalog {
                 species: Vec::new(),
@@ -128,7 +135,7 @@ fn load_species_catalog(mut commands: Commands) {
             });
         }
         Err(e) => {
-            let msg = format!("Failed to load species from {SPECIES_DIR}: {e}");
+            let msg = format!("Failed to load species from {species_path}: {e}");
             tracing::error!("{}", msg);
             commands.insert_resource(SpeciesCatalog {
                 species: Vec::new(),
