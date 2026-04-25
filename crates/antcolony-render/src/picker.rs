@@ -18,7 +18,7 @@ pub struct PickerPlugin;
 impl Plugin for PickerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PickerSelection>()
-            .add_systems(OnEnter(AppState::Picker), (load_species_catalog, setup_picker_ui).chain())
+            .add_systems(OnEnter(AppState::Picker), (load_species_catalog, setup_picker_ui, autostart_from_env).chain())
             .add_systems(
                 Update,
                 (
@@ -493,6 +493,29 @@ fn confirm_button_system(
         commands.insert_resource(state);
         next_state.set(AppState::Running);
     }
+}
+
+/// Debug helper: if `ANTCOLONY_AUTOSTART` env var is set to a species id,
+/// boot straight into Running on that species. Used to reproduce
+/// crashes that only manifest after picker confirm without needing an
+/// interactive click. No-op when the var is unset.
+fn autostart_from_env(
+    mut commands: Commands,
+    catalog: Res<SpeciesCatalog>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    let Ok(species_id) = std::env::var("ANTCOLONY_AUTOSTART") else {
+        return;
+    };
+    let Some(species) = catalog.species.iter().find(|s| s.id == species_id) else {
+        tracing::error!(species_id = %species_id, "ANTCOLONY_AUTOSTART: species not found in catalog");
+        return;
+    };
+    let env = Environment::default();
+    tracing::info!(species = %species.id, "ANTCOLONY_AUTOSTART: skipping picker, booting into Running");
+    let state = SimulationState::from_species(species, &env);
+    commands.insert_resource(state);
+    next_state.set(AppState::Running);
 }
 
 /// Phase 4: pressing `V` on the picker launches the selected species
