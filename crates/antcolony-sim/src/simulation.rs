@@ -2236,10 +2236,36 @@ impl Simulation {
 
             // --- K3 fertility gate: evaluated on year rollover ---
             if current_year > colony.last_year_evaluated {
-                // Boot safety: year 0 → first rollover we never suppress,
-                // just snapshot + reset. After year 1 onward, check.
-                if colony.last_year_evaluated == 0 && current_year == 1 {
-                    // First real rollover — check only if hibernation required.
+                // Boot safety: at the year 0 → year 1 rollover, only
+                // check the diapause gate if year 0 was a FULL year
+                // (i.e. `starting_day_of_year == 0`). The production
+                // default of `starting_day_of_year = 150` (mid-spring)
+                // means year 0 only spans ~215 days before rollover --
+                // the cold window inside that partial year is ~67 days
+                // at best, and nest-cell thermal drift typically pushes
+                // the actual diapause-day count below the 60-day
+                // threshold. Suppressing fertility for year 1 on a
+                // partial year 0 is what caused the long-running
+                // collapse: queen never lays an egg the entire second
+                // year of play, workers attrit, colony dies.
+                //
+                // After year 1 → year 2 onward we always check, since
+                // by then we've had a full year to accumulate diapause
+                // days against the threshold.
+                let partial_first_year = self.climate.starting_day_of_year != 0;
+                if colony.last_year_evaluated == 0
+                    && current_year == 1
+                    && partial_first_year
+                {
+                    tracing::info!(
+                        colony_id = colony.id,
+                        diapause_days = colony.days_in_diapause_this_year,
+                        starting_day = self.climate.starting_day_of_year,
+                        "year 0 → 1: boot rollover skipped fertility check (partial first year)"
+                    );
+                    colony.fertility_suppressed = false;
+                } else if colony.last_year_evaluated == 0 && current_year == 1 {
+                    // Full first year — apply the same gate as later years.
                     if hibernation_required {
                         let ok = colony.days_in_diapause_this_year >= MIN_DIAPAUSE_DAYS;
                         let newly_suppressed = !ok && !colony.fertility_suppressed;
@@ -3263,6 +3289,11 @@ mod tests {
     fn fertility_suppressed_if_no_winter() {
         // Species requires hibernation but climate never dips below cold
         // threshold. After 1 year, fertility must be suppressed.
+        //
+        // Force `starting_day_of_year = 0` so year 0 is a FULL year and
+        // the year 0→1 rollover applies the diapause check directly
+        // (the production default of 150 makes year 0 partial, in which
+        // case we deliberately skip the boot check — see colony_economy_tick).
         let mut cfg = small_config();
         cfg.ant.hibernation_required = true;
         cfg.ant.hibernation_cold_threshold_c = 10.0;
@@ -3273,6 +3304,7 @@ mod tests {
         // Force always-warm climate.
         sim.climate.seasonal_mid_c = 25.0;
         sim.climate.seasonal_amplitude_c = 0.0;
+        sim.climate.starting_day_of_year = 0; // full first year
         // 1 day per 2 ticks → 1 year = 730 ticks.
         sim.in_game_seconds_per_tick = 86_400.0 / 2.0;
         sim.run(800);
@@ -3280,6 +3312,43 @@ mod tests {
             sim.colonies[0].fertility_suppressed,
             "fertility not suppressed after a missed winter (days_in_diapause={})",
             sim.colonies[0].days_in_diapause_this_year
+        );
+    }
+
+    #[test]
+    fn fertility_not_suppressed_on_partial_first_year() {
+        // Regression test for the year-1 collapse bug: a colony with the
+        // default `starting_day_of_year=150` (mid-spring) only has ~215
+        // days before the year 0→1 rollover. The pre-fix behavior was to
+        // apply the 60-day diapause check at that rollover, which often
+        // failed because nest-cell thermal drift kept the colony just
+        // below the threshold even when the climate did go cold. Result
+        // was queen fertility suppressed for an entire year, no eggs
+        // laid, workers attrited, colony collapsed by year 1.
+        //
+        // Post-fix: the year 0→1 rollover skips the diapause check when
+        // `starting_day_of_year != 0` (partial first year). This test
+        // pins that behavior so we don't regress.
+        let mut cfg = small_config();
+        cfg.ant.hibernation_required = true;
+        cfg.ant.hibernation_cold_threshold_c = 10.0;
+        cfg.ant.hibernation_warm_threshold_c = 12.0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        let mut sim = Simulation::new(cfg, 7);
+        // Always-warm climate so no diapause days accumulate.
+        sim.climate.seasonal_mid_c = 25.0;
+        sim.climate.seasonal_amplitude_c = 0.0;
+        sim.climate.starting_day_of_year = 150; // partial first year (default)
+        sim.in_game_seconds_per_tick = 86_400.0 / 2.0;
+        // Run past the year 0→1 rollover. With starting_day=150,
+        // 215 in-game days = 430 ticks. Run 500 to give a margin.
+        sim.run(500);
+        assert!(
+            !sim.colonies[0].fertility_suppressed,
+            "fertility was suppressed on a partial first year (days_in_diapause={}, year={})",
+            sim.colonies[0].days_in_diapause_this_year,
+            sim.in_game_year(),
         );
     }
 
