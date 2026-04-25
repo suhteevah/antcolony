@@ -58,6 +58,18 @@ pub struct Simulation {
     /// K3: in-game seconds elapsed per sim tick. Default 1.0; set by
     /// `set_environment` to `time_scale.multiplier() / tick_rate_hz`.
     pub in_game_seconds_per_tick: f32,
+    /// Number of physics substeps per outer tick. Set by
+    /// `set_environment` to `max(1, round(multiplier / SEASONAL_BASELINE))`.
+    /// At Seasonal (60×) baseline = 1 substep/tick (calibrated). At
+    /// Timelapse (1440×) = 24 substeps/tick. Substepping keeps
+    /// per-substep biology rates calibrated at any scale, fixing the
+    /// long-run-collapse bug where higher scales starved colonies
+    /// because foragers couldn't keep up with auto-scaled consumption.
+    pub substep_count: u32,
+    /// Monotonic counter advanced once per physics substep (vs `tick`
+    /// which advances once per outer tick). Used to gate per-substep
+    /// cadenced work like diffusion (fires every Nth substep).
+    pub substep_global: u64,
     /// P6: predator agents (spiders, antlions) living on modules.
     pub predators: Vec<crate::hazards::Predator>,
     /// Monotonic id generator for newly spawned predators.
@@ -139,6 +151,8 @@ impl Simulation {
             next_ant_id,
             climate: Climate::default(),
             in_game_seconds_per_tick: 1.0,
+            substep_count: 1,
+            substep_global: 0,
             predators: Vec::new(),
             next_predator_id: 0,
             weather: crate::hazards::Weather::default(),
@@ -238,6 +252,8 @@ impl Simulation {
             next_ant_id,
             climate: Climate::default(),
             in_game_seconds_per_tick: 1.0,
+            substep_count: 1,
+            substep_global: 0,
             predators: Vec::new(),
             next_predator_id: 0,
             weather: crate::hazards::Weather::default(),
@@ -536,6 +552,8 @@ impl Simulation {
             next_ant_id,
             climate,
             in_game_seconds_per_tick,
+            substep_count: 1,
+            substep_global: 0,
             predators,
             next_predator_id,
             weather,
@@ -677,11 +695,19 @@ impl Simulation {
         // (so in N real seconds at `tick_rate` Hz we advance
         //  N*tick_rate ticks = N*scale in-game seconds).
         self.in_game_seconds_per_tick = scale / tick_rate;
+        // Substep architecture: at higher time scales, run more physics
+        // substeps per outer tick at calibrated rates. Seasonal (60×) is
+        // the calibrated baseline = 1 substep. Timelapse (1440×) = 24.
+        // Hyperlapse (any) = scale/60. Min 1 substep.
+        const SEASONAL_BASELINE_MULTIPLIER: f32 = 60.0;
+        let raw = scale / SEASONAL_BASELINE_MULTIPLIER;
+        self.substep_count = raw.round().max(1.0) as u32;
         tracing::info!(
             scale,
             tick_rate,
             seconds_per_tick = self.in_game_seconds_per_tick,
-            "Simulation::set_environment folded env → in_game_seconds_per_tick"
+            substep_count = self.substep_count,
+            "Simulation::set_environment folded env → in_game_seconds_per_tick + substep_count"
         );
     }
 
@@ -875,10 +901,50 @@ impl Simulation {
         }
     }
 
-    /// Advance the simulation by one tick.
+    /// Advance the simulation by one outer tick. Inside, runs
+    /// `substep_count` calibrated physics substeps so per-tick rates
+    /// (worker speed, pheromone evap/diffuse, FSM transitions) stay
+    /// biologically calibrated regardless of player-selected time scale.
+    /// At Seasonal (60×) baseline = 1 substep (old behavior). At
+    /// Timelapse = 24 substeps. Outer-tick work (colony economy, year
+    /// rollover, milestones, nuptial flights) runs once per outer tick.
     pub fn tick(&mut self) {
         let _span = tracing::debug_span!("tick", n = self.tick).entered();
 
+        // Outer-tick (low-frequency) work — runs once regardless of
+        // substep_count. These advance against `in_game_seconds_per_tick`
+        // (the outer-tick rate) so they correctly track in-game days
+        // and years across all time scales.
+        self.colony_economy_tick();
+        self.nuptial_flight_tick();
+        self.evaluate_milestones();
+
+        // High-frequency physics substeps. Calibrated against the
+        // Seasonal baseline (1 substep = original Seasonal tick worth
+        // of biology). Faster scales run more substeps per outer tick.
+        let n = self.substep_count.max(1);
+        for _ in 0..n {
+            self.physics_substep();
+        }
+
+        self.tick += 1;
+        if self.tick % 500 == 0 {
+            let c = &self.colonies[0];
+            tracing::info!(
+                tick = self.tick,
+                ants = self.ants.len(),
+                food_stored = c.food_stored,
+                food_returned = c.food_returned,
+                substeps = n,
+                "colony heartbeat"
+            );
+        }
+    }
+
+    /// One calibrated physics substep — Seasonal-equivalent tick worth
+    /// of ant motion + pheromone dynamics. Runs N times per outer tick
+    /// where N = substep_count (1 at Seasonal, 24 at Timelapse, etc).
+    fn physics_substep(&mut self) {
         self.temperature_tick();
         self.sense_and_decide();
         self.avenger_tick();
@@ -892,14 +958,8 @@ impl Simulation {
         self.dig_tick();
         self.red_ai_tick();
         self.hazards_tick();
-        self.colony_economy_tick();
 
-        // Pheromone evap + diffuse parallelized across modules. Each
-        // module's pheromone grid is independent of every other (cross-
-        // module signal travels only via the tube pheromone substrate
-        // and per-tick port reads), so par_iter_mut is safe and gives
-        // ~Nx speedup at N modules. With 3-4 modules per topology and
-        // 4 layers per module, this is the fattest hot path in the sim.
+        // Pheromone evap + diffuse parallelized across modules.
         let evap_rate = self.config.pheromone.evaporation_rate;
         let threshold = self.config.pheromone.min_threshold;
         self.topology
@@ -907,8 +967,11 @@ impl Simulation {
             .par_iter_mut()
             .for_each(|m| m.pheromones.evaporate(evap_rate, threshold));
 
+        // Diffusion fires every Nth substep (per-substep counter, NOT
+        // outer-tick counter — diffusion should fire at substep cadence
+        // so high time scales still get the same in-game-time spacing).
         if self.config.pheromone.diffusion_interval > 0
-            && self.tick % self.config.pheromone.diffusion_interval as u64 == 0
+            && self.substep_global % self.config.pheromone.diffusion_interval as u64 == 0
         {
             let diff_rate = self.config.pheromone.diffusion_rate;
             self.topology
@@ -916,24 +979,9 @@ impl Simulation {
                 .par_iter_mut()
                 .for_each(|m| m.pheromones.diffuse(diff_rate));
         }
+        self.substep_global = self.substep_global.wrapping_add(1);
 
         self.port_bleed();
-
-        self.nuptial_flight_tick();
-
-        self.evaluate_milestones();
-
-        self.tick += 1;
-        if self.tick % 500 == 0 {
-            let c = &self.colonies[0];
-            tracing::info!(
-                tick = self.tick,
-                ants = self.ants.len(),
-                food_stored = c.food_stored,
-                food_returned = c.food_returned,
-                "colony heartbeat"
-            );
-        }
     }
 
     pub fn run(&mut self, ticks: u64) {
