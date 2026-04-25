@@ -1057,6 +1057,14 @@ impl Simulation {
             })
             .collect();
 
+        // Snapshot per-colony nest entrance positions for diapause
+        // teleport (ants retreating home as winter hits).
+        let nest_entrances_per_colony: Vec<(u8, Vec<Vec2>)> = self
+            .colonies
+            .iter()
+            .map(|c| (c.id, c.nest_entrance_positions.clone()))
+            .collect();
+
         // Apply results in serial. Mutating `self.ants` by index avoids
         // any aliasing concerns and keeps state transitions deterministic
         // in the order ants were laid out.
@@ -1069,7 +1077,35 @@ impl Simulation {
                     ant.heading = h;
                 }
                 if let Some(ns) = ns {
+                    let was_not_in_diapause = ant.state != AntState::Diapause;
                     ant.transition(ns);
+                    // Diapause retreat: when an ant first enters diapause
+                    // (transitioning from any other state into Diapause),
+                    // teleport it to one of its colony's nest entrance
+                    // cells. Models the autumn behavior of workers
+                    // returning to the nest before the cold front, then
+                    // clustering in the deep chambers for the winter.
+                    // Without this, surface ants freeze in place wherever
+                    // they were when ambient dipped below cold_threshold,
+                    // which is biologically wrong and visually weird.
+                    if ns == AntState::Diapause && was_not_in_diapause {
+                        if let Some((_, entries)) = nest_entrances_per_colony
+                            .iter()
+                            .find(|(cid, _)| *cid == ant.colony_id)
+                        {
+                            if let Some(pos) = entries.first() {
+                                ant.position = *pos;
+                                // Drop any food they were carrying — they
+                                // got home, dropped it off, then settled.
+                                ant.food_carried = 0.0;
+                                // Snap module to the surface nest module
+                                // (id 0 by convention; underground is
+                                // attached separately and ants normally
+                                // can't traverse the layer boundary yet).
+                                ant.module_id = 0;
+                            }
+                        }
+                    }
                 }
             }
             ant.state_timer = ant.state_timer.saturating_add(1);
@@ -2424,10 +2460,26 @@ impl Simulation {
             let adult_total = colony.adult_total();
             let worker_breeder_cnt = colony.population.workers + colony.population.breeders;
             let soldier_cnt = colony.population.soldiers;
-            let consumption = (worker_breeder_cnt as f32) * ccfg.adult_food_consumption
+            // Diapause metabolic depression — ants in diapause have
+            // dramatically reduced metabolism (~5-10% of normal in real
+            // biology; see Hahn & Denlinger 2007 for general insect
+            // diapause energetics). Without this scaling, a hibernating
+            // colony continues burning food at full rate while unable
+            // to forage, exhausts brood via cannibalism in a few outer
+            // ticks, then collapses via the 5%/tick starvation cap.
+            // Pre-fix this killed any Lasius colony that grew large
+            // enough to need significant food before its first winter.
+            const DIAPAUSE_METABOLIC_DEPRESSION: f32 = 0.10;
+            let metabolic_factor = if in_diapause {
+                DIAPAUSE_METABOLIC_DEPRESSION
+            } else {
+                1.0
+            };
+            let consumption = ((worker_breeder_cnt as f32) * ccfg.adult_food_consumption
                 + (soldier_cnt as f32)
                     * ccfg.adult_food_consumption
-                    * ccfg.soldier_food_multiplier;
+                    * ccfg.soldier_food_multiplier)
+                * metabolic_factor;
             colony.food_stored -= consumption;
             // Decay the food-inflow running average toward zero — half
             // life ~100 ticks. A colony that stopped delivering food
