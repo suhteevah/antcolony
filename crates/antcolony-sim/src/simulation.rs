@@ -23,11 +23,15 @@ use crate::persist::Snapshot;
 use crate::pheromone::{PheromoneGrid, PheromoneLayer};
 use crate::topology::Topology;
 use crate::tube::{TubeId, TubeTransit};
+use rayon::prelude::*;
 use crate::world::{Terrain, WorldGrid};
 
 /// Fraction of per-layer pheromone that equilibrates across a tube each tick.
 /// 0.0 = isolated modules (no scent leaks). 1.0 = instant average.
-const PORT_BLEED_RATE: f32 = 0.35;
+/// Default port bleed rate for snapshots loaded without a config field.
+/// Live runs read from `SimConfig.pheromone.port_bleed_rate` which is
+/// time-scaled by `Species::apply`.
+const _DEFAULT_PORT_BLEED_RATE: f32 = 0.35;
 
 /// K3: per-tick relaxation rate of a cell toward its `ambient_target`.
 const TEMP_DRIFT_RATE: f32 = 0.01;
@@ -890,19 +894,27 @@ impl Simulation {
         self.hazards_tick();
         self.colony_economy_tick();
 
+        // Pheromone evap + diffuse parallelized across modules. Each
+        // module's pheromone grid is independent of every other (cross-
+        // module signal travels only via the tube pheromone substrate
+        // and per-tick port reads), so par_iter_mut is safe and gives
+        // ~Nx speedup at N modules. With 3-4 modules per topology and
+        // 4 layers per module, this is the fattest hot path in the sim.
         let evap_rate = self.config.pheromone.evaporation_rate;
         let threshold = self.config.pheromone.min_threshold;
-        for m in self.topology.modules.iter_mut() {
-            m.pheromones.evaporate(evap_rate, threshold);
-        }
+        self.topology
+            .modules
+            .par_iter_mut()
+            .for_each(|m| m.pheromones.evaporate(evap_rate, threshold));
 
         if self.config.pheromone.diffusion_interval > 0
             && self.tick % self.config.pheromone.diffusion_interval as u64 == 0
         {
             let diff_rate = self.config.pheromone.diffusion_rate;
-            for m in self.topology.modules.iter_mut() {
-                m.pheromones.diffuse(diff_rate);
-            }
+            self.topology
+                .modules
+                .par_iter_mut()
+                .for_each(|m| m.pheromones.diffuse(diff_rate));
         }
 
         self.port_bleed();
@@ -1234,7 +1246,7 @@ impl Simulation {
     /// each tick, so a food trail laid in the outworld bleeds into the
     /// nest via the connecting port (and vice versa).
     fn port_bleed(&mut self) {
-        let rate = PORT_BLEED_RATE;
+        let rate = self.config.pheromone.port_bleed_rate;
         // Snapshot tube endpoints to avoid borrowing topology while mutating it.
         let ends: Vec<(ModuleId, PortPos, ModuleId, PortPos)> = self
             .topology
@@ -2169,7 +2181,9 @@ impl Simulation {
     /// diffusion spreads the scalar field between neighboring cells.
     pub fn temperature_tick(&mut self) {
         let ambient = self.ambient_temp_c();
-        for module in self.topology.modules.iter_mut() {
+        // Per-module thermal relaxation parallelized — each module's
+        // temperature grid is independent.
+        self.topology.modules.par_iter_mut().for_each(|module| {
             let target = match module.kind {
                 ModuleKind::HeatChamber => 28.0,
                 ModuleKind::HibernationChamber => 5.0,
@@ -2179,14 +2193,14 @@ impl Simulation {
             for v in module.temperature.iter_mut() {
                 *v += (target - *v) * TEMP_DRIFT_RATE;
             }
-        }
+        });
 
         if self.tick % 8 == 0 {
-            for module in self.topology.modules.iter_mut() {
+            self.topology.modules.par_iter_mut().for_each(|module| {
                 let w = module.width();
                 let h = module.height();
                 diffuse_scalar_grid(&mut module.temperature, w, h, 0.1);
-            }
+            });
         }
     }
 

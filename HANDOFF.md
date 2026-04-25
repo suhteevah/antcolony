@@ -4,8 +4,30 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Open Bug — Long-run colony collapse at non-Seasonal time scales (logged 2026-04-25)
+
+**Status:** known cause, NOT yet fixed. Two attempts in this session. The architecturally-correct fix is parked for next session.
+
+**Symptoms.** A 25-year smoke at Timelapse (1440×) on every species results in `food_returned ≈ 0–67` over 16.4M ticks (vs ~3,200 needed to break even on consumption). Every colony attrits to 1 ant (queen alone) by year 25. Identical pattern across hibernation_required true/false and across founding strategies.
+
+**Root cause.** Per-tick consumption auto-scales with time scale via `food_per_adult_per_day / ticks_per_day`. At Timelapse, ticks_per_day = 1800 (vs Seasonal's 43200), so per-tick consumption is 24× higher. Worker speed (`cells/tick`) and pheromone evap/diffuse rates are NOT scale-aware, so foragers can't keep up with consumption. Trail establishment + food return rate are calibrated only for Seasonal (60×).
+
+**Fix attempt #1 (this session, reverted):** scale `worker_speed` and `evaporation_rate`/`diffusion_rate` and `port_bleed_rate` by `multiplier / SEASONAL_BASELINE`. Result was worse — at scale_factor=24, ants moved 48 cells/tick which made them teleport across modules without depositing pheromone or interacting with food cells. food_returned dropped from ~30-67 to a flat 0 across all 7 species. **Reverted.** The lesson: per-tick rates are non-linearly bounded; you can't just multiply them.
+
+**Correct fix (parked for next session):** substep architecture. Inside `Simulation::tick()`, run movement + pheromone + behavior systems N times per outer tick, where N = `time_scale.multiplier() / SEASONAL_BASELINE_MULTIPLIER`. Each substep runs at calibrated rates (no scaling). Outer-tick-only work (colony economy, year rollover, milestone evaluation, hazards) runs once per outer tick. Implementation requires splitting `tick()` into `physics_substep()` + `outer_tick()`, threading `n_substeps` from the renderer / runner.
+
+**Validation plan.** Re-run the 7-species 25y smoke at Timelapse + 5y sanity at Seasonal once the substep fix lands. Expected: each species sustains a colony. Also expected: 50y at Hyperlapse becomes feasible if substep cost scales linearly.
+
+**Wins kept this session.**
+- Pheromone evaporate / diffuse / temperature relax + diffuse parallelized across modules with `rayon` (drop-in `par_iter_mut`, no semantic change). Each tick now does the per-module hot work in parallel — measurable headless throughput improvement, especially at multi-module topologies.
+- New `SimConfig.pheromone.port_bleed_rate` config field replaces hard-coded `PORT_BLEED_RATE`. Non-scaled at default 0.35 (matches prior behavior); will be set programmatically by the substep architecture once landed.
+
+**Architectural note for next-session implementer.** The biologically correct fix is full substep architecture. A more invasive but cleaner alternative is to also give tubes their own pheromone substrate (currently `port_bleed` is a hack — real biology has tube cells receiving deposit from ants in transit). See `docs/biology.md` "Excavation & Nest Architecture" + `docs/digging-design.md` for the broader sim-architecture context.
+
+---
+
 ## Last Updated
-2026-04-21
+2026-04-25
 
 ## Project Status
 🟢 **Phases 1-3 + K1-K5 + P4-P7 (full) + biology-grounded economy complete.** 78 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. P7 player-facing half (input + render) landed this session and user-confirmed working ("I was able to steer the ant"). Keys live: `F` possess-at-cursor, `WASD` steer avatar (auto-suppresses camera pan; arrows still pan), `R` recruit, `Shift+R` dismiss, `Q` toggle beacon mode, `RMB` place beacon. Render: yellow halo on possessed ant, cyan follower ring on bonded ants, beacon sprites with alpha-fade on `ticks_remaining`, HUD status line (avatar id/state/hp/food/followers + beacon mode + active count).

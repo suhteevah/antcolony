@@ -100,6 +100,17 @@ pub struct PheromoneConfig {
     pub deposit_food_trail: f32,
     pub deposit_home_trail: f32,
     pub deposit_alarm: f32,
+    /// Per-tick fraction by which the two port-cells of a tube
+    /// equilibrate their pheromone intensities. Models trail propagation
+    /// across tube boundaries without simulating tube interior. Scales
+    /// with the time-scale multiplier so cross-module signal speed stays
+    /// constant in in-game-time terms. Capped at 0.95.
+    #[serde(default = "default_port_bleed_rate")]
+    pub port_bleed_rate: f32,
+}
+
+fn default_port_bleed_rate() -> f32 {
+    0.35
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -245,6 +256,7 @@ impl Default for PheromoneConfig {
             deposit_food_trail: 1.0,
             deposit_home_trail: 0.8,
             deposit_alarm: 2.0,
+            port_bleed_rate: 0.35,
         }
     }
 }

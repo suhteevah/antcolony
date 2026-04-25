@@ -173,9 +173,11 @@ impl Species {
             food_cluster_size: 5,
         };
 
-        // Pheromone defaults stay tick-relative since they describe short-term
-        // chemical diffusion, not biology. Scaling evaporation by time would
-        // break the foraging ACO math.
+        // Pheromone defaults stay calibrated to a single sim-substep
+        // (= 2 in-game seconds). The substep loop in Simulation::tick()
+        // runs N substeps per outer tick at higher time scales, so the
+        // per-substep rates here remain biologically correct at any
+        // player-selected scale.
         let pheromone = PheromoneConfig::default();
 
         let ant = AntConfig {
