@@ -97,6 +97,24 @@ In a planned versus mode (two human players, two colonies), biological mechanics
 
 ---
 
+## Diapause Biology (logged 2026-04-25)
+
+### Metabolic depression in hibernation
+Hibernating insects don't just stop foraging — their metabolic rate drops to ~5-10% of active levels. Respiration, heart rate, and energy consumption all crash. A diapausing colony's food needs over winter are roughly 1/10 to 1/20 of summer needs. The reserves accumulated in late autumn (visible as engorged crops and full food chambers) are calibrated against this dramatically reduced rate.
+
+**Sim implication.** `colony_economy_tick` multiplies per-tick consumption by `DIAPAUSE_METABOLIC_DEPRESSION = 0.10` when `in_diapause` is true. Without this scaling, colonies that grow before their first winter consume their stored food at summer rate, exhaust brood via cannibalism, and collapse — observed empirically in a 6mo Lasius Timelapse smoke that grew 21→918 ants and then crashed in 5000 ticks once winter hit.
+
+**Source.** [Hahn, D.A. & Denlinger, D.L. (2007). Meeting the energetic demands of insect diapause: nutrient storage and utilization. *Journal of Insect Physiology* 53: 760-773.](https://www.sciencedirect.com/science/article/abs/pii/S0022191007000753) — definitive review of insect diapause metabolic depression. Ant-specific work: Lighton & Bartholomew (1988) on Pogonomyrmex respiratory physiology measured an ~8× drop from active to resting metabolic rate in clustered overwintering harvesters.
+
+### Autumn retreat — ants go inside before winter
+Ants don't get caught outside in the cold. As ambient temperature drops in autumn (typically when daily mean falls below ~12-15°C, which corresponds to local cold-snap onset for temperate species), workers stop foraging and return to the nest. They cluster in the deepest chambers — often the queen chamber or a dedicated hibernation chamber on the underground side of the formicarium — and remain there until spring warming. Foragers caught outside when a sudden frost hits do die, but in normal seasonal cooling all workers shelter before the freezing temperatures arrive.
+
+**Sim implication.** When an ant transitions into `AntState::Diapause`, it should snap to its colony's nest entrance position (representing autumn retreat). Real biology has this happening over several days; the sim teleports it for simplicity. Matches the visible outcome: all ants inside, none stuck on surface tiles. Without this, surface foragers freeze in place wherever they were when ambient dropped below `cold_threshold`, which looked weird AND meant they didn't drop their food at the nest before becoming inactive.
+
+**Source.** [Heinze, J. & Hölldobler, B. (1994). Ants in the cold. *Memorabilia Zoologica* 48: 99-108.](https://www.researchgate.net/publication/247880033_Ants_in_the_cold) — covers cold-tolerance and seasonal-retreat behavior across temperate ants. Keeper observations corroborate: every formicarium-keeping forum confirms workers retreat to nest interior in autumn ahead of the planned hibernation period.
+
+---
+
 ## Excavation & Nest Architecture (logged 2026-04-25)
 
 Notes for the dig-pipeline implementation. Real ant excavation is structurally different from "ant standing on Solid tile, tile becomes Empty." Capturing the actual workflow is what gives an ant farm its unmistakable look.
