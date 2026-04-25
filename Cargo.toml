@@ -24,6 +24,7 @@ rand_chacha = "0.3"
 glam = { version = "0.29", features = ["serde"] }
 rayon = "1.10"
 toml = "0.8"
+wide = "0.7"
 bevy = { version = "0.15", default-features = false, features = [
     "bevy_asset",
     "bevy_color",

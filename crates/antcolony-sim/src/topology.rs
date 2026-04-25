@@ -93,6 +93,7 @@ impl Topology {
             },
             length_ticks: 30,
             bore_width_mm: 8.0,
+            pheromones: vec![0.0; 30 * 4],
         };
 
         tracing::info!(
@@ -177,6 +178,7 @@ impl Topology {
             },
             length_ticks: 30,
             bore_width_mm: 8.0,
+            pheromones: vec![0.0; 30 * 4],
         };
         let tube_out_dish = Tube {
             id: 1,
@@ -190,6 +192,7 @@ impl Topology {
             },
             length_ticks: 20,
             bore_width_mm: 8.0,
+            pheromones: vec![0.0; 20 * 4],
         };
 
         tracing::info!(
@@ -265,6 +268,7 @@ impl Topology {
             to: TubeEnd { module: 1, port: out_port_w },
             length_ticks: 30,
             bore_width_mm: 8.0,
+            pheromones: vec![0.0; 30 * 4],
         };
         let tube_red = Tube {
             id: 1,
@@ -272,6 +276,7 @@ impl Topology {
             to: TubeEnd { module: 1, port: out_port_e },
             length_ticks: 30,
             bore_width_mm: 8.0,
+            pheromones: vec![0.0; 30 * 4],
         };
 
         tracing::info!(
@@ -400,6 +405,12 @@ impl Topology {
     pub fn try_tube(&self, id: TubeId) -> Option<&Tube> {
         self.tubes.iter().find(|t| t.id == id)
     }
+    pub fn tube_mut(&mut self, id: TubeId) -> &mut Tube {
+        self.tubes
+            .iter_mut()
+            .find(|t| t.id == id)
+            .unwrap_or_else(|| panic!("Topology::tube_mut({}) — not found", id))
+    }
 
     /// Smallest unused module id.
     pub fn next_module_id(&self) -> ModuleId {
@@ -450,12 +461,14 @@ impl Topology {
             bore_width_mm,
             "Topology::add_tube"
         );
+        let cells = length_ticks.max(1) as usize * 4;
         self.tubes.push(Tube {
             id,
             from,
             to,
             length_ticks,
             bore_width_mm,
+            pheromones: vec![0.0; cells],
         });
         id
     }

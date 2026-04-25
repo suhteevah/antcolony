@@ -5,6 +5,7 @@
 
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
+use wide::{f32x8, CmpGt, CmpLt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PheromoneLayer {
@@ -125,12 +126,7 @@ impl PheromoneGrid {
             &mut self.alarm,
             &mut self.colony_scent,
         ] {
-            for v in slice.iter_mut() {
-                *v *= k;
-                if v.abs() < threshold {
-                    *v = 0.0;
-                }
-            }
+            evaporate_slice_simd(slice, k, threshold);
         }
     }
 
@@ -280,5 +276,55 @@ mod tests {
         let total: f32 = samples.iter().map(|(_, v)| v).sum();
         // Only the front cell should register.
         assert!(total > 4.0 && total < 6.0, "total={}", total);
+    }
+}
+
+/// SIMD-accelerated evaporation pass for one layer.
+///
+/// Multiplies every cell by `k = 1.0 - rate` and zeroes any cell whose
+/// absolute value is below `threshold`. Processes 8 cells per CPU
+/// instruction via `wide::f32x8`. Falls back to a scalar tail loop
+/// for the trailing cells when len isn't a multiple of 8.
+///
+/// Threshold is checked against `abs(v) < threshold` so the signed
+/// `colony_scent` (territory) layer decays correctly toward zero from
+/// either side.
+fn evaporate_slice_simd(slice: &mut [f32], k: f32, threshold: f32) {
+    let k_v = f32x8::splat(k);
+    let thresh_v = f32x8::splat(threshold);
+    let neg_thresh_v = f32x8::splat(-threshold);
+    let zero_v = f32x8::splat(0.0);
+
+    let len = slice.len();
+    let remainder_len = len % 8;
+
+    for chunk in slice.chunks_exact_mut(8) {
+        let mut v = f32x8::new([
+            chunk[0], chunk[1], chunk[2], chunk[3],
+            chunk[4], chunk[5], chunk[6], chunk[7],
+        ]);
+        // Multiply by k.
+        v = v * k_v;
+        // Zero out any element whose absolute value is below threshold.
+        // wide::f32x8 has no built-in abs; emulate via two cmp masks
+        // (v < threshold AND v > -threshold means abs(v) < threshold).
+        let below_pos = v.cmp_lt(thresh_v);
+        let above_neg = v.cmp_gt(neg_thresh_v);
+        let in_band = below_pos & above_neg;
+        v = in_band.blend(zero_v, v);
+        let arr = v.to_array();
+        chunk[0] = arr[0]; chunk[1] = arr[1]; chunk[2] = arr[2]; chunk[3] = arr[3];
+        chunk[4] = arr[4]; chunk[5] = arr[5]; chunk[6] = arr[6]; chunk[7] = arr[7];
+    }
+
+    // Scalar tail for the remainder cells.
+    if remainder_len > 0 {
+        let start = len - remainder_len;
+        for v in &mut slice[start..] {
+            *v *= k;
+            if v.abs() < threshold {
+                *v = 0.0;
+            }
+        }
     }
 }

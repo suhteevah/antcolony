@@ -967,6 +967,15 @@ impl Simulation {
             .par_iter_mut()
             .for_each(|m| m.pheromones.evaporate(evap_rate, threshold));
 
+        // Tube pheromone evaporation runs in parallel with module evap.
+        // Same rate / threshold so tube cells decay in lockstep with
+        // module cells -- foragers laying trail in transit see the same
+        // half-life as on module floors.
+        self.topology
+            .tubes
+            .par_iter_mut()
+            .for_each(|t| t.evaporate(evap_rate, threshold));
+
         // Diffusion fires every Nth substep (per-substep counter, NOT
         // outer-tick counter — diffusion should fire at substep cadence
         // so high time scales still get the same in-game-time spacing).
@@ -997,61 +1006,69 @@ impl Simulation {
         let topology = &self.topology;
         let cold_t = cfg.ant.hibernation_cold_threshold_c;
         let warm_t = cfg.ant.hibernation_warm_threshold_c;
-        let mut new_headings = Vec::with_capacity(self.ants.len());
-        let mut new_states: Vec<Option<AntState>> = Vec::with_capacity(self.ants.len());
+        let n = self.ants.len();
 
-        for ant in &self.ants {
-            if ant.is_in_transit() {
-                new_headings.push(ant.heading);
-                new_states.push(None);
-                continue;
-            }
-            let module = topology.module(ant.module_id);
-            // K3 diapause override: combat/flee states are preserved, but
-            // every other state can flip to/from Diapause based on local temp.
-            let temp = module.temp_at(ant.position);
-            let preserve_combat = matches!(
-                ant.state,
-                AntState::Fighting | AntState::Fleeing | AntState::NuptialFlight
-            );
-            if !preserve_combat {
-                if ant.state != AntState::Diapause && temp < cold_t {
-                    new_headings.push(ant.heading);
-                    new_states.push(Some(AntState::Diapause));
-                    continue;
+        // Per-ant deterministic RNG seeds, drawn in serial order from
+        // the main RNG so the parallel decision phase below is fully
+        // deterministic regardless of rayon scheduling. This preserves
+        // test reproducibility while still letting all ants decide
+        // their next heading + state in parallel.
+        let per_ant_seeds: Vec<u64> = (0..n).map(|_| self.rng.r#gen::<u64>()).collect();
+
+        // Parallel decision phase. Each ant gets a local ChaCha8Rng
+        // seeded from its slot's pre-drawn seed; the only mutation is
+        // into per-ant locals which we collect into vectors. No shared
+        // mutable state -> safe to par_iter.
+        let results: Vec<(f32, Option<AntState>)> = self
+            .ants
+            .par_iter()
+            .zip(per_ant_seeds.par_iter())
+            .map(|(ant, &seed)| {
+                if ant.is_in_transit() {
+                    return (ant.heading, None);
                 }
-                if ant.state == AntState::Diapause {
-                    if temp > warm_t {
-                        new_headings.push(ant.heading);
-                        new_states.push(Some(AntState::Exploring));
-                    } else {
-                        new_headings.push(ant.heading);
-                        new_states.push(None);
+                let module = topology.module(ant.module_id);
+                let temp = module.temp_at(ant.position);
+                let preserve_combat = matches!(
+                    ant.state,
+                    AntState::Fighting | AntState::Fleeing | AntState::NuptialFlight
+                );
+                if !preserve_combat {
+                    if ant.state != AntState::Diapause && temp < cold_t {
+                        return (ant.heading, Some(AntState::Diapause));
                     }
-                    continue;
+                    if ant.state == AntState::Diapause {
+                        if temp > warm_t {
+                            return (ant.heading, Some(AntState::Exploring));
+                        } else {
+                            return (ant.heading, None);
+                        }
+                    }
                 }
-            }
-            let mut h = choose_direction(ant, &module.pheromones, &cfg.ant, &mut self.rng);
-            // P4: alarm-pheromone response. Soldiers hunt alarm; workers
-            // and breeders flee it. Only kicks in when the ant is actually
-            // sensing alarm (> min_threshold); otherwise the default ACO
-            // heading stands.
-            if let Some(alarm_h) = alarm_response_heading(ant, module, &cfg.ant, &cfg.pheromone) {
-                h = alarm_h;
-            }
-            new_headings.push(h);
-            let next = decide_next_state(ant, &module.world, &module.pheromones, cfg);
-            new_states.push(next);
-        }
+                let mut local_rng = ChaCha8Rng::seed_from_u64(seed);
+                let mut h = choose_direction(ant, &module.pheromones, &cfg.ant, &mut local_rng);
+                if let Some(alarm_h) =
+                    alarm_response_heading(ant, module, &cfg.ant, &cfg.pheromone)
+                {
+                    h = alarm_h;
+                }
+                let next = decide_next_state(ant, &module.world, &module.pheromones, cfg);
+                (h, next)
+            })
+            .collect();
 
+        // Apply results in serial. Mutating `self.ants` by index avoids
+        // any aliasing concerns and keeps state transitions deterministic
+        // in the order ants were laid out.
         for (i, ant) in self.ants.iter_mut().enumerate() {
+            let (h, ns) = results[i];
             if !ant.is_in_transit() {
                 // P7: player avatar keeps its player-set heading; the FSM
                 // still runs so food pickup / nest drop-off work.
                 if !ant.is_player {
-                    ant.heading = new_headings[i];
+                    ant.heading = h;
                 }
-                if let Some(ns) = new_states[i] {
+                if let Some(ns) = ns {
                     ant.transition(ns);
                 }
             }
@@ -1219,8 +1236,28 @@ impl Simulation {
             amount: f32,
         }
         let mut deposits: Vec<Deposit> = Vec::new();
+        // Tube deposits — ants in transit lay trail on tube cells.
+        // Layout matches Tube::deposit semantics: (tube_id, cell_idx, layer, amount).
+        let mut tube_deposits: Vec<(TubeId, usize, usize, f32)> = Vec::new();
         for ant in &self.ants {
-            if ant.is_in_transit() {
+            if let Some(transit) = ant.transit {
+                // Foragers in transit drop trail on the tube substrate.
+                // Same state→layer mapping as on-grid ants: ReturningHome
+                // ants drop FoodTrail (food-side recruitment), Exploring
+                // and FollowingTrail drop HomeTrail (home-side recruitment).
+                // Replaces the port_bleed hack with biology-correct
+                // deposit-on-transit (real ants lay trail on tube walls
+                // as they pass — `docs/biology.md` "chain-gang pipeline").
+                let (layer_idx, amount) = match ant.state {
+                    AntState::ReturningHome => (0usize, pcfg.deposit_food_trail),
+                    AntState::Exploring | AntState::FollowingTrail => {
+                        (1usize, pcfg.deposit_home_trail)
+                    }
+                    _ => continue,
+                };
+                let tube = self.topology.tube(transit.tube);
+                let idx = tube.cell_index(transit.progress);
+                tube_deposits.push((transit.tube, idx, layer_idx, amount));
                 continue;
             }
             let module = self.topology.module(ant.module_id);
@@ -1252,6 +1289,12 @@ impl Simulation {
                 .module_mut(d.module)
                 .pheromones
                 .deposit(d.x, d.y, d.layer, d.amount, pcfg.max_intensity);
+        }
+        // Apply tube deposits — collected from transit ants above.
+        for (tube_id, cell_idx, layer_idx, amount) in tube_deposits {
+            self.topology
+                .tube_mut(tube_id)
+                .deposit(cell_idx, layer_idx, amount, pcfg.max_intensity);
         }
 
         // 2) Food pickup + nest drop-off. Iterate ants mutably.
