@@ -49,3 +49,11 @@ scripts/.flux-*.log
 # HuggingFace + torch caches (if they end up in tree)
 .cache/
 *.safetensors
+
+# Added by uploader (secret-leak hardening, 2026-04-18)
+id_rsa
+id_ed25519
+*-key
+.claude/.credentials.json
+C:Users*
+C:Windows*
