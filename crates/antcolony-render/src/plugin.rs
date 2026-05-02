@@ -1726,13 +1726,15 @@ fn camera_controls(
     keys: Res<ButtonInput<KeyCode>>,
     sim: Res<SimulationState>,
     mut scroll: EventReader<bevy::input::mouse::MouseWheel>,
+    module_rects: Query<&ModuleRect>,
     mut q: Query<(&mut Transform, &mut OrthographicProjection), With<Camera2d>>,
 ) {
     let dt = time.delta_secs();
     // P7: when an ant is possessed, WASD steers the avatar instead of
     // panning the camera. Arrow keys still pan so the player can look
     // around while controlling an ant.
-    let possessed = sim.sim.player_ant_index().is_some();
+    let possessed_idx = sim.sim.player_ant_index();
+    let possessed = possessed_idx.is_some();
     let mut pan = Vec2::ZERO;
     if (!possessed && keys.pressed(KeyCode::KeyW)) || keys.pressed(KeyCode::ArrowUp) {
         pan.y += 1.0;
@@ -1750,10 +1752,38 @@ fn camera_controls(
     for e in scroll.read() {
         zoom_delta -= e.y * 0.1;
     }
+
+    // P7 polish: when possessed and the user is not actively pan-overriding
+    // with arrow keys, smoothly lerp the camera toward the avatar's world
+    // position. The exponential-smoothing factor makes ant motion readable
+    // (no jitter, no swing-around) while still tracking quickly enough that
+    // the avatar doesn't leave the viewport.
+    let arrow_panning = pan != Vec2::ZERO;
+    let follow_target: Option<Vec2> = if possessed && !arrow_panning {
+        possessed_idx.and_then(|i| {
+            let ant = sim.sim.ants.get(i)?;
+            let mid = ant.module_id;
+            let rect = module_rects.iter().find(|r| r.id == mid)?;
+            Some(rect.min + ant.position * TILE)
+        })
+    } else {
+        None
+    };
+
     for (mut tf, mut proj) in q.iter_mut() {
         tf.translation.x += pan.x * 400.0 * dt * proj.scale;
         tf.translation.y += pan.y * 400.0 * dt * proj.scale;
         proj.scale = (proj.scale * (1.0 + zoom_delta)).clamp(0.2, 6.0);
+
+        if let Some(target) = follow_target {
+            // Exponential decay toward target: stiffness 6.0 → reaches
+            // ~95% of the gap in 0.5s. Tuned by feel; keep it gentle so
+            // the ant's own motion is the visual story, not the camera.
+            let stiffness = 6.0_f32;
+            let alpha = 1.0 - (-stiffness * dt).exp();
+            tf.translation.x += (target.x - tf.translation.x) * alpha;
+            tf.translation.y += (target.y - tf.translation.y) * alpha;
+        }
     }
 }
 

@@ -744,6 +744,26 @@ impl Simulation {
         Season::from_day_of_year(self.day_of_year())
     }
 
+    /// In-game hour of day in [0.0, 24.0). Computed from elapsed ticks
+    /// via `tick * in_game_seconds_per_tick / 3600 mod 24`. Used by
+    /// the diel-activity hook to decide if foragers should be out
+    /// (nocturnal species suppress daytime foraging via this).
+    #[inline]
+    pub fn in_game_hour_of_day(&self) -> f32 {
+        let in_game_secs = self.tick as f64 * self.in_game_seconds_per_tick as f64;
+        let secs_today = in_game_secs.rem_euclid(86_400.0);
+        (secs_today / 3600.0) as f32
+    }
+
+    /// True when in-game time is between 06:00 and 18:00 (sim daylight).
+    /// The diel-activity hook uses this to gate foraging for nocturnal
+    /// species (workers stay in-nest during the day, emerge at dusk).
+    #[inline]
+    pub fn is_daytime(&self) -> bool {
+        let h = self.in_game_hour_of_day();
+        (6.0..18.0).contains(&h)
+    }
+
     /// Sinusoidal ambient temperature. Peaks at `climate.peak_day`.
     /// `T(d) = mid + amp * cos(2π * (d - peak) / 365)`
     pub fn ambient_temp_c(&self) -> f32 {
@@ -1018,6 +1038,7 @@ impl Simulation {
         let topology = &self.topology;
         let cold_t = cfg.ant.hibernation_cold_threshold_c;
         let warm_t = cfg.ant.hibernation_warm_threshold_c;
+        let is_daytime = self.is_daytime();
         let n = self.ants.len();
 
         // Per-ant deterministic RNG seeds, drawn in serial order from
@@ -1064,7 +1085,7 @@ impl Simulation {
                 {
                     h = alarm_h;
                 }
-                let next = decide_next_state(ant, &module.world, &module.pheromones, cfg);
+                let next = decide_next_state(ant, &module.world, &module.pheromones, cfg, is_daytime);
                 (h, next)
             })
             .collect();
@@ -1734,16 +1755,44 @@ impl Simulation {
                 new_state = PredatorState::Hunt { target_ant_id: aid };
 
                 if dist <= 1.0 {
-                    // Close enough to bite — eat the ant.
+                    // Close enough to bite — eat the ant. Phase B hook #4:
+                    // stinging species (Pogonomyrmex, Myrmica) cost the
+                    // predator HP per successful bite. Sting damage scalar
+                    // tuned so a Schmidt-3.0 species (Pogo) inflicts ~9
+                    // HP per bite — enough that a small spider (default
+                    // health 30) is killed in 4 bites. Mandible-only
+                    // (Lasius, Formica) species do no extra damage here;
+                    // they keep their formic-acid spray as a future
+                    // hook #4b (ranged attack).
+                    let sting_damage = self.config.ant.sting_potency * 3.0;
+                    let predator_died = self.predators[idx].health - sting_damage <= 0.0;
+                    self.predators[idx].health =
+                        (self.predators[idx].health - sting_damage).max(0.0);
+
                     killed.push(ai);
-                    new_state = PredatorState::Eat {
-                        remaining_ticks: cfg.spider_eat_ticks.max(1),
-                    };
-                    tracing::info!(
-                        spider = predator.id,
-                        ant_id = aid,
-                        "spider ate an ant"
-                    );
+                    if predator_died {
+                        new_state = PredatorState::Dead {
+                            respawn_in_ticks: cfg.spider_respawn_ticks.max(1),
+                        };
+                        tracing::info!(
+                            spider = predator.id,
+                            ant_id = aid,
+                            sting_damage,
+                            "spider killed by ant sting (sting_potency={})",
+                            self.config.ant.sting_potency,
+                        );
+                    } else {
+                        new_state = PredatorState::Eat {
+                            remaining_ticks: cfg.spider_eat_ticks.max(1),
+                        };
+                        tracing::info!(
+                            spider = predator.id,
+                            ant_id = aid,
+                            sting_damage,
+                            spider_hp = self.predators[idx].health,
+                            "spider ate an ant"
+                        );
+                    }
                 } else {
                     // Chase.
                     let step = cfg.spider_speed.min(dist);
@@ -2012,9 +2061,27 @@ impl Simulation {
             }
             if ant.module_id == ug_mod {
                 let (gx, gy) = self.topology.module(ug_mod).world.world_to_grid(ant.position);
-                if (gx, gy) == (ug_pos.x as i64, ug_pos.y as i64) && ant.carrying_soil {
-                    ant.module_id = surf_mod;
-                    ant.position = surf_pos;
+                if (gx, gy) == (ug_pos.x as i64, ug_pos.y as i64) {
+                    // Existing rule: pellet-carrying digger MUST surface to dump.
+                    if ant.carrying_soil {
+                        ant.module_id = surf_mod;
+                        ant.position = surf_pos;
+                        continue;
+                    }
+                    // P5 expansion: workers spawned underground (from brood
+                    // hatched in the queen chamber) need a way to reach the
+                    // surface to forage. Without this, UG-side adults
+                    // accumulate forever and the colony's surface forage
+                    // corps starves out. Real ants at the entrance who have
+                    // no nest-side task naturally walk out to forage.
+                    if ant.caste == AntCaste::Worker
+                        && (ant.state == AntState::Idle
+                            || ant.state == AntState::Exploring
+                            || ant.state == AntState::FollowingTrail)
+                    {
+                        ant.module_id = surf_mod;
+                        ant.position = surf_pos;
+                    }
                 }
             }
         }
@@ -3197,6 +3264,7 @@ fn decide_next_state(
     world: &WorldGrid,
     pher: &PheromoneGrid,
     cfg: &SimConfig,
+    is_daytime: bool,
 ) -> Option<AntState> {
     let (gx, gy) = world.world_to_grid(ant.position);
     if !world.in_bounds(gx, gy) {
@@ -3204,6 +3272,17 @@ fn decide_next_state(
     }
     let (ux, uy) = (gx as usize, gy as usize);
     let terrain = world.get(ux, uy);
+
+    // Phase B hook #2 — diel-activity gating. Nocturnal species
+    // (Camponotus pennsylvanicus etc.) keep workers in the nest by
+    // day; foragers emerge at dusk. The gate fires on the
+    // Idle → Exploring transition only — once an ant is already
+    // out, it finishes its current trip rather than abruptly
+    // teleporting back at sunrise.
+    // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #2.
+    if cfg.ant.nocturnal && is_daytime && ant.state == AntState::Idle {
+        return None;
+    }
 
     match ant.state {
         AntState::Idle => Some(AntState::Exploring),
@@ -4917,6 +4996,229 @@ mod tests {
         assert_eq!(
             sim.ants[idx].module_id, surf_mod,
             "carrying digger should surface at underground entrance"
+        );
+    }
+
+    /// P5 expansion: a worker spawned on the underground side (e.g. from
+    /// a brood batch hatched in the queen chamber) needs to be able to
+    /// reach the surface to forage. Pre-fix only `carrying_soil` ants
+    /// could surface, so UG-side adults accumulated forever and the
+    /// surface forage corps starved out.
+    #[test]
+    fn idle_or_exploring_worker_at_ug_entrance_surfaces() {
+        use crate::ant::AntCaste;
+        for state in [AntState::Idle, AntState::Exploring, AntState::FollowingTrail] {
+            let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+            let _ug = topology.attach_underground(0, 0, 40, 24);
+            let mut cfg = small_config();
+            cfg.ant.initial_count = 0;
+            let mut sim = Simulation::new_with_topology(cfg, topology, 1);
+
+            let surf_mod = sim.topology.surface_nest_for_colony(0).expect("surface nest");
+            let ug_mod = sim.topology.underground_for_colony(0).expect("ug nest");
+            let (ux, uy) = sim
+                .topology
+                .module(ug_mod)
+                .world
+                .find_nest_entrance(0)
+                .expect("ug entrance");
+
+            // Place a worker at the UG entrance with no soil pellet, in
+            // the state under test.
+            let mut w = Ant::new_with_caste(
+                4242,
+                0,
+                Vec2::new(ux as f32 + 0.5, uy as f32 + 0.5),
+                0.0,
+                10.0,
+                AntCaste::Worker,
+            );
+            w.module_id = ug_mod;
+            w.carrying_soil = false;
+            w.state = state;
+            sim.ants.push(w);
+            let idx = sim.ants.len() - 1;
+
+            sim.surface_underground_traversal();
+
+            assert_eq!(
+                sim.ants[idx].module_id, surf_mod,
+                "worker in {state:?} state at UG entrance with no pellet should surface",
+            );
+        }
+    }
+
+    /// Phase B hook #2 — nocturnal species suppress Idle→Exploring
+    /// transitions during the in-game day. Diurnal species are
+    /// unaffected. Verified via direct call to `decide_next_state`
+    /// rather than full sim ticks.
+    #[test]
+    fn nocturnal_idle_workers_stay_idle_during_day() {
+        use crate::config::SimConfig;
+        let world = WorldGrid::new(20, 20);
+        let pher = PheromoneGrid::new(20, 20);
+        let mut cfg = SimConfig::default();
+        let mut ant = Ant::new_worker(1, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
+        ant.state = AntState::Idle;
+
+        // Diurnal baseline: Idle worker promotes to Exploring at any time.
+        cfg.ant.nocturnal = false;
+        let next_day = decide_next_state(&ant, &world, &pher, &cfg, /* is_daytime */ true);
+        let next_night = decide_next_state(&ant, &world, &pher, &cfg, /* is_daytime */ false);
+        assert_eq!(next_day, Some(AntState::Exploring));
+        assert_eq!(next_night, Some(AntState::Exploring));
+
+        // Nocturnal: Idle worker stays Idle during the day, leaves at night.
+        cfg.ant.nocturnal = true;
+        let next_day = decide_next_state(&ant, &world, &pher, &cfg, /* is_daytime */ true);
+        let next_night = decide_next_state(&ant, &world, &pher, &cfg, /* is_daytime */ false);
+        assert_eq!(next_day, None, "nocturnal Idle worker should not transition during day");
+        assert_eq!(next_night, Some(AntState::Exploring), "nocturnal worker emerges at night");
+    }
+
+    /// Phase B hook #4 — stinging species damage predators per bite.
+    /// Pogonomyrmex-tier sting (potency 3.0) inflicts 9 HP per bite,
+    /// killing a default-health spider (30 HP) in 4 bites. Non-stinging
+    /// species (mandible-only) leave the predator at full HP.
+    #[test]
+    fn stinging_ant_damages_spider_on_bite() {
+        use crate::ant::AntCaste;
+        use crate::hazards::{Predator, PredatorKind, PredatorState};
+
+        let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+        let _ = topology.attach_underground(0, 0, 40, 24);
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.ant.sting_potency = 3.0; // Pogo-tier
+        cfg.hazards.spider_health = 30.0;
+        let mut sim = Simulation::new_with_topology(cfg.clone(), topology, 1);
+
+        // Place a worker on the outworld (module 1) at a known cell.
+        let outworld_id = 1;
+        let mut ant = Ant::new_with_caste(
+            7777,
+            0,
+            Vec2::new(10.0, 10.0),
+            0.0,
+            10.0,
+            AntCaste::Worker,
+        );
+        ant.module_id = outworld_id;
+        sim.ants.push(ant);
+
+        // Spawn a spider directly adjacent so it bites this tick.
+        let pid = sim.next_predator_id_value();
+        sim.predators.push(Predator {
+            id: pid,
+            kind: PredatorKind::Spider,
+            module_id: outworld_id,
+            position: Vec2::new(10.5, 10.0),
+            heading: 0.0,
+            state: PredatorState::Patrol,
+            health: cfg.hazards.spider_health,
+        });
+        let spider_idx = sim.predators.len() - 1;
+        let initial_hp = sim.predators[spider_idx].health;
+
+        // Run a single tick of the predator system.
+        let mut killed: Vec<usize> = Vec::new();
+        sim.spider_tick(spider_idx, &cfg.hazards, &mut killed);
+
+        let after_hp = sim.predators[spider_idx].health;
+        assert!(
+            after_hp < initial_hp,
+            "spider HP must drop after biting a stinging ant ({initial_hp} -> {after_hp})",
+        );
+        // Sting damage = 3.0 * 3.0 = 9.0; spider should be at 21 HP.
+        assert!((after_hp - 21.0).abs() < 0.01, "expected ~21 HP, got {after_hp}");
+    }
+
+    /// Negative case: a mandible-only worker (sting_potency=0) leaves
+    /// the spider at full HP — original behavior preserved.
+    #[test]
+    fn mandible_only_ant_does_not_damage_spider() {
+        use crate::ant::AntCaste;
+        use crate::hazards::{Predator, PredatorKind, PredatorState};
+
+        let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+        let _ = topology.attach_underground(0, 0, 40, 24);
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.ant.sting_potency = 0.0; // Lasius / Camponotus / Formica (mandible only)
+        cfg.hazards.spider_health = 30.0;
+        let mut sim = Simulation::new_with_topology(cfg.clone(), topology, 1);
+
+        let outworld_id = 1;
+        let mut ant = Ant::new_with_caste(
+            7777,
+            0,
+            Vec2::new(10.0, 10.0),
+            0.0,
+            10.0,
+            AntCaste::Worker,
+        );
+        ant.module_id = outworld_id;
+        sim.ants.push(ant);
+
+        let pid = sim.next_predator_id_value();
+        sim.predators.push(Predator {
+            id: pid,
+            kind: PredatorKind::Spider,
+            module_id: outworld_id,
+            position: Vec2::new(10.5, 10.0),
+            heading: 0.0,
+            state: PredatorState::Patrol,
+            health: cfg.hazards.spider_health,
+        });
+        let spider_idx = sim.predators.len() - 1;
+
+        let mut killed: Vec<usize> = Vec::new();
+        sim.spider_tick(spider_idx, &cfg.hazards, &mut killed);
+
+        assert_eq!(
+            sim.predators[spider_idx].health, 30.0,
+            "spider HP must stay at full when ant has no sting",
+        );
+    }
+
+    /// Negative case: a non-worker (e.g. queen) at the UG entrance with
+    /// no pellet must NOT surface. Queens stay underground in real biology
+    /// once founding is complete; the surfacing rule is worker-only.
+    #[test]
+    fn queen_at_ug_entrance_does_not_surface() {
+        use crate::ant::AntCaste;
+        let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+        let _ug = topology.attach_underground(0, 0, 40, 24);
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new_with_topology(cfg, topology, 1);
+
+        let ug_mod = sim.topology.underground_for_colony(0).expect("ug nest");
+        let (ux, uy) = sim
+            .topology
+            .module(ug_mod)
+            .world
+            .find_nest_entrance(0)
+            .expect("ug entrance");
+
+        let mut q = Ant::new_with_caste(
+            1111,
+            0,
+            Vec2::new(ux as f32 + 0.5, uy as f32 + 0.5),
+            0.0,
+            10.0,
+            AntCaste::Queen,
+        );
+        q.module_id = ug_mod;
+        q.state = AntState::Idle;
+        sim.ants.push(q);
+        let idx = sim.ants.len() - 1;
+
+        sim.surface_underground_traversal();
+
+        assert_eq!(
+            sim.ants[idx].module_id, ug_mod,
+            "queen must not surface — she stays in the queen chamber",
         );
     }
 

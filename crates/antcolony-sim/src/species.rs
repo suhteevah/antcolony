@@ -16,9 +16,44 @@ use crate::config::{
 use crate::environment::Environment;
 use crate::error::SimError;
 use crate::species_extended::{
-    Behavior, ColonyStructure, CombatExtended, DietExtended, EcologicalRole, Substrate,
-    default_schema_version,
+    Behavior, ColonyStructure, CombatExtended, DietExtended, EcologicalRole, RecruitmentStyle,
+    Substrate, default_schema_version,
 };
+
+/// Phase B hook #1 — recruitment-style → trail-deposit-strength scalar.
+///
+/// Mass recruiters lay strong trails that self-amplify into chemical
+/// "roads"; tandem-running species drop little or no trail at all.
+/// Multiplying the calibrated `PheromoneConfig.deposit_*` defaults by
+/// this factor at config-bake time delivers the per-species behavior
+/// without per-tick branching in the deposit loop.
+///
+/// Values are sim-pacing — no published "X% as much pheromone" figure
+/// for any genus because tandem species typically don't deposit
+/// detectable food trails at all (Hölldobler & Wilson 1990 ch. 7).
+/// Phase B hook #3 — convert a species-specified trail half-life
+/// (in in-game seconds) to the per-substep evaporation rate that
+/// `pheromone::evaporate` reads. Calibration: each sim substep is
+/// 2 in-game seconds (Seasonal baseline). The default
+/// `PheromoneConfig.evaporation_rate = 0.02` corresponds to a
+/// half-life of ~68.6s; species like Lasius niger have measured
+/// half-lives of ~2820s (Beckers et al. 1992), which produces a
+/// much smaller per-substep rate (~0.00049).
+pub(crate) fn evaporation_rate_from_half_life_seconds(half_life_seconds: u32) -> f32 {
+    const SUBSTEP_IN_GAME_SECONDS: f32 = 2.0;
+    let h = half_life_seconds.max(1) as f32;
+    let substeps_per_halflife = h / SUBSTEP_IN_GAME_SECONDS;
+    1.0 - (0.5_f32).powf(1.0 / substeps_per_halflife.max(1.0))
+}
+
+pub(crate) fn recruitment_deposit_scalar(style: RecruitmentStyle) -> f32 {
+    match style {
+        RecruitmentStyle::Mass => 1.0,
+        RecruitmentStyle::Group => 0.5,
+        RecruitmentStyle::TandemRun => 0.1,
+        RecruitmentStyle::Individual => 0.0,
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -221,7 +256,28 @@ impl Species {
         // runs N substeps per outer tick at higher time scales, so the
         // per-substep rates here remain biologically correct at any
         // player-selected scale.
-        let pheromone = PheromoneConfig::default();
+        //
+        // Phase B hook #1 — recruitment style scales trail deposit
+        // strength. Mass recruiters (Lasius, Tetramorium, Tapinoma)
+        // get the calibrated baseline; tandem-runners (Camponotus) and
+        // individual foragers deposit much less. This is what makes
+        // trails self-amplify into "roads" for mass recruiters and
+        // stay faint individual breadcrumbs for tandem species.
+        // Cross-ref: docs/biology.md "Trail pheromone half-life and
+        // species variance"; biology-roadmap.md §"Phase B sim hooks" #1.
+        let recruitment_scalar = recruitment_deposit_scalar(self.behavior.recruitment);
+        let mut pheromone = PheromoneConfig::default();
+        pheromone.deposit_food_trail *= recruitment_scalar;
+        pheromone.deposit_home_trail *= recruitment_scalar;
+
+        // Phase B hook #3 — per-species trail evaporation override.
+        // When a species TOML supplies `behavior.trail_half_life_seconds`,
+        // convert that to per-substep evaporation rate; otherwise leave
+        // the default. Matches measured species variance (Lasius ~2820s
+        // per Beckers/Deneubourg vs. ~60s for tandem-recruiters).
+        if let Some(half_life) = self.behavior.trail_half_life_seconds {
+            pheromone.evaporation_rate = evaporation_rate_from_half_life_seconds(half_life);
+        }
 
         let ant = AntConfig {
             speed_worker: 2.0 * self.appearance.speed_multiplier,
@@ -240,6 +296,11 @@ impl Species {
             hibernation_warm_threshold_c: 12.0,
             hibernation_required: self.biology.hibernation_required,
             min_diapause_days: self.biology.min_diapause_days,
+            nocturnal: matches!(
+                self.behavior.diel_activity,
+                crate::species_extended::DielActivity::Nocturnal
+            ),
+            sting_potency: self.combat_extended.sting_potency,
         };
 
         // queen_egg_rate is fraction-of-egg-per-tick.
@@ -386,6 +447,77 @@ real_world_range = "Palearctic"
 fun_facts = ["Queens can live nearly 30 years.", "Famous for nuptial flights on warm summer evenings."]
 keeper_notes = "Docile, hardy, forgiving."
 "##
+    }
+
+    #[test]
+    fn evaporation_rate_scales_inversely_with_half_life() {
+        let baseline = evaporation_rate_from_half_life_seconds(60); // ~similar to default
+        let lasius = evaporation_rate_from_half_life_seconds(2820); // Beckers 1992
+        let very_short = evaporation_rate_from_half_life_seconds(10);
+        assert!(very_short > baseline, "shorter half-life ⇒ higher decay rate");
+        assert!(baseline > lasius, "Lasius long half-life ⇒ low decay rate");
+        // Half-life formula sanity: ~0.5 of pheromone left after `H/2`
+        // substeps when rate matches.
+        let r = evaporation_rate_from_half_life_seconds(20); // 10 substeps to half-life
+        let after = (1.0_f32 - r).powi(10);
+        assert!((after - 0.5).abs() < 0.01, "after H/SUBSTEP substeps should be ~0.5, got {after}");
+    }
+
+    #[test]
+    fn apply_overrides_evaporation_when_half_life_set() {
+        use crate::environment::Environment;
+        use crate::species_extended::Behavior;
+        let mut s = Species::load_from_str(sample_toml()).expect("parse");
+        let baseline = s.apply(&Environment::default()).pheromone.evaporation_rate;
+
+        s.behavior = Behavior {
+            trail_half_life_seconds: Some(2820),
+            ..s.behavior.clone()
+        };
+        let with_override = s.apply(&Environment::default()).pheromone.evaporation_rate;
+        assert!(
+            with_override < baseline,
+            "Lasius half-life override should LOWER evaporation rate vs default ({with_override} vs {baseline})",
+        );
+    }
+
+    #[test]
+    fn recruitment_scalar_orders_correctly() {
+        use crate::species_extended::RecruitmentStyle as RS;
+        // Mass > Group > TandemRun > Individual.
+        assert!(recruitment_deposit_scalar(RS::Mass) > recruitment_deposit_scalar(RS::Group));
+        assert!(recruitment_deposit_scalar(RS::Group) > recruitment_deposit_scalar(RS::TandemRun));
+        assert!(recruitment_deposit_scalar(RS::TandemRun) > recruitment_deposit_scalar(RS::Individual));
+        // Individual is no-trail.
+        assert_eq!(recruitment_deposit_scalar(RS::Individual), 0.0);
+    }
+
+    #[test]
+    fn apply_scales_deposit_for_tandem_recruiter() {
+        use crate::environment::Environment;
+        use crate::species_extended::{Behavior, RecruitmentStyle};
+        // Build two species identical except for recruitment style.
+        let mut mass = Species::load_from_str(sample_toml()).expect("parse");
+        mass.behavior = Behavior {
+            recruitment: RecruitmentStyle::Mass,
+            ..Behavior::default()
+        };
+        let mut tandem = mass.clone();
+        tandem.behavior.recruitment = RecruitmentStyle::TandemRun;
+
+        let env = Environment::default();
+        let cfg_mass = mass.apply(&env);
+        let cfg_tandem = tandem.apply(&env);
+
+        assert!(
+            cfg_mass.pheromone.deposit_food_trail > cfg_tandem.pheromone.deposit_food_trail,
+            "mass recruiter must deposit more trail than tandem ({} vs {})",
+            cfg_mass.pheromone.deposit_food_trail,
+            cfg_tandem.pheromone.deposit_food_trail,
+        );
+        assert!(
+            cfg_mass.pheromone.deposit_home_trail > cfg_tandem.pheromone.deposit_home_trail,
+        );
     }
 
     #[test]

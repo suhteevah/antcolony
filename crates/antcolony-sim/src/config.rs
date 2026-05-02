@@ -148,6 +148,25 @@ pub struct AntConfig {
     /// (Camponotus, Formica) want higher.
     #[serde(default = "default_min_diapause_days")]
     pub min_diapause_days: u32,
+
+    /// Phase B hook #2 — diel activity. When true, foraging-state
+    /// transitions (Idle/Exploring/FollowingTrail) are suppressed
+    /// during in-game daylight (06:00-18:00 sim time). Workers stay
+    /// in the nest by day and emerge at night. Defaults to false
+    /// (diurnal — original behavior). Set by `species::apply` from
+    /// `Species.behavior.diel_activity == Nocturnal`.
+    /// Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #2.
+    #[serde(default)]
+    pub nocturnal: bool,
+
+    /// Phase B hook #4 — sting potency on the Schmidt scale (0..5).
+    /// 0 = no sting (Formicinae). Higher values mean each successful
+    /// predator bite costs the predator more health, so stinging
+    /// species are harder to consume. Set by `species::apply` from
+    /// `Species.combat_extended.sting_potency`.
+    /// Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #4.
+    #[serde(default)]
+    pub sting_potency: f32,
 }
 
 fn default_min_diapause_days() -> u32 {
@@ -294,6 +313,8 @@ impl Default for AntConfig {
             hibernation_warm_threshold_c: 12.0,
             hibernation_required: false,
             min_diapause_days: 60,
+            nocturnal: false,
+            sting_potency: 0.0,
         }
     }
 }
