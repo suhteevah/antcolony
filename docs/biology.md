@@ -97,7 +97,37 @@ In a planned versus mode (two human players, two colonies), biological mechanics
 
 ---
 
-## Diapause Biology (logged 2026-04-25)
+## Diapause Biology (logged 2026-04-25, expanded 2026-05-02)
+
+### Adults survive winter on body fat, NOT colony food stores
+This is the single most important fact about overwintering ants and the
+one most easily missed. Hibernating workers metabolize lipid reserves
+accumulated during autumn fat-loading — they do NOT continue to draw on
+the colony's food larder during diapause. Pogonomyrmex granaries store
+thousands of seeds explicitly so the brood pipeline can RESTART in
+spring, not because workers eat them through winter. Worker mortality
+in a healthy hibernating colony is very low (<5% over a temperate
+winter); ants that die in winter were already weakened or injured.
+
+**Sim implication.** The starvation-deaths code path must skip when
+`in_diapause`. Pre-fix Pogonomyrmex died exactly this way in the 2y
+smoke: peaked at 383 adults entering autumn with low food reserves,
+brood cannibalism consumed all brood within a few days of winter onset,
+then the 5%/tick adult starvation cap killed 350+ adults in a pulse.
+Post-fix, `food_stored` is clamped to 0 during diapause but adults
+don't die from food shortage. Brood cannibalism still runs (queen
+needs a trickle of nutrients), but adult survival is decoupled from
+the larder.
+
+**Source.** [Hahn, D.A. & Denlinger, D.L. (2011). Energetics of insect
+diapause. *Annual Review of Entomology* 56:103-121.](https://www.annualreviews.org/doi/10.1146/annurev-ento-112408-085436) — definitive review of body-fat dependence in
+overwintering insects, including ants. For Pogonomyrmex specifically:
+[Munger, J.C. (1984). Long-term yield from harvester ant colonies:
+implications for horned lizard foraging strategy. *Ecology* 65:1077-1086.](https://www.jstor.org/stable/1938316) measured year-over-year colony persistence rates >90% in
+unprovoked colonies, contradicting any model where adults starve from
+food shortage in winter.
+
+
 
 ### Metabolic depression in hibernation
 Hibernating insects don't just stop foraging — their metabolic rate drops to ~5-10% of active levels. Respiration, heart rate, and energy consumption all crash. A diapausing colony's food needs over winter are roughly 1/10 to 1/20 of summer needs. The reserves accumulated in late autumn (visible as engorged crops and full food chambers) are calibrated against this dramatically reduced rate.

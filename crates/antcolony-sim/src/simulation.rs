@@ -2804,25 +2804,45 @@ impl Simulation {
                 // Any remaining deficit falls through to worker
                 // starvation (capped per tick to avoid a single-tick
                 // colony wipe).
+                //
+                // EXCEPT during diapause: real adults survive winter on
+                // body fat reserves accumulated during autumn, NOT on
+                // colony food stores. Worker mortality in a healthy
+                // hibernating colony is very low. The 5%/tick adult
+                // death cap was killing colonies (especially Pogonomyrmex,
+                // observed empirically in 2y smoke) when reserves ran
+                // out around 60-90 days into winter — biologically
+                // wrong because in nature those workers would still be
+                // alive on personal fat. We zero food_stored without
+                // killing adults; brood cannibalism above already
+                // covered the queen's actual needs (her egg-laying is
+                // gated and she runs on endogenous reserves anyway).
                 if colony.food_stored < 0.0 {
-                    let deficit = -colony.food_stored;
-                    let cost = ccfg.adult_food_consumption.max(1e-6);
-                    let raw = (deficit / cost).ceil() as u32;
-                    let cap = ((adult_total as f32 * 0.05).ceil() as u32).max(1);
-                    let mut deaths = raw.min(cap);
-                    if deaths > adult_total {
-                        deaths = adult_total;
-                    }
-                    starve_count = deaths;
-                    colony.food_stored = 0.0;
-                    if deaths > 0 {
-                        tracing::warn!(
-                            colony_id = colony.id,
-                            deaths,
-                            adult_total,
-                            raw,
-                            "starvation deaths (capped per tick; brood exhausted)"
-                        );
+                    if in_diapause {
+                        // Reserves run out — clamp to zero and move on.
+                        // Workers metabolize body fat through winter,
+                        // queen lay rate already gated. No deaths.
+                        colony.food_stored = 0.0;
+                    } else {
+                        let deficit = -colony.food_stored;
+                        let cost = ccfg.adult_food_consumption.max(1e-6);
+                        let raw = (deficit / cost).ceil() as u32;
+                        let cap = ((adult_total as f32 * 0.05).ceil() as u32).max(1);
+                        let mut deaths = raw.min(cap);
+                        if deaths > adult_total {
+                            deaths = adult_total;
+                        }
+                        starve_count = deaths;
+                        colony.food_stored = 0.0;
+                        if deaths > 0 {
+                            tracing::warn!(
+                                colony_id = colony.id,
+                                deaths,
+                                adult_total,
+                                raw,
+                                "starvation deaths (capped per tick; brood exhausted)"
+                            );
+                        }
                     }
                 }
             }
@@ -4724,6 +4744,71 @@ mod tests {
         assert!(digger.carrying_soil, "digger should carry a soil pellet after excavation");
         assert_eq!(digger.state, AntState::ReturningHome,
             "digger should transition to ReturningHome after extracting the pellet");
+    }
+
+    #[test]
+    fn diapausing_adults_dont_starve_when_reserves_run_out() {
+        // Regression test for the Pogonomyrmex 2y collapse pattern:
+        // colony entered winter with low food, consumed all reserves
+        // including brood, then 350+ adults died in a starvation pulse.
+        // Real biology: workers in diapause survive on body fat, not
+        // colony food stores. So adults must NOT die from food=0 while
+        // in_diapause.
+        let mut cfg = small_config();
+        cfg.ant.hibernation_required = true;
+        cfg.ant.hibernation_cold_threshold_c = 10.0;
+        cfg.ant.hibernation_warm_threshold_c = 12.0;
+        cfg.ant.initial_count = 0;
+        cfg.colony.adult_food_consumption = 1.0; // huge — would kill fast
+        cfg.colony.queen_egg_rate = 0.0;
+        let mut sim = Simulation::new(cfg, 1);
+
+        // Force always-cold climate so colony enters diapause.
+        sim.climate.seasonal_mid_c = 5.0;
+        sim.climate.seasonal_amplitude_c = 0.0;
+        sim.climate.starting_day_of_year = 0;
+        // Cool the nest module to winter ambient immediately.
+        let winter_amb = sim.ambient_temp_c();
+        let m = sim.topology.module_mut(0);
+        for v in m.temperature.iter_mut() {
+            *v = winter_amb;
+        }
+
+        // Spawn 50 adult workers + drain food storage.
+        for i in 0..50u32 {
+            let mut a = Ant::new_worker(
+                10_000 + i,
+                0,
+                Vec2::new(5.0, 5.0),
+                0.0,
+                10.0,
+            );
+            sim.ants.push(a);
+            sim.colonies[0].population.workers += 1;
+        }
+        sim.colonies[0].food_stored = 0.0;
+        sim.colonies[0].brood.clear();
+        sim.colonies[0].eggs = 0;
+        sim.colonies[0].larvae = 0;
+        sim.colonies[0].pupae = 0;
+
+        let initial_count = sim.colonies[0].population.workers;
+
+        // Run 200 outer ticks with food_stored stuck at 0 — the
+        // pre-fix code would kill 5% of adults per tick (= ~all of them
+        // within 50 ticks). Post-fix, adults survive in diapause on
+        // body reserves; food_stored stays clamped to 0, no deaths.
+        for _ in 0..200 {
+            sim.colony_economy_tick();
+        }
+
+        let surviving = sim.colonies[0].population.workers;
+        assert_eq!(
+            surviving, initial_count,
+            "diapausing adults must survive food shortage on body reserves \
+             (had {}, kept {})",
+            initial_count, surviving,
+        );
     }
 
     #[test]
