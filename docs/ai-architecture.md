@@ -148,7 +148,166 @@ Day 31 lesson [[lessons/day-31-frostbite]] was costly.
 
 **ROI:** even read-only is a feature — players keep journals of their colonies. Vault becomes shareable / git-trackable. Sets up Phase 9.3.
 
-### Phase 9.3 — LLM sidecar (the actual sidecar question)
+### Phase 9.3 — AI bundle system + LLM sidecar (the OpenTTD model)
+
+Reference: OpenTTD's NoAI / GameScript architecture. AIs are not compiled
+into the game; they're swappable bundles that the game discovers at
+runtime. Players install via an in-game catalog and pick which AI runs
+in each slot. We adopt this directly, with one critical extension: the
+bundle declares its hardware requirements, so the same "AI Catalog" UI
+naturally tier-gates LLM-backed AIs by VRAM.
+
+**Why this is the right shape:**
+
+1. **VRAM tier abstraction is free.** A 4GB-card player and a 24GB-card
+   player both see the same AI Catalog; the catalog hides bundles whose
+   `requires_vram_mb` exceeds available memory. Same blackboard interface,
+   different backend models.
+
+2. **Modding ecosystem.** Players write personality bundles, share them.
+   This is a game system that grows beyond what we ship.
+
+3. **Phase 9.4 (AI vs AI) collapses into "load bundle A in slot 1, bundle
+   B in slot 2".** No special code path — we're just instantiating the
+   bundle loader twice.
+
+4. **Per-AI sandbox.** Each bundle runs in its own thread with a
+   millisecond budget per outer tick. Runaway AI can't lock the sim.
+
+5. **Hot-swap.** Kick an AI mid-game in versus mode; load a new bundle.
+
+**Bundle layout:**
+
+```
+ai_bundles/<bundle_name>/
+├── manifest.toml              # required metadata (see below)
+├── personality.md             # human-readable description, screenshots
+├── ks_config/                 # which KS this bundle provides
+│   ├── strategist.toml        # model id, prompts, temperature, ms_budget, schema_version
+│   └── memorist.toml
+├── personality_seed/          # Obsidian starter notes encoding biases
+│   ├── doctrine.md
+│   └── starter_lessons/*.md
+├── model/                     # optional local model files
+│   └── qwen_1.5b_q8.gguf
+└── README.md
+```
+
+**Manifest schema:**
+
+```toml
+# ai_bundles/qwen_1.5b_aggressive/manifest.toml
+name = "Qwen 1.5B — Aggressive Defender"
+id = "qwen_1.5b_aggressive"
+version = "0.1.0"
+author = "antcolony team"
+api_version = 1                 # bundle interface version
+
+[requirements]
+requires_vram_mb = 2048         # game hides bundle if below this
+requires_gpu = true
+requires_internet = false       # for downloading the model on install
+requires_api_key = false        # for Anthropic / OpenAI bundles
+
+[provides]
+knowledge_sources = ["strategist", "memorist", "narrator"]
+schema_version = 1              # contribution schema we conform to
+
+[settings]                      # exposed in the AI selection UI
+aggression = { type = "float", default = 0.7, min = 0.0, max = 1.0 }
+caste_bias = { type = "enum", options = ["balanced", "soldier_heavy", "worker_heavy"], default = "soldier_heavy" }
+ms_budget_per_tick = { type = "int", default = 100 }
+```
+
+**Tier examples (what we'd ship + what community could add):**
+
+| Tier | Bundle | Hardware | Strategist backend |
+|---|---|---|---|
+| 0 | `rule_default` | any CPU | rule-based blackboard only (Phase 9.1) |
+| 1 | `qwen_1.5b_aggressive` | 4GB+ VRAM | Qwen 1.5B int8 in candle-rs |
+| 2 | `qwen_7b_patient` | 8GB+ VRAM | Qwen 7B |
+| 3 | `llama_70b_grandmaster` | 48GB+ VRAM | Llama 70B |
+| 4 | `claude_haiku_advisor` | API key | Anthropic API |
+| 4 | `gemini_flash_strategist` | API key | Google Gemini API |
+
+Same blackboard interface, same KS contract, same JSON schema across
+tiers. Player picks what fits their machine.
+
+**Loader architecture:**
+
+```rust
+// crates/antcolony-ai/src/loader.rs
+pub struct AiBundle {
+    pub manifest: BundleManifest,
+    pub knowledge_sources: HashMap<String, Box<dyn KnowledgeSource>>,
+    pub starter_vault: Option<VaultSeed>,
+    pub backend: AiBackend,
+}
+
+pub enum AiBackend {
+    RuleBased,                    // tier 0
+    LocalLLM(Box<dyn LlmEngine>), // candle-rs / mistral.rs
+    OllamaProxy(OllamaConfig),    // dev mode + tier 1-3 alternative
+    AnthropicApi(ApiKey),         // tier 4
+    GeminiApi(ApiKey),            // tier 4
+}
+
+pub fn discover_bundles(path: &Path) -> Vec<AiBundle> {
+    // Scan ai_bundles/, parse manifests, filter by hardware capability
+    // (VRAM detected via wgpu adapter info), return installable list.
+}
+
+pub fn instantiate_bundle(bundle: &AiBundle, colony_id: ColonyId) -> ColonyAi {
+    // Spawns a worker thread, allocates blackboard,
+    // loads starter_vault into the colony's vault, wires the KS.
+}
+```
+
+**In-game catalog UI** (Phase 9.5):
+
+- Two tabs: "Installed" / "Browse"
+- Browse tab fetches from a community manifest URL (GitHub-hosted JSON list)
+- Each entry shows: name, author, screenshot, VRAM req (greyed out if insufficient), version, rating
+- Click "Install" → downloads bundle to `ai_bundles/`
+- AI selection UI in versus-mode picker shows installed bundles with their per-bundle settings
+
+**Sandbox:**
+
+Each bundle's KS run in their own thread (rust `std::thread::spawn` or
+tokio task). Communication with the main sim is via `mpsc::Sender`/
+`Receiver`. Per-tick the sim sends a `BlackboardSnapshot`; KS reply
+asynchronously with `Vec<Contribution>`. If a KS exceeds its
+`ms_budget_per_tick`, the sim ignores its contribution that tick (no
+freezing). If a KS panics, the bundle is marked unhealthy and demoted
+to rule-based fallback.
+
+**LLM sidecar choice (within a bundle):**
+
+| Option | Pros | Cons | Fits which tier |
+|---|---|---|---|
+| **candle-rs** in-process | Self-contained binary, Rust-native, no extra install | Pre-flight quantization, smaller ecosystem | Ship-quality 1-3 |
+| **ollama localhost** | Easy dev, swap models freely, hot-reload | Player has to install ollama; second process | Dev-friendly 1-3 |
+| **mistral.rs** in-process | Good throughput, tokio-async | Heavier dep tree | Alternative 1-3 |
+| **HTTP API** (Anthropic/OpenAI) | No local model needed, latest models | Internet required, API key, latency | Tier 4 |
+
+Recommendation: **ollama for development; candle-rs for shipped local
+bundles; HTTP for tier 4**. Same prompt + JSON schema works across all
+three.
+
+**Cadence budget:** assume 100-300ms per Strategist call on a 3070 Ti
+at int8. Once per minute = 0.5% CPU/GPU overhead. Scales to AI-vs-AI
+mode (2 colonies × 1/min = still <1%). Bundle-declared
+`ms_budget_per_tick` enforces this in code.
+
+**Effort:** 4-6 sessions (the bundle loader + sandbox + manifest schema
+is bigger than just wiring an LLM, but pays off Phase 9.4 and the
+modding ecosystem essentially for free).
+
+**ROI:** real character emerges. Modding ecosystem unlocked. Tier-
+appropriate experience for any player's hardware. Same interface for
+Anthropic API tier 4 + local Qwen 1.5B tier 1 — just swap bundles.
+
+### Phase 9.3-legacy — Original LLM sidecar plan (subsumed)
 
 LLM gets wired into specific KS, not the whole architecture. Most KS stay rule-based for speed; the LLM-backed ones run on a longer cadence and produce richer reasoning.
 
@@ -186,7 +345,17 @@ Recommendation: **ollama for development, candle for ship**. Same prompt + JSON 
 
 **ROI:** real character emerges. AI genuinely thinks about its situation. Player-readable reasoning chain.
 
-### Phase 9.4 — AI vs AI mode
+### Phase 9.4 — AI vs AI mode (mostly free given 9.3)
+
+With the bundle loader from 9.3, AI vs AI is "instantiate two
+bundles, give each its own colony slot." The hard work is already done.
+
+What's left for 9.4:
+
+- Spectator camera (no player ant possession)
+- Match scoreboard UI showing both vaults' recent journal entries side by side
+- Replay reader that traverses both vaults to reconstruct the match story
+- Tournament mode skeleton (round-robin between installed bundles)
 
 Two AI colonies, asymmetric Obsidian vaults, no human player. Spectator camera + replay.
 
@@ -260,10 +429,23 @@ Phase 9.1 (blackboard, no LLM): 2-3 sessions. Realistic — it's just data struc
 
 Phase 9.2 (Obsidian writer): 1-2 sessions. Realistic.
 
-Phase 9.3 (LLM wired into KS): 3-4 sessions. **Realistic if we use ollama + 1.5B; could blow up if we go straight to candle-rs in-process.** Recommend ollama path first.
+Phase 9.3 (AI bundle system + LLM sidecar): 4-6 sessions. Bigger than the original "wire one LLM into KS" plan, but pays off 9.4 + the modding ecosystem essentially for free. Recommend ollama backend first for dev iteration; ship candle-rs in-process for distribution.
 
-Phase 9.4 (AI vs AI + replay): 2-3 sessions. Realistic.
+Phase 9.4 (AI vs AI + replay): 1-2 sessions on top of 9.3 (most work already done by the bundle loader).
 
 Phase 9.5+: indefinite — this is the "game system" tier.
 
 **Total to ship 9.0-9.4: ~10-15 working sessions.** Spread over a few months alongside other features.
+
+## Reference: OpenTTD's AI architecture
+
+Key lessons we're adopting:
+
+- **Bundles, not compiled-in code.** OpenTTD has shipped maybe 50 community AIs over its lifetime; the game itself never had to change to support a new one. We want the same property.
+- **Per-AI manifest with metadata.** OpenTTD's `info.nut` declares name, version, settings, supported game versions. Our `manifest.toml` does the same plus hardware requirements.
+- **Per-AI sandbox with op-count limits.** OpenTTD enforces a Squirrel op budget per tick so a runaway script can't hang the game. Our equivalent is `ms_budget_per_tick`.
+- **Per-AI settings UI.** OpenTTD lets each AI declare its own config knobs that surface in the AI selection screen. Same idea in our manifest's `[settings]` table.
+- **In-game catalog browser.** OpenTTD's "Online Content" flow installs AIs without leaving the game. Our Phase 9.5 ships the equivalent.
+- **GameScript layer.** OpenTTD distinguishes "AI competitor" from "GameScript director" — the latter spawns missions and shapes the world. We don't need this distinction yet (the sim itself plays the GameScript role) but it's a clean future extension if we want a "Director" KS that creates events for player and AI colonies alike.
+
+Where we diverge: OpenTTD scripts are Squirrel; ours are Rust crates compiled to platform-specific .dll/.so OR scripted bundles using a stable JSON-over-IPC protocol. Rust gives us better integration with the sim; the JSON-over-IPC option keeps the door open for non-Rust authors writing AIs in Python or anything else.
