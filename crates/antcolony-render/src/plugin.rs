@@ -43,6 +43,17 @@ pub(crate) struct SoilCarryIndicator {
 #[derive(Component)]
 pub(crate) struct PheromoneOverlay(pub ModuleId);
 
+/// Dig system Phase B: brief flash on the cell that just got excavated.
+/// Spawned by `update_excavation_pulses` reading `sim.excavation_events`,
+/// and despawned by the same system when its lifetime expires.
+#[derive(Component)]
+pub(crate) struct ExcavationPulse {
+    /// Frames remaining until despawn. Counts down each frame.
+    pub frames_left: u32,
+    /// Total frames the pulse lives — used for alpha-fade.
+    pub initial_frames: u32,
+}
+
 /// P6: one sprite per predator. Synced each frame against
 /// `Simulation::predators` by id — new predators get spawned, dead ones
 /// get despawned, live ones track position + state color.
@@ -173,6 +184,7 @@ impl Plugin for RenderPlugin {
                     animate_ant_legs,
                     update_food_indicators,
                     update_soil_carry_indicators,
+                    update_excavation_pulses,
                     update_pheromone_textures,
                     update_temperature_textures,
                     update_territory_textures,
@@ -416,6 +428,38 @@ pub(crate) fn spawn_formicarium(
         let food_core_mat = food_mat.clone();
         let food_shine_mat = materials.add(Color::srgb(0.75, 0.95, 0.55));
 
+        // Dig system Phase B: per-substrate palette for the underground
+        // module's Solid + Empty rendering. Loam = warm dark brown
+        // (default), Sand = pale tan, Ytong = pale gray-white, Wood =
+        // amber, Gel = cool blue. Empty cells in underground modules
+        // get a slightly darker variant of the substrate base color to
+        // create the "see the tunnels" cross-section look — without
+        // this, Empty cells just show the surface substrate texture
+        // and the tunnel network doesn't read as negative space.
+        let (solid_color, tunnel_color) = match module.substrate {
+            antcolony_sim::SubstrateKind::Loam => (
+                Color::srgb(0.18, 0.12, 0.06),
+                Color::srgb(0.04, 0.025, 0.015),
+            ),
+            antcolony_sim::SubstrateKind::Sand => (
+                Color::srgb(0.62, 0.50, 0.32),
+                Color::srgb(0.18, 0.13, 0.08),
+            ),
+            antcolony_sim::SubstrateKind::Ytong => (
+                Color::srgb(0.82, 0.80, 0.74),
+                Color::srgb(0.18, 0.16, 0.13),
+            ),
+            antcolony_sim::SubstrateKind::Wood => (
+                Color::srgb(0.42, 0.28, 0.14),
+                Color::srgb(0.10, 0.06, 0.03),
+            ),
+            antcolony_sim::SubstrateKind::Gel => (
+                Color::srgb(0.30, 0.50, 0.62),
+                Color::srgb(0.06, 0.14, 0.20),
+            ),
+        };
+        let is_underground = module.kind == antcolony_sim::ModuleKind::UndergroundNest;
+
         let nest_rim = meshes.add(Circle::new(TILE * 3.0));
         let nest_shadow = meshes.add(Circle::new(TILE * 2.3));
         let nest_pit = meshes.add(Circle::new(TILE * 1.3));
@@ -476,12 +520,13 @@ pub(crate) fn spawn_formicarium(
                             ));
                         }
                     }
-                    // P5: Solid = unexcavated earth, opaque dark tile
-                    // that hides the tunnel substrate below.
+                    // Solid = unexcavated substrate. Color tinted by the
+                    // module's `substrate` (Loam/Sand/Ytong/Wood/Gel)
+                    // so different formicarium materials read distinctly.
                     Terrain::Solid => {
                         commands.spawn((
                             Sprite {
-                                color: Color::srgb(0.08, 0.05, 0.03),
+                                color: solid_color,
                                 custom_size: Some(Vec2::splat(TILE)),
                                 ..default()
                             },
@@ -543,7 +588,26 @@ pub(crate) fn spawn_formicarium(
                             FormicariumEntity,
                         ));
                     }
-                    Terrain::Obstacle | Terrain::Empty => {}
+                    Terrain::Obstacle => {}
+                    Terrain::Empty => {
+                        // "See the tunnels" — in underground modules,
+                        // an excavated Empty cell renders as the dark
+                        // tunnel-color tile so the tunnel network reads
+                        // as negative space carved through substrate.
+                        // Surface modules leave Empty cells transparent
+                        // (the substrate texture below shows through).
+                        if is_underground {
+                            commands.spawn((
+                                Sprite {
+                                    color: tunnel_color,
+                                    custom_size: Some(Vec2::splat(TILE * 0.95)),
+                                    ..default()
+                                },
+                                Transform::from_translation(world_pos.extend(0.10)),
+                                FormicariumEntity,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -1265,6 +1329,65 @@ fn update_soil_carry_indicators(
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+/// Dig system Phase B: drain `sim.excavation_events` and spawn brief
+/// flash sprites at each cell that just got excavated. Existing pulses
+/// fade alpha each frame and despawn when expired.
+fn update_excavation_pulses(
+    mut commands: Commands,
+    mut sim: ResMut<SimulationState>,
+    layout: Option<Res<ModuleLayout>>,
+    mut pulses: Query<(Entity, &mut ExcavationPulse, &mut Sprite, &mut Transform)>,
+) {
+    // Fade + decrement existing pulses.
+    for (e, mut pulse, mut sprite, mut tf) in pulses.iter_mut() {
+        if pulse.frames_left == 0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        pulse.frames_left = pulse.frames_left.saturating_sub(1);
+        let progress = pulse.frames_left as f32 / pulse.initial_frames as f32;
+        // Pulse: bright at spawn, fades to nothing. Slight scale-up
+        // gives the "puff" feel.
+        sprite.color = Color::srgba(0.95, 0.78, 0.30, progress);
+        tf.scale = Vec3::splat(1.0 + (1.0 - progress) * 0.4);
+    }
+
+    // Spawn fresh pulses from the sim's event buffer. Drain it so we
+    // don't double-spawn next frame.
+    let Some(layout) = layout else {
+        sim.sim.excavation_events.clear();
+        return;
+    };
+    if sim.sim.excavation_events.is_empty() {
+        return;
+    }
+    // Recompute centroid to match setup() / sync_ant_sprites convention.
+    let (_, centroid) = compute_layout(&sim);
+    let events: Vec<_> = sim.sim.excavation_events.drain(..).collect();
+    for (mid, x, y, _tick) in events {
+        let Some((_, origin)) = layout.0.iter().find(|(id, _)| *id == mid) else {
+            continue;
+        };
+        let pos = Vec2::new(
+            origin.x - centroid.x + (x as f32 + 0.5) * TILE,
+            origin.y - centroid.y + (y as f32 + 0.5) * TILE,
+        );
+        commands.spawn((
+            Sprite {
+                color: Color::srgba(0.95, 0.78, 0.30, 1.0),
+                custom_size: Some(Vec2::splat(TILE * 1.1)),
+                ..default()
+            },
+            Transform::from_translation(pos.extend(0.18)),
+            ExcavationPulse {
+                frames_left: 30,
+                initial_frames: 30,
+            },
+            FormicariumEntity,
+        ));
     }
 }
 

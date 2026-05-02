@@ -31,7 +31,7 @@ pub use environment::{Climate, Environment, Season, TimeScale};
 pub use error::SimError;
 pub use hazards::{Predator, PredatorKind, PredatorState, Weather};
 pub use player::{Beacon, BeaconKind};
-pub use module::{Module, ModuleId, ModuleKind, PortPos};
+pub use module::{Module, ModuleId, ModuleKind, PortPos, SubstrateKind};
 pub use pheromone::{PheromoneGrid, PheromoneLayer};
 pub use simulation::Simulation;
 pub use spatial::SpatialHash;

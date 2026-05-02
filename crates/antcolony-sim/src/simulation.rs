@@ -80,6 +80,13 @@ pub struct Simulation {
     pub beacons: Vec<crate::player::Beacon>,
     /// Monotonic id generator for new beacons.
     next_beacon_id: u32,
+    /// Dig system Phase B: ring buffer of recent Solid→Empty tile flips,
+    /// drained by the renderer each frame to spawn excavation-pulse
+    /// particles. Capped at 256 entries to keep memory bounded if the
+    /// renderer is paused or the dig rate is very high.
+    /// `(module_id, x, y, tick_added)`. Simulation isn't serialized as
+    /// a whole (only Snapshot is in persist.rs), so no serde hint needed.
+    pub excavation_events: Vec<(crate::module::ModuleId, u16, u16, u64)>,
 }
 
 impl Simulation {
@@ -158,6 +165,7 @@ impl Simulation {
             weather: crate::hazards::Weather::default(),
             beacons: Vec::new(),
             next_beacon_id: 0,
+            excavation_events: Vec::new(),
         }
     }
 
@@ -259,6 +267,7 @@ impl Simulation {
             weather: crate::hazards::Weather::default(),
             beacons: Vec::new(),
             next_beacon_id: 0,
+            excavation_events: Vec::new(),
         }
     }
 
@@ -559,6 +568,7 @@ impl Simulation {
             weather,
             beacons,
             next_beacon_id,
+            excavation_events: Vec::new(),
         };
         tracing::info!(
             tick = sim.tick,
@@ -2131,12 +2141,18 @@ impl Simulation {
                 ant.dig_progress = 0;
                 ant.dig_target = Some(target_pair);
             }
-            ant.dig_progress = ant.dig_progress.saturating_add(1);
+            // Per-substrate progress rate. Loam baseline = 1.0; harder
+            // substrates (Ytong, Wood) take longer per tile, softer
+            // ones (Sand, Gel) are faster. Stored as u32 so we round.
+            let substrate_mult = module.substrate.dig_speed_multiplier();
+            let progress_increment = (1.0 * substrate_mult).max(0.1).round() as u32;
+            ant.dig_progress = ant.dig_progress.saturating_add(progress_increment.max(1));
             if ant.dig_progress >= DIG_PROGRESS_THRESHOLD {
                 flips.push((i, ant.module_id, tx, ty));
             }
         }
         if !flips.is_empty() {
+            let current_tick = self.tick;
             for (ant_idx, mid, x, y) in &flips {
                 // Flip the tile.
                 self.topology.module_mut(*mid).world.set(*x, *y, Terrain::Empty);
@@ -2147,6 +2163,14 @@ impl Simulation {
                 // Transition out of Digging — FSM picks up where to go
                 // next; movement steering will pull them home.
                 ant.state = AntState::ReturningHome;
+                // Push an excavation event for the renderer to flash a
+                // pulse at this cell. Capped at 256 entries — drop
+                // oldest when full so the renderer always has fresh
+                // pulses without unbounded memory growth.
+                self.excavation_events.push((*mid, *x as u16, *y as u16, current_tick));
+                if self.excavation_events.len() > 256 {
+                    self.excavation_events.remove(0);
+                }
             }
             tracing::debug!(excavated = flips.len(), "dig_tick: tile flips this substep");
         }

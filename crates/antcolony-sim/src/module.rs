@@ -60,6 +60,55 @@ impl ModuleKind {
     }
 }
 
+/// Dig system Phase B: per-module diggable-substrate variant. Drives
+/// the underground module's wall + tunnel rendering palette and
+/// (eventually) the per-tile dig speed multiplier. Only meaningful for
+/// `UndergroundNest` and `YTongNest` module kinds; surface modules
+/// always use `Loam`-equivalent rendering and don't expose the field.
+///
+/// Real keepers match formicarium nest material to species — see
+/// `docs/biology.md` "Substrate type changes everything" + the
+/// `assets/sprite_prompts/ENVIRONMENT_PROMPTS.md` Tier 1 substrate
+/// section for the visual reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SubstrateKind {
+    /// Dark organic forest-floor mix. The default. Most temperate species
+    /// (Lasius, Aphaenogaster, Formica, Tetramorium) suit Loam.
+    #[default]
+    Loam,
+    /// Pale arid sand. Pogonomyrmex and other granivores. Tunnels collapse
+    /// easily in nature; in sim, dig is fast but a future "tunnel decay"
+    /// pass could revert idle Empty cells back toward Solid.
+    Sand,
+    /// Aerated autoclaved concrete (Y-Tong). The keeper-favorite "permanent"
+    /// nest material. Pre-carved chambers; ants chew tunnels slowly. In
+    /// sim: harder to dig (`dig_speed_multiplier` 0.7).
+    Ytong,
+    /// Soft-rotted wood. Camponotus excavates galleries through this.
+    /// Mandible-only — no pellet rolling biology — but for the sim we
+    /// still treat it as substrate with a different color palette.
+    Wood,
+    /// Translucent nutritive blue gel (NASA-style ant farm). Sci-fi
+    /// novelty substrate; in nature it would be a slow death (no
+    /// protein) but in sim it just gets a distinctive cool palette.
+    Gel,
+}
+
+impl SubstrateKind {
+    /// Multiplier applied to per-substep dig progress accumulation.
+    /// Loam = 1.0 baseline; harder substrates take longer per tile.
+    /// Future: combine with species `appearance.dig_speed_multiplier`.
+    pub fn dig_speed_multiplier(self) -> f32 {
+        match self {
+            SubstrateKind::Loam => 1.0,
+            SubstrateKind::Sand => 1.2,
+            SubstrateKind::Ytong => 0.7,
+            SubstrateKind::Wood => 0.5,
+            SubstrateKind::Gel => 1.5,
+        }
+    }
+}
+
 /// A cell on a module's border where a tube can attach.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct PortPos {
@@ -107,6 +156,12 @@ pub struct Module {
     /// Target temperature the grid is drifting toward. Set by
     /// `Simulation::temperature_tick` based on module kind + ambient.
     pub ambient_target: f32,
+    /// Dig system Phase B: which substrate this module's diggable cells
+    /// are made of. Only meaningful for `UndergroundNest` (and YTongNest);
+    /// surface modules ignore the field at render time. Defaults to
+    /// `Loam` for snapshot compatibility.
+    #[serde(default)]
+    pub substrate: SubstrateKind,
 }
 
 impl Module {
@@ -130,6 +185,7 @@ impl Module {
             tick_cooldown: 0,
             temperature: vec![20.0; n],
             ambient_target: 20.0,
+            substrate: SubstrateKind::default(),
         }
     }
 
