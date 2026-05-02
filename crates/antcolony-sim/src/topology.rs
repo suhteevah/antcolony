@@ -412,6 +412,22 @@ impl Topology {
             .unwrap_or_else(|| panic!("Topology::tube_mut({}) — not found", id))
     }
 
+    /// Auto-size every tube's bore width to fit a species. Real keepers
+    /// match formicarium tubing to species (suppliers stock 6/8/12/16mm
+    /// for exactly this reason); the default 8mm tubes refuse Camponotus
+    /// (13mm worker, 21mm major) at every port. Computes
+    /// `needed = worker_size_mm * polymorphic_factor * safety_margin` and
+    /// applies the larger of `needed` and `8.0` (default) per tube.
+    /// Smaller species keep the 8mm default; large species get scaled up.
+    pub fn fit_bore_to_species(&mut self, worker_size_mm: f32, polymorphic: bool) {
+        let polymorphic_factor = if polymorphic { 1.6 } else { 1.15 };
+        let needed_bore = worker_size_mm * polymorphic_factor * 1.5;
+        let starter_bore = needed_bore.max(8.0);
+        for tube in &mut self.tubes {
+            tube.bore_width_mm = tube.bore_width_mm.max(starter_bore);
+        }
+    }
+
     /// Smallest unused module id.
     pub fn next_module_id(&self) -> ModuleId {
         (0u16..u16::MAX)

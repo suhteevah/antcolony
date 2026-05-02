@@ -126,6 +126,8 @@ fn main() -> anyhow::Result<()> {
         )
     };
     let _underground_id = topology.attach_underground(0, 0, nest_w.max(32), nest_h.max(24));
+    // Auto-size tubes to fit species (mirrors SimulationState::from_species).
+    topology.fit_bore_to_species(species.appearance.size_mm, species.biology.polymorphic);
     let mut sim = Simulation::new_with_topology(cfg, topology, env.seed);
     sim.set_environment(&env);
 
