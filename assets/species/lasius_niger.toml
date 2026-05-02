@@ -3,45 +3,89 @@ common_name = "Black Garden Ant"
 genus = "Lasius"
 species_epithet = "niger"
 difficulty = "beginner"
+schema_version = 1  # Phase A extended schema version (top-level so it's a Species field, not nested under a section)
 
 [biology]
-queen_lifespan_years = 28.0
-worker_lifespan_months = 24.0
-founding = "claustral"
-polymorphic = false
-hibernation_required = true
-min_diapause_days = 60
+queen_lifespan_years = 28.0  # Hermann Appel captive record 28y 8mo, Kutter & Stumper 1969; reviewed in Keller & Genoud 1997 Nature — longest documented eusocial insect lifespan
+worker_lifespan_months = 24.0  # game-pacing — natural ~1-12mo (Kramer, Schaible & Scheuerlein 2016 Exp. Gerontology), scaled up so adult cohort persists visibly across sim sessions
+founding = "claustral"  # strict claustral, queen seals chamber and metabolizes wing muscle (Sommer & Hölldobler 1995; cross-ref biology.md "Claustral vs semi-claustral founding")
+polymorphic = false  # monomorphic — no soldier caste, only modest worker size variation (AntWiki Lasius niger; docs/species/lasius_niger.md §2)
+hibernation_required = true  # diapause required or queen lifespan collapses to a few years (docs/species/lasius_niger.md §8)
+min_diapause_days = 60  # game-pacing — natural diapause is ~5 months Oct-Mar (docs §8), 60d is the minimum-viable floor for sim pacing
 
 [growth]
-egg_maturation_seconds = 1209600
-larva_maturation_seconds = 1814400
-pupa_maturation_seconds = 1209600
-queen_eggs_per_day = 30.0
-initial_workers = 20
-target_population = 15000
-egg_cost_food = 5.0
-food_per_adult_per_day = 0.4
+egg_maturation_seconds = 1209600  # 14 days at ~25°C — matches doc §4 "egg ~2 weeks"
+larva_maturation_seconds = 1814400  # 21 days at ~25°C — matches doc §4 "larva ~3 weeks"
+pupa_maturation_seconds = 1209600  # 14 days at ~25°C — matches doc §4 "pupa ~2 weeks"
+queen_eggs_per_day = 30.0  # game-pacing — keeper-observed mature-colony lay rates are tens to low hundreds/day in peak season; 30 is a conservative steady-state value (no published exact figure in doc §4)
+initial_workers = 20  # game-pacing — true claustral founding starts with 0 workers and produces nanitics over 6-10 weeks (doc §3); 20 is a player-onboarding shortcut so play begins post-nanitic
+target_population = 15000  # upper end of "5,000-15,000 typical" mature colony size (doc §3, AntWiki)
+egg_cost_food = 5.0  # game-pacing — abstract sim food unit, no direct biological mapping
+food_per_adult_per_day = 0.4  # game-pacing — abstract sim food unit, calibrated for colony economy balance
 
 [diet]
-prefers = ["sugar", "protein", "honeydew"]
-forages_on = ["ground", "vegetation"]
+prefers = ["sugar", "protein", "honeydew"]  # generalist omnivore; honeydew via aphid mutualism is dominant carb source (doc §5; Wikipedia §Diet citing Stadler & Dixon)
+forages_on = ["ground", "vegetation"]  # ground-foraging with arboreal aphid tending (doc §5)
 
 [combat]
-worker_attack = 1.0
-soldier_attack = 0.0
-worker_health = 8.0
-soldier_health = 0.0
-aggression = 0.2
+worker_attack = 1.0  # game-pacing — abstract baseline reference value (1.0 = "small monomorphic worker"); no soldier caste so all combat load uniform (doc §7)
+soldier_attack = 0.0  # monomorphic — no soldier caste exists in L. niger (doc §2, §7; TOML correctly encodes 0)
+worker_health = 8.0  # game-pacing — abstract HP scaled to 3-5mm body size (doc §2)
+soldier_health = 0.0  # no soldier caste (see soldier_attack)
+aggression = 0.2  # context-dependent in reality (Boulay et al. 2024 bioRxiv — low aggression to close-kin neighbors, high to distant populations); 0.2 is a moderate scalar (doc §7, §9)
 
 [appearance]
-color_hex = "#1a1a1a"
-size_mm = 4.0
-speed_multiplier = 1.0
+color_hex = "#1a1a1a"  # uniformly dark brown to jet black, weakly shining (doc §2 morphology)
+size_mm = 4.0  # midpoint of worker 3-5 mm range (doc §2; AntWiki)
+speed_multiplier = 1.0  # baseline reference species — all other species speeds are relative to L. niger
 
 [default_caste_ratio]
-worker = 0.97
-soldier = 0.0
-breeder = 0.03
+worker = 0.97  # monomorphic worker pool dominates; remaining 3% allocated to breeders/alates (doc §2, §7)
+soldier = 0.0  # no soldier caste (doc §2)
+breeder = 0.03  # alate production fraction during reproductive season; queens monogyne so only one survives founding (doc §3)
+
+# ---- Phase A schema extensions (additive, all optional) ----
+# All sections below are optional and default to "Lasius-shaped" behavior
+# if omitted. Cited per docs/species/lasius_niger.md sections.
+# (schema_version lives at the file top — TOML parses bare keys after a
+# section header as fields of that section.)
+
+[behavior]
+recruitment = "mass"  # canonical mass-recruiter (doc §5; Grüter et al. 2008 Behav. Ecol. Sociobiol.)
+diel_activity = "diurnal"  # primarily daytime forager (general Lasius observation)
+trail_half_life_seconds = 2820  # Beckers/Deneubourg trail decay ~47 min (doc §5; Beckers et al. 1992)
+
+[colony_structure]
+queen_count = "monogyne"  # mature monogyne; pleometrotic founding common but only one queen survives (doc §3; Aron et al. 2024 bioRxiv)
+polydomous = false  # single-nest; no documented polydomy (doc §6)
+relocation_tendency = 0.0  # nest-faithful
+supercolony_capable = false  # no supercolony populations documented for L. niger sensu stricto
+budding_reproduction = false  # nuptial flight is the sole reproductive route
+
+[substrate]
+preferred = ["loam", "sand"]  # garden loam, sandy loam, under stones; avoids pure sand (L. psammophilus niche) and waterlogged (doc §6)
+incompatible = []  # tolerant urban — doc §6 calls out tolerance as a feature
+dig_speed_multiplier = 1.0  # baseline reference species (~1-2 cm³/day per Sudd 1972; doc §6)
+mound_construction = "kickout"  # diagnostic kickout pellet mound at entrance (doc §6; biology.md "Kickout mound")
+
+[combat_extended]
+weapon = "formic_spray"  # Formicinae acidopore spray paired with mandibular bite (doc §7)
+sting_potency = 0.0  # no sting — Formicinae
+ranged_attack = false  # spray range too short to register as "ranged" in sim (doc §7 — modest vs F. rufa)
+soldier_size_categories = []  # monomorphic — no soldier caste (doc §2, §7)
+major_attack_multiplier = 1.0  # no majors
+context_aggression = true  # Boulay et al. 2024 bioRxiv — kin-aware aggression modulation (doc §7, §9)
+
+[diet_extended]
+seed_dispersal = false  # not a seed disperser (cf. Aphaenogaster)
+honeydew_dependent = false  # heavy honeydew user but not obligate (doc §5; Wikipedia §Diet)
+host_species_required = []  # not a parasitic founder
+
+[ecological_role]
+keystone = false  # widespread + dominant but not formally keystone-classified
+invasive_status = "introduced"  # native Palearctic; introduced/naturalized in N. America without aggressive displacement
+displaces = []
+displaced_by = []
 
 [encyclopedia]
 tagline = "The perfect starter ant — hardy, docile, and famously long-lived."

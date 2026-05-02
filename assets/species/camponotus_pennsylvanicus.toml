@@ -2,46 +2,91 @@ id = "camponotus_pennsylvanicus"
 common_name = "Eastern Black Carpenter Ant"
 genus = "Camponotus"
 species_epithet = "pennsylvanicus"
-difficulty = "intermediate"
+# advanced because wood substrate, polymorphism size buckets, and tandem-not-mass recruitment require Phase B+C sim hooks
+difficulty = "advanced"
+schema_version = 1  # Phase A extended schema version (top-level so it's a Species field, not nested under a section)
 
 [biology]
-queen_lifespan_years = 20.0
-worker_lifespan_months = 9.0
+queen_lifespan_years = 20.0       # source: docs §3 — Hansen & Klotz 2005, 15-20+ yr documented, exceptional ~25 yr
+worker_lifespan_months = 9.0      # source: docs §4 — minors ~1 yr, majors 1-2 yr; 9mo averages both castes (doc notes "acceptable, underrepresents majors slightly")
 founding = "claustral"
 polymorphic = true
 hibernation_required = true
-min_diapause_days = 120
+min_diapause_days = 120           # source: docs §8 — captive hibernation 5-12 C for ~16-20 weeks; 120d = lower bound (cold-temperate obligate)
 
 [growth]
-egg_maturation_seconds = 1814400
-larva_maturation_seconds = 2419200
-pupa_maturation_seconds = 1814400
-queen_eggs_per_day = 10.0
-initial_workers = 15
-target_population = 8000
-egg_cost_food = 8.0
-food_per_adult_per_day = 0.7
+egg_maturation_seconds = 1814400      # source: docs §4 — egg ~20-30 d; 1814400s = 21 d (upper end, temperate average-summer temps)
+larva_maturation_seconds = 2419200    # source: docs §4 — larva ~10-15 d to majors; 2419200s = 28 d (doc notes upper-end appropriate for temperate avg)
+pupa_maturation_seconds = 1814400     # source: docs §4 — pupa ~18-25 d; 1814400s = 21 d (mid-range)
+queen_eggs_per_day = 10.0             # game-pacing — Camponotus queens lay slowly compared to Lasius; 10/day keeps year-1 nanitic ramp visible per docs §3 "5-25 workers year 1"
+initial_workers = 15                  # source: docs §3 — captive year-1 colonies reach 5-25 workers; 15 mid-range starting cohort
+target_population = 8000              # source: docs §3 — Hansen & Klotz 2005 cite mature 2,000-2,500 typical, old nests 10,000-15,000; 8000 sits upper-mid of published range
+egg_cost_food = 8.0                   # game-pacing — natural per-egg cost not directly measured; 8.0 (vs Lasius 5.0) reflects Camponotus larger body mass per docs §2 (majors 10-13mm vs Lasius ~4mm)
+food_per_adult_per_day = 0.7          # game-pacing — natural metabolism not species-quantified; 0.7 scaled up from Lasius baseline ~0.5 to reflect ~2x body mass per docs §2
 
 [diet]
 prefers = ["sugar", "protein", "honeydew", "insects"]
 forages_on = ["tree", "ground", "vegetation"]
 
 [combat]
-worker_attack = 2.0
-soldier_attack = 4.5
-worker_health = 15.0
-soldier_health = 35.0
-aggression = 0.4
+worker_attack = 2.0       # source: docs §7 — minor mandible bite, formic acid spray; 2.0 vs Lasius 1.0 reflects larger mandibles
+soldier_attack = 4.5      # source: docs §7 — major mandibles "capable of drawing blood from human skin and severing other ants"; ~2x worker per docs §9 polymorphism note
+worker_health = 15.0      # source: docs §2 — minor body 6-9mm vs Lasius ~4mm; ~1.5x health scaling
+soldier_health = 35.0     # source: docs §2 — majors 10-13mm + thicker cuticle; ~2.3x worker health
+aggression = 0.4          # source: docs §7 — "Inter-colony aggression is moderate; conspecific fights rarely lethal"; 0.4 = moderate
 
 [appearance]
-color_hex = "#0a0a0a"
-size_mm = 13.0
-speed_multiplier = 1.1
+color_hex = "#0a0a0a"     # source: docs §2 — "uniformly matte black integument"
+size_mm = 13.0            # source: docs §2 — major worker 10-13mm; 13.0 = upper end of major range for visual impact
+speed_multiplier = 1.1    # source: docs §5 — long forage range (>30m, up to 100m per night) implies above-average per-tile pace; 1.1x baseline
 
 [default_caste_ratio]
-worker = 0.87
-soldier = 0.1
-breeder = 0.03
+worker = 0.87             # game-pacing — Camponotus worker polymorphism is continuous not bimodal per docs §2; 0.87 reflects "minor functioning as worker" majority
+soldier = 0.10            # source: docs §9 — "fraction of population that is a major functioning as defender"; matches Hansen & Klotz mature-colony major proportion
+breeder = 0.03            # game-pacing — alate production seasonal not constant; 0.03 keeps reproductive caste visible without overproduction
+
+# ---- Phase A schema extensions (additive, all optional) ----
+# All sections below are optional and default to "Lasius-shaped" behavior
+# if omitted. Cited per docs/species/camponotus_pennsylvanicus.md sections.
+# (schema_version lives at the file top — TOML parses bare keys after a
+# section header as fields of that section.)
+
+[behavior]
+recruitment = "tandem_run"  # individual scouting + tandem running + short transient trail, NOT mass recruitment (doc §5; Traniello 1977 BES — hindgut orientation cue + formic-acid attractant)
+diel_activity = "nocturnal"  # peak forager outflow within ~1h of sunset; defining trait (doc §5; Sanders 1972 Can. Entomol.; Klotz & Reid 1993 Insectes Sociaux nocturnal celestial orientation)
+trail_half_life_seconds = 600  # game-pacing — Traniello 1977 (doc §5) describes formic-acid attractant as "short-lived" with no quantified half-life; 600s (10min) << Lasius 2820s reflects transient-trail biology
+
+[colony_structure]
+queen_count = "monogyne"  # predominantly monogyne; rare facultative oligyny in dense suburban populations (doc §4; Stanton et al. suburban-sprawl)
+polydomous = true  # mature colonies routinely run parent + 1-several satellite nests connected by trunk trails (doc §4; Stanton et al. 6-28 m² across 1-6 trees)
+relocation_tendency = 0.05  # game-pacing — wood-substrate nests are durable; relocation rare relative to soil-nesters; low non-zero allows satellite-nest spawn behavior
+supercolony_capable = false  # no supercolony populations documented for C. pennsylvanicus
+budding_reproduction = false  # reproduction via nuptial flight (doc §3); satellites are extensions of the parent colony, not independent buds
+
+[substrate]
+preferred = ["wood"]  # defining trait — excavates galleries in moisture-softened or fungus-decayed wood (doc §6; Hansen & Klotz 2005)
+incompatible = ["sand"]  # no sandy nest — obligate wood-substrate founder (doc §6)
+dig_speed_multiplier = 0.5  # source: doc §6, §9 — "roughly half the per-worker dig rate of equivalent-sized Lasius in soil"; mandible attrition without chemical softening
+mound_construction = "kickout"  # sawdust-like frass kickout, dry powdery fan rather than cohesive pellet donut (doc §6; biology.md §Kickout mound)
+
+[combat_extended]
+weapon = "formic_spray"  # Formicinae acidopore spray + mandible bite; gaster-tucked defensive posture (doc §7; Bestmann et al. 2000 Annals ESA)
+sting_potency = 0.0  # no sting — Formicinae lost the sting (doc §7)
+ranged_attack = false  # formic-acid spray is short-range mist, does not register as ranged in sim (doc §7)
+soldier_size_categories = ["minor", "major"]  # continuous polymorphism conventionally split into minor 6-9mm and major 10-13mm (doc §2)
+major_attack_multiplier = 2.5  # source: doc §7 — major mandibles "capable of drawing blood from human skin and severing other ants"; doc §9 polymorphism note ~2x combat, 2.5 reflects mandible + body-mass scaling
+context_aggression = false  # no published context-dependent aggression modulation for this species (cf. Lasius Boulay et al. 2024)
+
+[diet_extended]
+seed_dispersal = false  # not a seed disperser (cf. Aphaenogaster); omnivore on honeydew + arthropod prey (doc §5)
+honeydew_dependent = false  # honeydew is dominant summer carb but supplemented by nectar, fruit, scavenged protein (doc §5; Hansen & Klotz 2005)
+host_species_required = []  # not a parasitic founder — fully claustral on endogenous reserves (doc §3)
+
+[ecological_role]
+keystone = false  # ecologically important wood-decay processor but not formally keystone-classified
+invasive_status = "native"  # native to eastern North America (doc §1; AntWiki, Animal Diversity Web)
+displaces = []  # no documented displacement of other species
+displaced_by = []  # no documented displacement by other species
 
 [encyclopedia]
 tagline = "North America's giant carpenter — slow to grow, spectacular at scale."

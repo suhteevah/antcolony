@@ -57,3 +57,6 @@ id_ed25519
 .claude/.credentials.json
 C:Users*
 C:Windows*
+
+# bench harness output (regenerable; logs + per-run reports)
+/bench/

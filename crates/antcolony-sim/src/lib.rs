@@ -3,7 +3,10 @@
 //! All game logic lives here. The `antcolony-game` crate wraps these types
 //! in Bevy ECS components; `antcolony-render` paints them.
 
+pub mod ai;
 pub mod ant;
+pub mod bench;
+pub mod species_extended;
 pub mod colony;
 pub mod config;
 pub mod environment;
@@ -22,6 +25,10 @@ pub mod tube;
 pub mod unlocks;
 pub mod world;
 
+pub use ai::{
+    Arbiter, Blackboard, BlackboardSnapshot, Cadence, CombatKs, Contribution, Directive, Fact,
+    FactRef, ForagerKs, KnowledgeSource, KsName, StrategistKs,
+};
 pub use ant::{Ant, AntCaste, AntState};
 pub use colony::{BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, PopulationCounts, TechUnlock};
 pub use config::{
@@ -38,6 +45,11 @@ pub use spatial::SpatialHash;
 pub use species::{
     Appearance, Biology, CombatProfile, Diet, Difficulty, Encyclopedia, FoundingType, Growth,
     Species, load_species_dir,
+};
+pub use species_extended::{
+    Behavior, ColonyStructure, CombatExtended, DielActivity, DietExtended, EcologicalRole,
+    InvasiveStatus, MoundConstruction, QueenCount, RecruitmentStyle, Substrate, SubstrateType,
+    Weapon, WorkerSizeBucket, CURRENT_SCHEMA_VERSION,
 };
 pub use milestones::{Milestone, MilestoneKind};
 pub use persist::{

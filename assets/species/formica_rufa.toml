@@ -2,46 +2,90 @@ id = "formica_rufa"
 common_name = "Red Wood Ant"
 genus = "Formica"
 species_epithet = "rufa"
-difficulty = "advanced"
+difficulty = "expert"  # expert — parasitic founding (host = Formica fusca), thatch mound construction, polygyne supercolony all require Phase B+C sim hooks (per docs/biology-roadmap.md bucketing)
+schema_version = 1  # Phase A extended schema version (top-level so it's a Species field, not nested under a section)
 
 [biology]
-queen_lifespan_years = 18.0
-worker_lifespan_months = 30.0
-founding = "parasitic"
-polymorphic = false
-hibernation_required = true
-min_diapause_days = 150
+queen_lifespan_years = 18.0  # game-pacing — natural literature centroid 8-15 yr, max ~25 yr (AntKeepers; AntWiki; docs/species/formica_rufa.md §4); 18.0 sits at upper edge so polygyne supercolony persistence reads on human play timescales
+worker_lifespan_months = 30.0  # game-pacing — field workers typically 1-3 yr, ~2.5 yr modal (docs/species/formica_rufa.md §4 citing AntKeepers/AntWiki); 30 mo = ~2.5 yr matches the modal upper estimate, defensible without scaling
+founding = "parasitic"  # source: Borowiec et al. 2021 PNAS — obligate social parasitism on F. fusca group (docs/species/formica_rufa.md §3)
+polymorphic = false  # source: AntWiki; docs/species/formica_rufa.md §2 — monomorphic to weakly size-variable, no discrete soldier caste
+hibernation_required = true  # source: Kadochová & Frouz 2015 — active thermoregulation switches off Oct-Apr (docs/species/formica_rufa.md §8)
+min_diapause_days = 150  # source: docs/species/formica_rufa.md §8 — boreal coniferous forest, ~Oct through Apr (~5 months), genuine diapause not torpor
 
 [growth]
-egg_maturation_seconds = 1512000
-larva_maturation_seconds = 1814400
-pupa_maturation_seconds = 1814400
-queen_eggs_per_day = 50.0
-initial_workers = 30
-target_population = 300000
-egg_cost_food = 6.0
-food_per_adult_per_day = 0.5
+egg_maturation_seconds = 1512000  # game-pacing — 17.5 sim-days; total brood cycle 6-10 weeks per docs/species/formica_rufa.md §4 (Hölldobler & Wilson 1990), compressed for play
+larva_maturation_seconds = 1814400  # game-pacing — 21 sim-days; egg→larva→pupa total 6-10 wk in field (docs/species/formica_rufa.md §4), scaled for sim tick budget
+pupa_maturation_seconds = 1814400  # game-pacing — 21 sim-days; cocooned pupae stage of the 6-10 wk cycle (docs/species/formica_rufa.md §4)
+queen_eggs_per_day = 50.0  # game-pacing — per-queen rate suppressed by mutual queen-pheromone inhibition in polygyne nests (docs/species/formica_rufa.md §4); 50/day is per-queen baseline before sub-linear scaling
+initial_workers = 30  # game-pacing — parasitic founding starts with host F. fusca workforce raising first F. rufa cohort (docs/species/formica_rufa.md §3); 30 represents the nanitic emergence point
+target_population = 300000  # source: docs/species/formica_rufa.md §3 — 100,000-400,000 workers per single large mound (AntWiki; Cambridge — Wood Ant Ecology and Conservation Ch.4); 300k sits squarely in middle of band
+egg_cost_food = 6.0  # game-pacing — no direct field measurement; tuned for sim economy balance with target_population scale
+food_per_adult_per_day = 0.5  # game-pacing — abstracted from ~200 kg honeydew/yr + ~100k prey/day per mature mound (docs/species/formica_rufa.md §5, Hölldobler & Wilson 1990); per-adult abstraction for sim economy
 
 [diet]
-prefers = ["honeydew", "protein", "insects", "sugar"]
-forages_on = ["tree", "ground", "vegetation"]
+prefers = ["honeydew", "protein", "insects", "sugar"]  # source: docs/species/formica_rufa.md §5 — mutualist-predator hybrid: aphid honeydew (Cinara/Lachnus on conifers) carb base + ~100k prey/day protein base
+forages_on = ["tree", "ground", "vegetation"]  # source: docs/species/formica_rufa.md §5 — canopy aphid herds + ground predation, trails radiating 100+ m
 
 [combat]
-worker_attack = 2.5
-soldier_attack = 0.0
-worker_health = 12.0
-soldier_health = 0.0
-aggression = 0.9
+worker_attack = 2.5  # game-pacing — formic acid spray + bite (docs/species/formica_rufa.md §7, Brütsch et al. 2017); 2.5 reflects high baseline aggression without yet implementing ranged spray weapon
+soldier_attack = 0.0  # source: docs/species/formica_rufa.md §2 — no discrete soldier caste (monomorphic)
+worker_health = 12.0  # game-pacing — abstracted from 4.5-9 mm worker size (docs/species/formica_rufa.md §2, AntWiki); larger than Lasius baseline
+soldier_health = 0.0  # source: docs/species/formica_rufa.md §2 — no discrete soldier caste
+aggression = 0.9  # source: docs/species/formica_rufa.md §7 — "extraordinarily aggressive", inter-colony raiding documented, formic acid eject + mandible bite
 
 [appearance]
-color_hex = "#8b3a1a"
-size_mm = 8.0
-speed_multiplier = 1.3
+color_hex = "#8b3a1a"  # source: docs/species/formica_rufa.md §2 — bicoloured red and black, mesosoma "dull rust-red to reddish-brown"
+size_mm = 8.0  # source: docs/species/formica_rufa.md §2 — workers 4.5-9 mm, occasionally ~10 mm (AntWiki; AntKeepers); 8.0 is upper-mid of range
+speed_multiplier = 1.3  # game-pacing — workers forage 100+ m from nest (docs/species/formica_rufa.md §5); 1.3× baseline reflects long-range mass-recruitment foraging
 
 [default_caste_ratio]
-worker = 0.97
-soldier = 0.0
-breeder = 0.03
+worker = 0.97  # source: docs/species/formica_rufa.md §2 — monomorphic, vast majority workers
+soldier = 0.0  # source: docs/species/formica_rufa.md §2 — no discrete soldier caste
+breeder = 0.03  # source: docs/species/formica_rufa.md §3-4 — secondary polygyny, mature mounds carry >100 egg-laying queens via post-nuptial daughter re-adoption (Borowiec et al. 2021)
+
+# ---- Phase A schema extensions (additive, all optional) ----
+# All fields below are optional and default to "Lasius-shaped" behavior
+# if omitted. Cited per docs/species/formica_rufa.md sections.
+# (schema_version lives at the file top — TOML parses bare keys after a
+# section header as fields of that section.)
+
+[behavior]
+recruitment = "mass"  # canonical mass-recruiter — well-developed foraging columns radiating 100+ m (doc §5; Hölldobler & Wilson 1990)
+diel_activity = "diurnal"  # workers bask on mound surface for solar gain (doc §6; Kadochová & Frouz 2014)
+trail_half_life_seconds = 1800  # game-pacing — no published *F. rufa*-specific decay constant; 30 min is short/active for a mass-recruiter with persistent physical trails (doc §5)
+
+[colony_structure]
+queen_count = "obligate_polygyne"  # secondary polygyny via daughter re-adoption, >100 queens in large mounds (doc §3; Borowiec et al. 2021 PNAS)
+polydomous = true  # supercolonies span dozens of mounds across hundreds of metres (doc §3)
+relocation_tendency = 0.0  # mounds persist 20-80+ years (doc §3); essentially nest-faithful
+supercolony_capable = true  # primary European supercolony species, complexes >10⁶ individuals documented (doc §3; Stockan & Robinson 2016)
+budding_reproduction = true  # daughter mounds bud from main via re-adopted queens, distinct from nuptial-flight founding (doc §3)
+
+[substrate]
+preferred = ["thatch", "loam"]  # diagnostic conifer-needle dome over loamy/stump substructure (doc §6; Frouz & Jílková 2008)
+incompatible = []  # tolerant — limited mainly by absence of conifer thatch material, not soil type
+dig_speed_multiplier = 1.2  # game-pacing — large workers (4.5-9 mm, doc §2) but most "construction" is thatch assembly not soil excavation; modest +20% over Lasius baseline
+mound_construction = "thatch"  # diagnostic conifer-needle/twig/resin dome, 1-2 m tall (doc §6; AntWiki)
+
+[combat_extended]
+weapon = "formic_spray"  # eponymous — formic acid first isolated from this species in 1671 via Formicinae acidopore (doc §7; Brütsch et al. 2017)
+sting_potency = 0.0  # no sting — Formicinae lost the sting, replaced by acidopore spray (doc §7)
+ranged_attack = true  # acid spray ejected several centimetres from gaster, distinct from Lasius's modest spray range (doc §7)
+soldier_size_categories = []  # monomorphic to weakly size-variable, no discrete soldier caste (doc §2)
+major_attack_multiplier = 1.0  # no majors
+context_aggression = false  # uniformly high aggression (`aggression = 0.9`); inter-colony raiding well documented, no kin-modulation analogue to Lasius reported (doc §7)
+
+[diet_extended]
+seed_dispersal = false  # not a seed disperser (cf. Aphaenogaster)
+honeydew_dependent = true  # ~200 kg honeydew/yr per mature mound from Cinara/Lachnus aphid herds in conifer canopy (doc §5; Hölldobler & Wilson 1990)
+host_species_required = ["formica_fusca"]  # obligate social parasite on F. fusca group at founding (doc §3; Borowiec et al. 2021); fusca species TOML not yet shipped — forward-looking reference
+
+[ecological_role]
+keystone = true  # legally protected across much of Europe due to pest-suppression and biodiversity support role (doc §1, §5; National Geographic 2023)
+invasive_status = "native"  # Palearctic native; no introduced/invasive populations
+displaces = []
+displaced_by = []
 
 [encyclopedia]
 tagline = "The forest's formic-acid cannon — aggressive, massive, and legally protected."

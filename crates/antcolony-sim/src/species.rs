@@ -15,6 +15,10 @@ use crate::config::{
 };
 use crate::environment::Environment;
 use crate::error::SimError;
+use crate::species_extended::{
+    Behavior, ColonyStructure, CombatExtended, DietExtended, EcologicalRole, Substrate,
+    default_schema_version,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -135,6 +139,45 @@ pub struct Species {
     /// Default caste distribution new eggs are drawn from.
     #[serde(default = "default_caste_ratio")]
     pub default_caste_ratio: CasteRatio,
+
+    // ---- Phase A schema extensions (additive, all optional) ----
+    // See `species_extended.rs` for full semantics. Existing TOMLs that
+    // omit these sections continue to load with defaults.
+
+    /// Schema version of the extended sections below. Defaults to 1.
+    /// Bumped only on breaking changes to the extended schema.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+
+    /// Optional behavior section (recruitment style, diel activity,
+    /// trail half-life override). Defaults to mass-recruiting diurnal.
+    #[serde(default)]
+    pub behavior: Behavior,
+
+    /// Optional colony structure (queen count, polydomy, supercolony).
+    /// Defaults to monogyne, single-nest, non-supercolony.
+    #[serde(default)]
+    pub colony_structure: ColonyStructure,
+
+    /// Optional substrate preferences + dig-rate scaling + mound type.
+    /// Defaults to no substrate constraint, baseline dig speed, kickout mound.
+    #[serde(default)]
+    pub substrate: Substrate,
+
+    /// Optional weaponry + polymorphism size buckets + sting potency.
+    /// Defaults to mandible-only, monomorphic, no sting.
+    #[serde(default)]
+    pub combat_extended: CombatExtended,
+
+    /// Optional dietary specializations (myrmecochory, honeydew dependence,
+    /// host species for parasitic founding).
+    #[serde(default)]
+    pub diet_extended: DietExtended,
+
+    /// Optional ecological role (keystone status, invasive status,
+    /// inter-species displacement relations).
+    #[serde(default)]
+    pub ecological_role: EcologicalRole,
 }
 
 fn default_caste_ratio() -> CasteRatio {

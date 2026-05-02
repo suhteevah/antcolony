@@ -2,45 +2,89 @@ id = "tapinoma_sessile"
 common_name = "Odorous House Ant"
 genus = "Tapinoma"
 species_epithet = "sessile"
-difficulty = "beginner"
+difficulty = "intermediate"  # intermediate — polydomy + nest relocation + supercolony toggle (forest 100 / urban 100k+) require Phase B sim hooks; reverts to beginner if those flags are off
+schema_version = 1  # Phase A extended schema version (top-level so it's a Species field, not nested under a section)
 
 [biology]
-queen_lifespan_years = 3.0
-worker_lifespan_months = 4.0
-founding = "polygyne"
-polymorphic = false
-hibernation_required = false
+queen_lifespan_years = 3.0  # game-pacing — AntWiki documents ≥8 mo lab lifespan; field longevity likely 2-4y but unmeasured (polygyne turnover masked by queen accumulation); 3.0 is a reasonable midpoint
+worker_lifespan_months = 4.0  # within doc range — "workers live months, not years" (docs/species/tapinoma_sessile.md §4, AntWiki)
+founding = "polygyne"  # Buczkowski et al. 2023 Sci. Rep. — urban populations >100 queens/colony; budding-dominant reproduction
+polymorphic = false  # AntWiki — "strictly monomorphic (no minor/major castes)" (docs §2/§4)
+hibernation_required = false  # docs §8 — temperate species but indoor heated populations skip diapause entirely; species *can* hibernate but does not require it
 
 [growth]
-egg_maturation_seconds = 907200
-larva_maturation_seconds = 1209600
-pupa_maturation_seconds = 1209600
-queen_eggs_per_day = 25.0
-initial_workers = 20
-target_population = 10000
-egg_cost_food = 3.5
-food_per_adult_per_day = 0.3
+egg_maturation_seconds = 907200  # 10.5 sim-days — AntWiki natural 11-26d, scaled to fast end of range (docs §4)
+larva_maturation_seconds = 1209600  # 14 sim-days — AntWiki natural 13-29d, scaled to fast end (docs §4)
+pupa_maturation_seconds = 1209600  # 14 sim-days — AntWiki natural 10-24d (prepupa+pupa), scaled to mid range (docs §4)
+queen_eggs_per_day = 25.0  # game-pacing — no published per-queen rate for T. sessile; 25/day chosen to match the "fast brood pipeline" + "double in 3 months" growth narrative (docs §3, encyclopedia)
+initial_workers = 20  # game-pacing — natural forest colony ~100 workers/1 queen (Buczkowski 2023); 20 is a beginner-friendly starter cohort matching polygyne-skip founding (docs §9 lever 2)
+target_population = 10000  # Buczkowski et al. 2023 Sci. Rep. — urban supercolony fragments routinely exceed 20,000 workers/>100 queens; 10000 is mid of urban range, well above forest ~100 (docs §3)
+egg_cost_food = 3.5  # game-pacing — no species-specific egg energetics published; 3.5 sits below baseline Lasius (cheap eggs match fast brood pipeline of docs §4)
+food_per_adult_per_day = 0.3  # game-pacing — small body mass (0.35-0.87 mg, docs §2) → low per-capita consumption vs Lasius baseline
 
 [diet]
-prefers = ["sugar", "honeydew", "protein"]
-forages_on = ["ground", "vegetation", "tree"]
+prefers = ["sugar", "honeydew", "protein"]  # docs §5 — sucrose>fructose≈glucose; carb>protein>lipid; honeydew + nectar primary, arthropod protein secondary (AntWiki)
+forages_on = ["ground", "vegetation", "tree"]  # docs §5 — aphid tending on host plants + ground trails + tree-hemipteran tending (Buczkowski & Bennett 2008)
 
 [combat]
-worker_attack = 0.8
-soldier_attack = 0.0
-worker_health = 5.0
-soldier_health = 0.0
-aggression = 0.3
+worker_attack = 0.8  # game-pacing — "subordinate competitor", avoidance over fighting (docs §7, Wikipedia: collective fighting in only 6/40 = 15% of inter-ant encounters)
+soldier_attack = 0.0  # docs §4 — no soldier caste in T. sessile (monomorphic)
+worker_health = 5.0  # game-pacing — small body (2.4-3.2mm, 0.35-0.87mg per docs §2) → low HP vs baseline Lasius
+soldier_health = 0.0  # docs §4 — no soldier caste
+aggression = 0.3  # docs §7 — subordinate behavior, queen-queen aggression ~0 (Buczkowski 2023 score 1.21±0.09); worker-worker aggression high BETWEEN colonies but colony-level strategy is withdraw/relocate
 
 [appearance]
-color_hex = "#2a1e1a"
-size_mm = 2.7
-speed_multiplier = 1.2
+color_hex = "#2a1e1a"  # docs §2 — "uniformly dark brown to nearly black in mature specimens" (AntWiki)
+size_mm = 2.7  # midpoint of AntWiki 2.4-3.2 mm worker total length (docs §2)
+speed_multiplier = 1.2  # game-pacing — small fast-moving forager; no published speed data, 1.2× baseline Lasius matches "drains a small sugar source within hours" recruitment (docs §5)
 
 [default_caste_ratio]
-worker = 0.97
-soldier = 0.0
-breeder = 0.03
+worker = 0.97  # docs §4 — monomorphic species, breeders (alates) produced late spring through mid-summer
+soldier = 0.0  # docs §4 — no soldier caste
+breeder = 0.03  # docs §3 — alates produced seasonally for nuptial flights; budding is dominant in supercolony populations
+
+# ---- Phase A schema extensions (additive, all optional) ----
+# All fields below are optional and default to "Lasius-shaped" behavior
+# if omitted. Cited per docs/species/tapinoma_sessile.md sections.
+# (schema_version lives at the file top — TOML parses bare keys after a
+# section header as fields of that section.)
+
+[behavior]
+recruitment = "mass"  # strong sweet-trail mass recruiter, drains small sugar source within hours (doc §5)
+diel_activity = "diurnal"  # primarily daytime forager outdoors, but indoor/heated populations active year-round and at night (doc §8)
+trail_half_life_seconds = 1800  # game-pacing — no published T. sessile trail decay; 30 min chosen shorter than Lasius (2820s) to match fast/opportunistic recruitment narrative (doc §5)
+
+[colony_structure]
+queen_count = "obligate_polygyne"  # defining trait — urban populations >100 queens/colony, queen-queen aggression near zero (doc §3; Buczkowski 2010, Buczkowski et al. 2023 Sci. Rep.)
+polydomous = true  # defining trait — multiple satellite nests with frequent inter-nest exchange (doc §6; Buczkowski & Bennett 2008)
+relocation_tendency = 0.4  # high — Buczkowski & Bennett 2008 measured 12.9-day per-nest residency half-life in urban populations (doc §6)
+supercolony_capable = true  # urban supercolonies of 100k+ workers documented (doc §3; Buczkowski 2010)
+budding_reproduction = true  # fission/budding common in supercolony populations, dominates over nuptial flights in urban contexts (doc §3)
+
+[substrate]
+preferred = ["loam", "leaf_litter", "rock_crevice"]  # under stones, in walls, in walnut shells, in leaf litter — ecologically flexible (doc §6)
+incompatible = []  # extreme generalist — alpine to apartment building (doc §1, §6)
+dig_speed_multiplier = 0.7  # game-pacing — small monomorphic workers (2.4-3.2mm, doc §2); flexible nester that prefers existing cavities over heavy excavation (doc §6)
+mound_construction = "none"  # typically no mound — under-stone or in-cavity nesting (doc §6)
+
+[combat_extended]
+weapon = "chemical"  # methylheptenone (6-methyl-5-hepten-2-one) alarm/defense pheromone — Dolichoderinae chemistry, not formic acid (doc §7)
+sting_potency = 0.0  # no sting — Dolichoderinae lost the sting
+ranged_attack = false  # alarm chemistry is contact/short-range, not a directed spray (doc §7)
+soldier_size_categories = []  # monomorphic — no soldier caste (doc §2, §4)
+major_attack_multiplier = 1.0  # no majors
+context_aggression = false  # subordinate competitor strategy — withdraw/relocate rather than escalate; queen-queen aggression ~0 (doc §7; Buczkowski 2023)
+
+[diet_extended]
+seed_dispersal = false  # not a seed disperser
+honeydew_dependent = false  # heavy honeydew user but not obligate; thrives indoors with no aphid access (doc §5)
+host_species_required = []  # not a parasitic founder
+
+[ecological_role]
+keystone = false  # widespread generalist; not formally keystone-classified
+invasive_status = "native"  # wide-ranging native across most of North America (doc §1)
+displaces = []
+displaced_by = []
 
 [encyclopedia]
 tagline = "The coconut-rot ant — tiny, polygyne, and ready to move house at a moment's notice."

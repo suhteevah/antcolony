@@ -19,3 +19,10 @@ wide.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+
+# Explicit bin target so the executable keeps its dashed name
+# (`validate-species.exe`), instead of being derived as `validate_species`
+# from the source file path.
+[[bin]]
+name = "validate-species"
+path = "src/bin/validate_species.rs"

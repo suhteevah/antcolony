@@ -2,46 +2,90 @@ id = "pogonomyrmex_occidentalis"
 common_name = "Western Harvester Ant"
 genus = "Pogonomyrmex"
 species_epithet = "occidentalis"
-difficulty = "advanced"
+difficulty = "advanced"  # advanced — sand substrate, granivory food class, sting damage curve, southeast mound disc all require Phase B+C sim hooks
+schema_version = 1  # Phase A extended schema version (top-level so it's a Species field, not nested under a section)
 
 [biology]
-queen_lifespan_years = 16.0
-worker_lifespan_months = 12.0
+queen_lifespan_years = 16.0   # game-pacing centroid — Cole & Wiernasz 2025 Insectes Sociaux gives 5-40yr range (mean ~13) from >1,300 colony-years; 16 picks the upper-mean for testable playtime, full 30+yr reign reserved for longevity mode
+worker_lifespan_months = 12.0 # source: doc §4 — ~1yr in field, winter diapause pauses physiological aging (granivore norm)
 founding = "claustral"
 polymorphic = false
 hibernation_required = true
-min_diapause_days = 90
+min_diapause_days = 90        # source: doc §8 — won't produce viable brood without winter; refrigerated 90+ day hibernation mandatory for keepers
 
 [growth]
-egg_maturation_seconds = 1209600
-larva_maturation_seconds = 2116800
-pupa_maturation_seconds = 1814400
-queen_eggs_per_day = 20.0
-initial_workers = 15
-target_population = 10000
-egg_cost_food = 7.0
-food_per_adult_per_day = 0.5
+egg_maturation_seconds = 1209600   # game-pacing — natural ~14d real-time at warm temps, scaled to 14d sim-seconds for brood lifecycle pacing (general biology.md baseline, no species-specific override in doc)
+larva_maturation_seconds = 2116800 # game-pacing — natural ~3-4wk variable on temp/feeding, scaled to ~24.5d sim-seconds (no Pogonomyrmex-specific timing in doc, uses biology.md baseline)
+pupa_maturation_seconds = 1814400  # game-pacing — natural ~2-3wk, scaled to ~21d sim-seconds (no species-specific override in doc)
+queen_eggs_per_day = 20.0          # game-pacing — natural Pogonomyrmex queens lay variably with seasonal pulse; 20/day flat keeps colony growth on the 4-7yr to mature trajectory cited in doc §3
+initial_workers = 15               # game-pacing — claustral founding starts with nanitics from wing muscle (doc §3); 15 is a playable starter cohort vs natural ~5-10 nanitics
+target_population = 10000          # source: doc §3 / Cole & Wiernasz, Insectes Sociaux — mature field colonies 6,000-12,000 workers; 10000 is mid-band
+egg_cost_food = 7.0                # game-pacing — no per-egg energetic cost cited for P. occidentalis in doc; 7.0 reflects granivore higher-protein investment vs Lasius baseline 5.0
+food_per_adult_per_day = 0.5       # game-pacing — no per-adult metabolic rate cited in doc; 0.5 baseline scaled for arid-ant low metabolism
 
 [diet]
-prefers = ["seeds", "protein", "insects"]
-forages_on = ["ground"]
+prefers = ["seeds", "protein", "insects"]   # source: doc §5 — granivore, mid-sized grass/forb seeds (Bouteloua, Bromus), arthropod prey opportunistic
+forages_on = ["ground"]                     # source: doc §5 — trunk trails on prairie ground, no arboreal foraging
 
 [combat]
-worker_attack = 2.8
-soldier_attack = 0.0
-worker_health = 14.0
-soldier_health = 0.0
-aggression = 0.7
+worker_attack = 2.8       # source: doc §7 — sting potency Schmidt Pain Index 3.0; elevated above Lasius baseline reflects sting weapon (genus venom among most toxic insect venoms by LD50, see doc §7 caveat re: P. maricopa holds the 0.12 mg/kg record, not occidentalis specifically)
+soldier_attack = 0.0      # source: doc §2 — no soldier caste, monomorphic workers; defense via worker sting only
+worker_health = 14.0      # game-pacing — no measured HP analog in literature; 14 above Lasius 10 reflects larger 5-7mm body and robust build (doc §2)
+soldier_health = 0.0      # source: doc §2 — no soldier caste exists
+aggression = 0.7          # source: doc §7 — defensive but not unprovoked; mound disturbance triggers immediate stinging response (0.7 = high reactive aggression, low unprovoked)
 
 [appearance]
-color_hex = "#a83418"
-size_mm = 6.0
-speed_multiplier = 1.0
+color_hex = "#a83418"     # source: doc §2 — uniform red-orange to rust-brown, darker gaster variable
+size_mm = 6.0             # source: doc §2 — workers 5-7mm; 6.0 is midpoint
+speed_multiplier = 1.0    # game-pacing — no species-specific speed measurement in doc; 1.0 = Lasius baseline (long trunk-trail foragers, no special speed bonus)
 
 [default_caste_ratio]
-worker = 0.97
-soldier = 0.0
-breeder = 0.03
+worker = 0.97             # source: doc §2 / §4 — monomorphic workers dominate, no soldier caste; 0.97 leaves 0.03 for breeders
+soldier = 0.0             # source: doc §2 — no soldier caste
+breeder = 0.03            # game-pacing — alate production heavily seasonal in mature colonies (doc §4); 0.03 baseline alate fraction for steady-state mature colony
+
+# ---- Phase A schema extensions (additive, all optional) ----
+# All fields below are optional and default to "Lasius-shaped" behavior
+# if omitted. Cited per docs/species/pogonomyrmex_occidentalis.md sections.
+# (schema_version lives at the file top — TOML parses bare keys after a
+# section header as fields of that section.)
+
+[behavior]
+recruitment = "group"  # group recruitment + persistent trunk trails 20+ m long (doc §5; MacMahon, Mull & Crist 2000 Annu. Rev. Ecol. Syst.)
+diel_activity = "diurnal"  # primarily daytime forager, but suppressed by midday extreme heat >35°C — workers retreat and re-emerge late afternoon (doc §8)
+trail_half_life_seconds = 3600  # game-pacing — no published Pogonomyrmex trail half-life; 1hr chosen to support the 20+ m persistent trunk trails described in doc §5/§9 (longer-lived than Lasius mass-recruit ~47min)
+
+[colony_structure]
+queen_count = "monogyne"  # strictly monogyne, territorial, no daughter-queen adoption (doc §3)
+polydomous = false  # single mound — defining nest architecture (doc §6)
+relocation_tendency = 0.0  # nest-faithful; mound is a multi-year construction (doc §6)
+supercolony_capable = false  # territorial monogyne, no supercolony structure (doc §3)
+budding_reproduction = false  # synchronized post-monsoon nuptial flight is the sole reproductive route (doc §3)
+
+[substrate]
+preferred = ["sand", "loam"]  # sandy / sandy-loam prairie — psammophore is excavation specialization for coarse desert substrate (doc §6, §2)
+incompatible = ["wood"]  # ground-nesting prairie species — no wood/arboreal nesting (doc §6)
+dig_speed_multiplier = 1.3  # game-pacing — no published rate; modest bonus reflects large workers + psammophore carrying ~1.5mm pellets vs Lasius ~0.3-0.7mm (doc §2)
+mound_construction = "crater_disc"  # defining 1-2m cleared disc + central pebble-decorated cone, southeast-facing entrance (doc §6; Lavigne 1969 Insectes Sociaux)
+
+[combat_extended]
+weapon = "sting"  # DEFINING trait — Myrmicinae sting, Schmidt Pain Index 3.0 (doc §7; Schmidt 1990/2019)
+sting_potency = 3.0  # Schmidt Pain Index 3.0 for P. occidentalis specifically (Schmidt 1990; doc §7). NB: the LD50 superlative (0.12 mg/kg) belongs to P. maricopa, NOT occidentalis — do not misattribute
+ranged_attack = false  # contact sting only (doc §7)
+soldier_size_categories = []  # monomorphic — no soldier caste, defense via large workers + sting (doc §2, §4)
+major_attack_multiplier = 1.0  # no majors (doc §2)
+context_aggression = false  # defensive but not unprovoked; mound disturbance triggers stinging but no kin-aware modulation documented (doc §7)
+
+[diet_extended]
+seed_dispersal = false  # granivore — they EAT seeds, not disperse them. Granivory ≠ myrmecochory (cf. Aphaenogaster). Doc §5 explicitly: "seed predators (seeds eaten)"
+honeydew_dependent = false  # granivore, not honeydew-dependent (doc §5 — diet is seeds + opportunistic arthropod prey)
+host_species_required = []  # claustral founding, not a parasitic founder (doc §3)
+
+[ecological_role]
+keystone = true  # major prairie seed-bank impact, ecosystem engineer for seed predation/dispersal/competition (doc §5; MacMahon et al. 2000)
+invasive_status = "native"  # native to western North America — Idaho, Wyoming, Colorado, Utah, Nevada, Great Basin (doc §1)
+displaces = []  # no documented displacement of native ants
+displaced_by = []  # no documented displacement by invasives in core arid range
 
 [encyclopedia]
 tagline = "Desert seed-harvester with one of the most painful stings on the continent."
@@ -50,7 +94,7 @@ description = '''Pogonomyrmex occidentalis is the classic "red harvester ant" of
 
 The diet is predominantly seeds. Foragers run fixed trunk trails radiating from the mound, collecting grass and forb seeds that are husked underground in dedicated granary chambers. A mature colony stores many thousands of seeds and plays a large role in prairie plant dispersal.
 
-Pogonomyrmex possess one of the most painful stings of any North American insect — Schmidt Pain Index 3.0, often described as "like drilling into your hand with a hot nail." The venom is also among the most toxic per-milligram of any arthropod. This is serious defensive equipment and must be respected in keeping.
+Pogonomyrmex possess one of the most painful stings of any North American insect — Schmidt Pain Index 3.0, often described as "like drilling into your hand with a hot nail." The venom is also chemically extreme: the genus holds the record for most toxic insect venom by mouse LD50, though that superlative belongs specifically to P. maricopa (0.12 mg/kg) — P. occidentalis sits in the same order of magnitude but has not been measured to the same precision. This is serious defensive equipment and must be respected in keeping.
 
 Colonies are monogyne and strictly claustral. Queens emerge from synchronized summer nuptial flights, usually after the first heavy monsoon rains, and found new colonies in sandy soil. Growth is slow — a colony may take 4-5 years to reach mature population of 6,000-12,000 workers.'''
 fun_facts = [

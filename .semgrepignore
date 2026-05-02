@@ -1,0 +1,22 @@
+# Semgrep ignore for antcolony.
+#
+# Path-traversal rules in particular are written for web handlers (Actix,
+# Axum, etc.) and fire as false positives on developer CLI binaries that
+# are SUPPOSED to take file paths from operator args.
+#
+# Scope exclusions narrowly — this file should NOT be used to silence
+# real findings in the simulation or game crates.
+
+# Developer CLI binaries — operator-typed file paths are by design.
+crates/antcolony-sim/src/bin/
+
+# Headless examples / harnesses — same reason.
+crates/antcolony-sim/examples/
+
+# Test files — test fixtures intentionally exercise edge inputs.
+crates/*/tests/
+tests/
+
+# Build artifacts / generated.
+target/
+bench/

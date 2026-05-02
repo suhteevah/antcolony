@@ -2,45 +2,89 @@ id = "tetramorium_immigrans"
 common_name = "Pavement Ant"
 genus = "Tetramorium"
 species_epithet = "immigrans"
-difficulty = "beginner"
+difficulty = "beginner"  # beginner — ritualised territorial battles (monoamine clock, ~3-min decay) degrade gracefully to plain combat; no exotic substrate or food class. Species split formalised by Wagner et al. 2017 (Myrmecological News 25: 95-129) — pre-2017 N. American "T. caespitum" literature is actually T. immigrans.
+schema_version = 1  # Phase A extended schema version (top-level so it's a Species field, not nested under a section)
 
 [biology]
-queen_lifespan_years = 12.0
-worker_lifespan_months = 18.0
-founding = "semi_claustral"
-polymorphic = false
-hibernation_required = false
+queen_lifespan_years = 12.0       # game-pacing — UF/IFAS EENY-600 lists field longevity as "unknown"; AntWiki reports captive max ~15yr. 12.0 is a centroid between unknown-field and 15yr-captive bounds.
+worker_lifespan_months = 18.0     # game-pacing — doc §4 cites 12-18mo captive lifespan (UF/IFAS); upper-bound chosen so adults persist visibly across sim-scale time.
+founding = "semi_claustral"       # doc §3 — queen excavates under stone/pavement and may emerge to forage during founding (UF/IFAS EENY-600; cf. fully-claustral Lasius niger).
+polymorphic = false               # doc §4 — "strictly monomorphic: no soldier caste exists" (Wagner et al. 2017; UF/IFAS).
+hibernation_required = false      # doc §8 — hibernation is facultative not obligate; urban populations beside heated foundations reproduce year-round (Diamond et al. 2018; Menke et al. 2011).
 
 [growth]
-egg_maturation_seconds = 1209600
-larva_maturation_seconds = 1814400
-pupa_maturation_seconds = 1209600
-queen_eggs_per_day = 40.0
-initial_workers = 25
-target_population = 20000
-egg_cost_food = 4.0
-food_per_adult_per_day = 0.3
+egg_maturation_seconds = 1209600    # 14 days — within the 42-63 day total egg→adult window at 21-24°C (UF/IFAS EENY-600); allocated as 14d egg / 21d larva / 14d pupa = 49d total.
+larva_maturation_seconds = 1814400  # 21 days — within the 42-63 day total egg→adult window at 21-24°C (UF/IFAS EENY-600); see egg_maturation breakdown above.
+pupa_maturation_seconds = 1209600   # 14 days — within the 42-63 day total egg→adult window at 21-24°C (UF/IFAS EENY-600); pupae are naked (no cocoon), Tetramorium trait per doc §4.
+queen_eggs_per_day = 40.0           # game-pacing — no published per-day lay rate for T. immigrans; tuned so 3K-10K worker target population (doc §3, UF/IFAS) reaches steady state within a sim-year.
+initial_workers = 25                # game-pacing — semi-claustral founding produces a small first brood; 25 represents post-nanitic stabilisation, not the literal first batch.
+target_population = 20000           # source: doc §3 — "3,000 to >10,000 workers; some long-established urban supercolonies exceed 30,000" (Bantam.earth 2023; AntWiki 2024). 20K sits mid-range of the mature urban band.
+egg_cost_food = 4.0                 # game-pacing — no species-specific protein-per-egg measurement; tuned vs Lasius baseline (5.0) to reflect smaller worker mass (~2.8mm vs Lasius ~4mm).
+food_per_adult_per_day = 0.3        # game-pacing — no per-capita consumption number in literature; scaled to small body size (UF/IFAS modal 2.75-3.20mm) and high colony throughput.
 
 [diet]
-prefers = ["protein", "sugar", "insects"]
-forages_on = ["pavement", "ground"]
+prefers = ["protein", "sugar", "insects"]   # doc §5 — omnivorous opportunist: arthropod prey, hemipteran honeydew, seeds, human refuse (Wikipedia 2025; AntWiki 2024).
+forages_on = ["pavement", "ground"]         # doc §1, §6 — characteristic urban hardscape forager; nests under slabs, curbs, foundation seams (UF/IFAS EENY-600; OSU BYGL 2021).
 
 [combat]
-worker_attack = 1.2
-soldier_attack = 0.0
-worker_health = 7.0
-soldier_health = 0.0
-aggression = 0.6
+worker_attack = 1.2     # game-pacing — Hoover et al. 2016 monoamine-clock framework gives mechanism not damage values; 1.2 reflects functional small sting (doc §2) used more for pheromone painting than envenomation.
+soldier_attack = 0.0    # doc §4 — strictly monomorphic, no soldier caste exists (Wagner et al. 2017).
+worker_health = 7.0     # game-pacing — small body size (2.75-3.20mm per UF/IFAS EENY-600); tuned below Lasius baseline to reflect species' reliance on numbers over individual durability.
+soldier_health = 0.0    # doc §4 — no soldier caste (Wagner et al. 2017).
+aggression = 0.6        # source: doc §7 — Hoover et al. 2016 (Current Zoology 62(3)) monoamine clock: 5-HT/octopamine spike on non-nestmate contact, decays linearly over ~3min. 0.6 reflects high baseline territoriality but mostly-ritualised low-mortality combat (Plowes & Adler).
 
 [appearance]
-color_hex = "#3a2818"
-size_mm = 2.8
-speed_multiplier = 0.95
+color_hex = "#3a2818"      # source: doc §2 — "uniformly dark brown to nearly black, with appendages slightly paler" (Wagner et al. 2017; UF/IFAS EENY-600).
+size_mm = 2.8              # source: UF/IFAS EENY-600 — workers monomorphic 2.5-4.0mm, modal ~2.75-3.20mm. 2.8 sits at the modal centre.
+speed_multiplier = 0.95    # game-pacing — doc §9 explicitly recommends 0.95 ("low end of range") to reflect small body size relative to Lasius baseline.
 
 [default_caste_ratio]
-worker = 0.97
-soldier = 0.0
-breeder = 0.03
+worker = 0.97       # game-pacing — monomorphic species (doc §4); 0.97/0.03 worker/breeder split tuned to leave room for nuptial-flight gyne production in mid-June through early-July window (doc §3, UF/IFAS).
+soldier = 0.0       # doc §4 — no soldier caste (Wagner et al. 2017).
+breeder = 0.03      # game-pacing — supports mid-June/early-July nuptial flight production (doc §3); no published gyne-fraction figure for T. immigrans.
+
+# ---- Phase A schema extensions (additive, all optional) ----
+# All fields below are optional and default to "Lasius-shaped" behavior
+# if omitted. Cited per docs/species/tetramorium_immigrans.md sections.
+# (schema_version lives at the file top — TOML parses bare keys after a
+# section header as fields of that section.)
+
+[behavior]
+recruitment = "mass"  # canonical mass-recruiter via modified-sting trail painting; rapid linear-scaling recruitment (doc §5; Hoover et al. 2016)
+diel_activity = "diurnal"  # primarily daytime, but doc §5 notes activity extends past sunset on heat-retentive pavement (Diamond et al. 2018)
+trail_half_life_seconds = 1800  # game-pacing — no published T. immigrans trail-decay constant; 30min set shorter than Lasius (47min) to reflect doc §5 "rapid recruitment within minutes" and high-throughput urban scavenging cycle
+
+[colony_structure]
+queen_count = "monogyne"  # single inseminated queen typical; rare polygyne reported (doc §3; King & Phillips 2019)
+polydomous = false  # single-nest; no documented polydomy (doc §6)
+relocation_tendency = 0.0  # nest-faithful under hardscape
+supercolony_capable = false  # urban populations interconnect ecologically but are not formally supercolonial (doc §3 — large nests >30K workers are still single colonies, not networks)
+budding_reproduction = false  # nuptial flight is the sole reproductive route (doc §3)
+
+[substrate]
+preferred = ["loam", "rock_crevice"]  # under pavement slabs, curbs, foundation seams, stones — characteristic urban hardscape niche (doc §1, §6; UF/IFAS EENY-600)
+incompatible = []  # high substrate flexibility — sand, loam, clay all colonised (doc §6)
+dig_speed_multiplier = 1.1  # game-pacing — small workers (~2.8mm) excavate rapid per-pellet rates relative to body mass (doc §6 cf. Sudd 1969); slight bump over Lasius baseline reflects urban-soil adaptation
+mound_construction = "kickout"  # diagnostic small crater of excavated soil pellets at entrance (doc §6; biology.md "Kickout mound")
+
+[combat_extended]
+weapon = "sting"  # functional but small Myrmicinae sting; flag-tipped, used more for pheromone painting than envenomation (doc §2)
+sting_potency = 1.0  # game-pacing — Schmidt sting-pain index rates Tetramorium very low; "barely felt by humans" (doc §7); 1.0 is the minimal nonzero baseline
+ranged_attack = false  # contact-only sting + mandible
+soldier_size_categories = []  # strictly monomorphic — no soldier caste (doc §4; Wagner et al. 2017)
+major_attack_multiplier = 1.0  # no majors
+context_aggression = true  # Hoover et al. 2016 monoamine clock (5-HT/octopamine spike, ~3min decay) — context-dependent aggression priming on non-nestmate contact (doc §7)
+
+[diet_extended]
+seed_dispersal = false  # opportunistic seed consumer but not a myrmecochore disperser (doc §5)
+honeydew_dependent = false  # actively tends aphids/mealybugs but diet is broadly omnivorous, not honeydew-obligate (doc §5)
+host_species_required = []  # not a parasitic founder — independent semi-claustral founding (doc §3)
+
+[ecological_role]
+keystone = false  # widespread synanthrope but not formally keystone-classified
+invasive_status = "introduced"  # naturalised in N. America since early 1800s via ballast soil (doc §1; Wetterer & Schultz 1999; species split formalised by Wagner et al. 2017)
+displaces = []  # no documented displacement of natives in the urban hardscape niche it dominates
+displaced_by = []  # conspecific colonies wage ritualised territorial battles (doc §7) but no heterospecific displacer documented
 
 [encyclopedia]
 tagline = "The sidewalk warrior — small, scrappy, and famous for boundary battles."

@@ -2,46 +2,90 @@ id = "aphaenogaster_rudis"
 common_name = "Winnow Ant"
 genus = "Aphaenogaster"
 species_epithet = "rudis"
-difficulty = "beginner"
+difficulty = "intermediate" # intermediate — myrmecochory (seed dispersal with elaiosome reward + viable-seed midden) requires Phase B+C sim hook (Food::Seed variant); reverts to beginner if seed_dispersal flag off
+schema_version = 1  # Phase A extended schema version (top-level so it's a Species field, not nested under a section)
 
 [biology]
-queen_lifespan_years = 12.0
-worker_lifespan_months = 12.0
+queen_lifespan_years = 12.0       # game-pacing — Haskins cohort (cited in Lubertazzi 2012) median 8 yr, max 13 yr; 12.0 sits below documented max but above median, chosen for long single-colony campaigns (doc §3)
+worker_lifespan_months = 12.0     # doc §4 — "roughly one season to a year for workers in temperate Aphaenogaster; TOML's 12.0 is at the upper bound" (Lubertazzi 2012 lab obs)
 founding = "claustral"
 polymorphic = false
 hibernation_required = true
-min_diapause_days = 60
+min_diapause_days = 60            # doc §8 — obligate hibernation Nov-Mar in eastern deciduous biome (~150 days field); 60 is game-pacing minimum to gate the diapause FSM, real-world ~120-150 days (Lubertazzi 2012)
 
 [growth]
-egg_maturation_seconds = 1209600
-larva_maturation_seconds = 1814400
-pupa_maturation_seconds = 1512000
-queen_eggs_per_day = 10.0
-initial_workers = 12
-target_population = 800
-egg_cost_food = 4.5
-food_per_adult_per_day = 0.35
+egg_maturation_seconds = 1209600  # game-pacing — 14 real-time days; natural egg→larva ~10-14 days at temperate-summer temps for Aphaenogaster (genus baseline, no rudis-specific datum in doc)
+larva_maturation_seconds = 1814400 # game-pacing — 21 real-time days; natural larval period weeks-to-months depending on temp/feeding (genus baseline; doc §4 notes holometabolous standard)
+pupa_maturation_seconds = 1512000 # game-pacing — 17.5 real-time days; natural pupal period 2-3 weeks for Myrmicinae (genus baseline)
+queen_eggs_per_day = 10.0         # game-pacing — natural rate not quantified in doc; chosen low to match small mature colony size (266-613 mean workers, Lubertazzi 2012 §3)
+initial_workers = 12              # game-pacing — claustral founding starts with 0 workers in nature; 12 chosen as post-nanitic playable baseline (doc §3 first-year colony "30-50 workers")
+target_population = 800           # game-pacing — high end of empirical 266-613 mean (Lubertazzi 2012 CT/OH surveys, doc §3); within max ~2000 envelope; deliberate upper-empirical choice for satisfying colony scale
+egg_cost_food = 4.5               # game-pacing — no published per-egg metabolic cost for rudis; tuned for colony economy balance
+food_per_adult_per_day = 0.35     # game-pacing — no published per-worker consumption for rudis; tuned to make 800-worker colony sustainable on simulated forage rates
 
 [diet]
-prefers = ["seeds", "protein", "insects", "sugar"]
-forages_on = ["ground", "vegetation"]
+prefers = ["seeds", "protein", "insects", "sugar"] # doc §5 — seeds first reflects myrmecochory keystone role; generalist for arthropods/nectar (Clark & King 2012, Beattie 1985)
+forages_on = ["ground", "vegetation"]              # doc §6 — forest-floor specialist, leaf litter and decaying wood substrate
 
 [combat]
-worker_attack = 1.1
-soldier_attack = 0.0
-worker_health = 7.0
-soldier_health = 0.0
-aggression = 0.25
+worker_attack = 1.1               # doc §7 — "small, functional sting but conspicuously non-aggressive"; low value reflects timidity (AntWiki)
+soldier_attack = 0.0              # doc §4 — monomorphic, no soldier caste (Lubertazzi 2012)
+worker_health = 7.0               # game-pacing — no published HP figure; low value reflects 4.5 mm slender myrmicine, no defensive specialization (doc §2, §7)
+soldier_health = 0.0              # doc §4 — monomorphic, no soldier caste
+aggression = 0.25                 # doc §7 — "default response to disturbance is to flee into litter or scatter brood deeper"; quantified low (AntWiki, Rodriguez-Cabal 2012 displacement evidence)
 
 [appearance]
-color_hex = "#6b3a22"
-size_mm = 4.5
-speed_multiplier = 1.1
+color_hex = "#6b3a22"             # doc §2 — "translucent red- to chocolate-brown" (AntWiki); hex sits in documented range
+size_mm = 4.5                     # doc §2 — empirical worker length 3.5-5 mm (AntWiki); 4.5 is mid-range
+speed_multiplier = 1.1            # game-pacing — no published locomotion datum; slight boost reflects long-legged "gypsy ant" gait (Mackay & Mackay, doc §2)
 
 [default_caste_ratio]
-worker = 0.97
-soldier = 0.0
-breeder = 0.03
+worker = 0.97                     # doc §4 — monomorphic; nearly all adults are workers
+soldier = 0.0                     # doc §4 — monomorphic, no soldier caste
+breeder = 0.03                    # game-pacing — small reserve for alate production; monogyne species (doc §3) so breeders are reproductives only, not secondary queens
+
+# ---- Phase A schema extensions (additive, all optional) ----
+# All fields below are optional and default to "Lasius-shaped" behavior
+# if omitted. Cited per docs/species/aphaenogaster_rudis.md sections.
+# (schema_version lives at the file top — TOML parses bare keys after a
+# section header as fields of that section.)
+
+[behavior]
+recruitment = "tandem_run"  # doc §5 — Aphaenogaster characteristically uses individual foraging plus tandem-run recruitment to seeds/prey, not mass trails (genus baseline; cf. Beattie 1985, Mitchell et al. 2002 satiation behavior)
+diel_activity = "diurnal"  # doc §8 — diurnal forest-floor forager, but cold-tolerant: active at lower ambient temps than sympatrics, foraging detectable down to ~5 °C (Warren & Chick 2013 GCB)
+trail_half_life_seconds = 600  # game-pacing — low-recruitment style means weak/short-lived trails anyway; 10 min chosen as short half-life to discourage mass-trail emergent behavior in sim
+
+[colony_structure]
+queen_count = "monogyne"  # doc §3 — single egg-laying queen (Lubertazzi 2012)
+polydomous = false  # doc §6 — single shallow nest under log/rock/litter, queen+brood clustered within ~20 cm
+relocation_tendency = 0.0  # doc §6 — nest-faithful; substrate-cued site choice
+supercolony_capable = false  # no supercolony populations documented for the rudis complex
+budding_reproduction = false  # doc §3 — claustral nuptial-flight founding only
+
+[substrate]
+preferred = ["leaf_litter", "loam"]  # doc §6 — under decomposing logs, beneath rocks, in compacted leaf litter, or soft soil; saproxylic forest-floor specialist (Lubertazzi 2012)
+incompatible = []  # no documented hard substrate exclusion
+dig_speed_multiplier = 0.8  # game-pacing — small monomorphic colony with shallow <15 cm nests (doc §6); modest digging rate, slightly below Lasius baseline
+mound_construction = "none"  # doc §6 — typically subsurface in litter, single small entrance hidden by litter, no diagnostic mound
+
+[combat_extended]
+weapon = "sting"  # doc §7 — Myrmicinae has functional sting; "small, functional sting" (AntWiki)
+sting_potency = 0.5  # doc §7 — "small" sting, conspicuously non-aggressive (game-pacing scalar — no quantified venom data for rudis)
+ranged_attack = false  # doc §7 — no spray, no ranged weapon
+soldier_size_categories = []  # doc §4 — monomorphic, no soldier caste (Lubertazzi 2012)
+major_attack_multiplier = 1.0  # no majors
+context_aggression = false  # doc §7 — uniformly timid response (flee + scatter brood); no documented kin-aware modulation
+
+[diet_extended]
+seed_dispersal = true  # doc §5 — DEFINING TRAIT: single most important seed-disperser of eastern deciduous understory (~30-40% of wildflower species); myrmecochory via elaiosomes (Beattie 1985; Beattie & Culver 1981; Ness et al. in Cambridge Ant-Plant Interactions Ch. 5)
+honeydew_dependent = false  # doc §5 — generalist (small arthropods, EFN, occasional sugar exudates); not a honeydew specialist (Clark & King 2012)
+host_species_required = []  # not a parasitic founder
+
+[ecological_role]
+keystone = true  # doc §5, §7 — keystone seed-disperser of eastern deciduous forest understory; loss measurably collapses wildflower mutualisms (Warren et al. Ecosphere 2018; Spicer Rice et al. 2015)
+invasive_status = "native"  # doc §1 — eastern North American native, southern Ontario through Appalachians to Mississippi
+displaces = []  # doc §7 — non-aggressive species; does not displace others
+displaced_by = ["brachyponera_chinensis", "solenopsis_invicta"]  # doc §7 — Asian needle ant causes 96% reduction in A. rudis abundance + 70% reduction in seed removal (Rodriguez-Cabal et al. 2012; Warren et al. PMC); RIFA documented displacement at southern range edge
 
 [encyclopedia]
 tagline = "The quiet workhorse of the eastern forest floor and a keystone seed disperser."
