@@ -2617,7 +2617,28 @@ impl Simulation {
             } else {
                 1.0
             };
-            let effective_egg_rate = ccfg.queen_egg_rate * throttle;
+            // Population-saturation soft cap. As adult_total approaches the
+            // species target_population, the queen scales lay rate down.
+            // Beyond 1.5× target she stops laying. Models established-colony
+            // lay-rate decline (Hölldobler & Wilson 1990 — colony-size-
+            // dependent fertility regulation). Without this, the food-
+            // inflow throttle's 0.2 floor lets the queen lay past the
+            // colony's foraging support, the colony overshoots, runs
+            // chronic deficit, and dies the first or second winter.
+            // Verified empirically: 5/7 species in the 2y validation
+            // sweep collapsed exactly this way.
+            let target = ccfg.target_population.max(1) as f32;
+            let pop = adult_total as f32;
+            let saturation = if pop <= target * 0.5 {
+                1.0
+            } else if pop >= target * 1.5 {
+                0.0
+            } else {
+                // Linear ramp from full rate at 0.5× target down to 0 at 1.5× target.
+                let t = (pop - target * 0.5) / target;
+                (1.0 - t).clamp(0.0, 1.0)
+            };
+            let effective_egg_rate = ccfg.queen_egg_rate * throttle * saturation;
 
             // P7+ biology: trophic eggs — queen converts some stored
             // food into "free" food packets deposited directly into

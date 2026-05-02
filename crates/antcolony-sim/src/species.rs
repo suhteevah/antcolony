@@ -227,6 +227,7 @@ impl Species {
             adult_food_consumption,
             soldier_food_multiplier: 1.5,
             queen_egg_rate,
+            target_population: self.growth.target_population,
             ..ColonyConfig::default()
         };
 

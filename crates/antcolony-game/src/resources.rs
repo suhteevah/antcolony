@@ -36,6 +36,29 @@ impl SimulationState {
         // Phase 5: attach an underground layer below the surface nest.
         let underground_id = topology.attach_underground(0, 0, nest_w.max(32), nest_h.max(24));
         tracing::info!(underground_id, "attached underground nest (P5)");
+        // Bore-width fix: starter formicarium's default 8mm tubes refuse
+        // ants whose body size exceeds the bore. Camponotus pennsylvanicus
+        // workers are 13mm (majors larger via polymorphic 1.6× boost), so
+        // they get reflected at every port and never leave the test tube
+        // nest. Real keepers match the formicarium tube bore to the
+        // species (ant farm suppliers stock 6mm/8mm/12mm/16mm tubing for
+        // exactly this reason). Auto-size every tube to fit the species:
+        // worker_size_mm × polymorphic_factor × safety_margin.
+        let polymorphic_factor = if species.biology.polymorphic { 1.6 } else { 1.15 };
+        let needed_bore = species.appearance.size_mm * polymorphic_factor * 1.5;
+        let starter_bore = needed_bore.max(8.0);
+        for tube in &mut topology.tubes {
+            tube.bore_width_mm = tube.bore_width_mm.max(starter_bore);
+        }
+        if starter_bore > 8.0 {
+            tracing::info!(
+                species = %species.id,
+                worker_size_mm = species.appearance.size_mm,
+                polymorphic = species.biology.polymorphic,
+                starter_bore,
+                "auto-sized starter tubes to fit species (default 8mm too narrow)"
+            );
+        }
         let mut sim = Simulation::new_with_topology(cfg, topology, env.seed);
         sim.set_environment(env);
 
@@ -75,6 +98,13 @@ impl SimulationState {
         // P5: each colony gets its own underground layer.
         let _ = topology.attach_underground(0, 0, nest_w.max(32), nest_h.max(24));
         let _ = topology.attach_underground(2, 1, nest_w.max(32), nest_h.max(24));
+        // Same bore-width fix as from_species: scale tubes to fit species.
+        let polymorphic_factor = if species.biology.polymorphic { 1.6 } else { 1.15 };
+        let needed_bore = species.appearance.size_mm * polymorphic_factor * 1.5;
+        let starter_bore = needed_bore.max(8.0);
+        for tube in &mut topology.tubes {
+            tube.bore_width_mm = tube.bore_width_mm.max(starter_bore);
+        }
         let mut sim = Simulation::new_two_colony_with_topology(cfg, topology, env.seed, 0, 2);
         sim.set_environment(env);
 

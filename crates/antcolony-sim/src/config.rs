@@ -154,6 +154,10 @@ fn default_min_diapause_days() -> u32 {
     60
 }
 
+fn default_target_population() -> u32 {
+    5_000
+}
+
 fn default_worker_size_mm() -> f32 {
     4.0
 }
@@ -190,6 +194,16 @@ pub struct ColonyConfig {
     pub adult_food_consumption: f32,
     pub soldier_food_multiplier: f32,
     pub queen_egg_rate: f32,
+    /// Species-level soft population ceiling (matches biology.target_population).
+    /// Queen lay rate ramps down as colony adult_total approaches this number,
+    /// reaching zero around 1.5× target. Models real biology where established
+    /// queens slow egg production once the colony has saturated its niche
+    /// (Hölldobler & Wilson 1990 — colony-size-dependent fertility regulation).
+    /// Without this cap, the food-inflow throttle floor (0.2) keeps the queen
+    /// laying past sustainable food balance, the colony overshoots its
+    /// foraging support, then dies the first winter.
+    #[serde(default = "default_target_population")]
+    pub target_population: u32,
     /// K5 nuptial flight: breeders needed before a launch is triggered.
     pub nuptial_breeder_min: u32,
     /// Breeder must be at least this many ticks old to participate.
@@ -296,6 +310,7 @@ impl Default for ColonyConfig {
             adult_food_consumption: 0.01,
             soldier_food_multiplier: 1.5,
             queen_egg_rate: 0.05,
+            target_population: 5_000,
             nuptial_breeder_min: 3,
             nuptial_breeder_min_age: 600,
             nuptial_flight_ticks: 180,
