@@ -325,6 +325,11 @@ impl Topology {
 
         let cx = w / 2;
         let top = h.saturating_sub(2);
+        // Carve a NestEntrance cell at the underground's top-center
+        // (matches the surface module's nest entrance position so the
+        // dig system's surface↔underground traversal pairs the two).
+        // The traversal system reads this via `world.find_nest_entrance`.
+        module.world.set_nest_entrance(cx, top, colony_id);
         // Queen chamber: 3x3 at top-center.
         module
             .world
@@ -410,6 +415,35 @@ impl Topology {
             .iter_mut()
             .find(|t| t.id == id)
             .unwrap_or_else(|| panic!("Topology::tube_mut({}) — not found", id))
+    }
+
+    /// Find the UndergroundNest module that contains a NestEntrance for
+    /// the given colony. Used by the dig system's surface↔underground
+    /// traversal to pair a surface ant standing on a NestEntrance cell
+    /// with the matching underground module.
+    pub fn underground_for_colony(&self, colony_id: u8) -> Option<ModuleId> {
+        for m in &self.modules {
+            if m.kind == crate::module::ModuleKind::UndergroundNest
+                && m.world.find_nest_entrance(colony_id).is_some()
+            {
+                return Some(m.id);
+            }
+        }
+        None
+    }
+
+    /// Find the surface (non-underground) module that contains a
+    /// NestEntrance for the given colony. Mirrors
+    /// `underground_for_colony` for the reverse direction.
+    pub fn surface_nest_for_colony(&self, colony_id: u8) -> Option<ModuleId> {
+        for m in &self.modules {
+            if m.kind != crate::module::ModuleKind::UndergroundNest
+                && m.world.find_nest_entrance(colony_id).is_some()
+            {
+                return Some(m.id);
+            }
+        }
+        None
     }
 
     /// Auto-size every tube's bore width to fit a species. Real keepers

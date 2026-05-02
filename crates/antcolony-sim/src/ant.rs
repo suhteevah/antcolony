@@ -75,6 +75,27 @@ pub struct Ant {
     /// Queens and the player avatar ignore the bond.
     #[serde(default)]
     pub follow_leader: Option<u32>,
+    /// Dig system: when an ant in `AntState::Digging` is at a Solid
+    /// face, this counter accumulates per substep. Tile flips when it
+    /// crosses `DIG_PROGRESS_THRESHOLD`. Zeroes when the ant moves off
+    /// the face or transitions out of Digging. Replaces the previous
+    /// instant-flip behavior with multi-substep excavation so the
+    /// player can actually watch tunnels grow.
+    #[serde(default)]
+    pub dig_progress: u32,
+    /// Dig system: target cell the ant is currently excavating, paired
+    /// with `dig_progress`. `None` when not actively digging or when
+    /// the target was just flipped to Empty.
+    #[serde(default)]
+    pub dig_target: Option<(u16, u16)>,
+    /// Dig system: when true, the ant is carrying a soil pellet from
+    /// an excavation site to the surface kickout zone. Mirrors
+    /// `food_carried` semantically. Set when a tile flips Solid→Empty
+    /// (digger picks up the pellet); cleared when the ant drops at
+    /// the kickout zone. See docs/biology.md "Soil pellets, not
+    /// grains" + "Kickout mound" entries.
+    #[serde(default)]
+    pub carrying_soil: bool,
 }
 
 impl Ant {
@@ -106,6 +127,9 @@ impl Ant {
             is_avenger: false,
             is_player: false,
             follow_leader: None,
+            dig_progress: 0,
+            dig_target: None,
+            carrying_soil: false,
         }
     }
 

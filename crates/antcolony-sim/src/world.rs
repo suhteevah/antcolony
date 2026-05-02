@@ -27,6 +27,12 @@ pub enum Terrain {
     Solid,
     /// Phase 5: a specialized room inside an underground nest.
     Chamber(ChamberType),
+    /// Dig system: kickout mound — accumulated soil pellets dropped at
+    /// a colony's nest entrance by returning diggers. Intensity caps at
+    /// 255 (a u8 packed in u32 here for serde simplicity). Walkable.
+    /// Renders as a mound that grows over time. See docs/biology.md
+    /// "Kickout mound — the diagnostic visual".
+    SoilPile(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +105,29 @@ impl WorldGrid {
     pub fn place_nest(&mut self, x: usize, y: usize, colony_id: u8) {
         self.set(x, y, Terrain::NestEntrance(colony_id));
         tracing::info!(x, y, colony_id, "nest entrance placed");
+    }
+
+    /// Lower-noise variant for the dig system's underground traversal:
+    /// places a NestEntrance cell without an info-level log (chamber
+    /// carving already logs at info, no need for one per attach).
+    pub fn set_nest_entrance(&mut self, x: usize, y: usize, colony_id: u8) {
+        if x < self.width && y < self.height {
+            self.set(x, y, Terrain::NestEntrance(colony_id));
+        }
+    }
+
+    /// Find the first cell with a NestEntrance for `colony_id`. Used by
+    /// the surface↔underground traversal to pair a surface module's
+    /// entrance with the underground's mirrored entrance.
+    pub fn find_nest_entrance(&self, colony_id: u8) -> Option<(usize, usize)> {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.get(x, y) == Terrain::NestEntrance(colony_id) {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
     }
 
     /// Phase 5: fill every cell with `Solid` (unexcavated earth). Used

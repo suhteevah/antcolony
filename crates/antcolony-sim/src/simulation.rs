@@ -955,6 +955,8 @@ impl Simulation {
         self.deposit_and_interact();
         self.territory_deposit_tick();
         self.feeding_dish_tick();
+        self.surface_underground_traversal();
+        self.assign_diggers();
         self.dig_tick();
         self.red_ai_tick();
         self.hazards_tick();
@@ -1932,18 +1934,165 @@ impl Simulation {
         }
     }
 
-    /// Phase 5: excavation. Every ant currently in `AntState::Digging`
-    /// converts one adjacent `Terrain::Solid` cell to `Terrain::Empty`
-    /// per tick (if any exist in its 4-neighborhood). No direction —
-    /// the first solid neighbor found wins. Ants not in `Digging` are
-    /// ignored; ants in transit are ignored. Chambers and nest
-    /// entrances are untouched.
+    /// Surface↔underground traversal. Any ant standing on a
+    /// `NestEntrance(colony_id)` cell teleports to the matching entrance
+    /// on the linked layer (surface ↔ underground) for its colony. This
+    /// is what lets workers descend to dig, then return surfaceward to
+    /// drop kickout pellets. Real ants traverse in seconds via the
+    /// physical entrance hole; the sim simplifies to a teleport since
+    /// modeling the literal hole as a 1-tile bottleneck would create
+    /// pathological queuing.
+    fn surface_underground_traversal(&mut self) {
+        // Snapshot per-colony entrances so we can mutate ants while
+        // reading topology. Layout: HashMap<colony_id, (surface_mod, surface_pos, ug_mod, ug_pos)>.
+        let mut entrance_pairs: Vec<(u8, ModuleId, Vec2, ModuleId, Vec2)> = Vec::new();
+        for c in &self.colonies {
+            let cid = c.id;
+            let Some(surf_mod) = self.topology.surface_nest_for_colony(cid) else { continue };
+            let Some(ug_mod) = self.topology.underground_for_colony(cid) else { continue };
+            let surf = self.topology.module(surf_mod);
+            let Some((sx, sy)) = surf.world.find_nest_entrance(cid) else { continue };
+            let ug = self.topology.module(ug_mod);
+            let Some((ux, uy)) = ug.world.find_nest_entrance(cid) else { continue };
+            // Center the teleport position on the cell.
+            let surf_pos = Vec2::new(sx as f32 + 0.5, sy as f32 + 0.5);
+            let ug_pos = Vec2::new(ux as f32 + 0.5, uy as f32 + 0.5);
+            entrance_pairs.push((cid, surf_mod, surf_pos, ug_mod, ug_pos));
+        }
+        if entrance_pairs.is_empty() {
+            return;
+        }
+
+        for ant in self.ants.iter_mut() {
+            if ant.is_in_transit() {
+                continue;
+            }
+            // Queens stay put — they don't traverse layers in real
+            // biology either; the queen sits in the queen chamber on
+            // the underground side once founding is complete.
+            if ant.caste == AntCaste::Queen {
+                continue;
+            }
+            let Some(pair) = entrance_pairs.iter().find(|p| p.0 == ant.colony_id) else { continue };
+            let (_, surf_mod, surf_pos, ug_mod, ug_pos) = *pair;
+            // Only fire the teleport when the ant arrives on the
+            // entrance cell — a state_timer-based debounce is overkill;
+            // we use the carrying_soil + state heuristic below.
+            //
+            // Surface-side teleport (descend): ant on surface entrance
+            // cell whose state suggests it wants to be inside (Idle,
+            // Exploring, Digging without a target, or carrying food
+            // for storage in an underground chamber).
+            //
+            // For MVP: surface→underground only when ant.state == Digging
+            // (it WANTS to dig but is on the surface).
+            // Underground→surface only when ant.carrying_soil is true
+            // (it MUST surface to dump the pellet).
+            if ant.module_id == surf_mod {
+                let (gx, gy) = self.topology.module(surf_mod).world.world_to_grid(ant.position);
+                if (gx, gy) == (surf_pos.x as i64, surf_pos.y as i64)
+                    && ant.state == AntState::Digging
+                {
+                    ant.module_id = ug_mod;
+                    ant.position = ug_pos;
+                    ant.dig_progress = 0;
+                    ant.dig_target = None;
+                    continue;
+                }
+            }
+            if ant.module_id == ug_mod {
+                let (gx, gy) = self.topology.module(ug_mod).world.world_to_grid(ant.position);
+                if (gx, gy) == (ug_pos.x as i64, ug_pos.y as i64) && ant.carrying_soil {
+                    ant.module_id = surf_mod;
+                    ant.position = surf_pos;
+                }
+            }
+        }
+    }
+
+    /// Promote idle workers to `Digging` based on the colony's
+    /// `behavior_weights.dig`. Real ants don't get assigned tasks by a
+    /// foreman; they sense local task demand (more brood = nurse, dig
+    /// face exposed = excavate) and self-recruit. This is a coarse
+    /// approximation for now: at low population each tick rolls a
+    /// fraction of idle workers into Digging if they're on a module
+    /// with Solid neighbors. Future: use the dig-priority pheromone
+    /// (parked in `docs/digging-design.md` Phase C) for spatial bias.
+    fn assign_diggers(&mut self) {
+        // Snapshot per-colony dig weight + which modules have at least
+        // one Solid cell — those are the only modules where promotion
+        // makes sense (no point promoting an ant on an outworld where
+        // there's nothing to dig).
+        let mut dig_weight_by_colony: Vec<(u8, f32)> =
+            self.colonies.iter().map(|c| (c.id, c.behavior_weights.dig)).collect();
+
+        // Only promote on modules that have Solid cells (the underground
+        // nests). Cheap precomputed bitmap: module_id → has_solid.
+        let mut has_solid: Vec<(ModuleId, bool)> = self
+            .topology
+            .modules
+            .iter()
+            .map(|m| (m.id, m.world.cells.iter().any(|c| matches!(c, Terrain::Solid))))
+            .collect();
+
+        for ant in self.ants.iter_mut() {
+            if ant.is_in_transit() || ant.caste != AntCaste::Worker || ant.carrying_soil {
+                continue;
+            }
+            // Only idle/exploring workers are eligible — don't yank a
+            // returning forager off her trail.
+            if !matches!(ant.state, AntState::Idle | AntState::Exploring) {
+                continue;
+            }
+            let Some((_, w)) = dig_weight_by_colony.iter().find(|p| p.0 == ant.colony_id) else { continue };
+            let Some((_, on_solid_module)) = has_solid.iter().find(|p| p.0 == ant.module_id) else { continue };
+            if !*on_solid_module {
+                continue;
+            }
+            // Per-substep promotion probability scales with dig weight.
+            // Clamp upper bound so an entire colony doesn't all flip in
+            // one substep at high dig weight.
+            let p = (*w * 0.05).min(0.05);
+            if self.rng.r#gen::<f32>() < p {
+                ant.state = AntState::Digging;
+                ant.dig_progress = 0;
+                ant.dig_target = None;
+            }
+        }
+        let _ = (&mut dig_weight_by_colony, &mut has_solid); // suppress unused-mut-warnings
+    }
+
+    /// Multi-substep excavation. Diggers accumulate `dig_progress` per
+    /// substep against an adjacent `Terrain::Solid` cell; when progress
+    /// crosses the species-tunable threshold, the tile flips to Empty
+    /// and the ant gains a `carrying_soil` pellet. Replaces the prior
+    /// instant-flip behavior (which made digging invisible at any time
+    /// scale). See docs/biology.md "Excavation rate is slow" for the
+    /// biological grounding (1-2 cm³/day for a small Lasius colony).
+    ///
+    /// Pellet pickup → drop cycle:
+    /// 1. Ant in `Digging` adjacent to `Solid` → progress accumulates
+    /// 2. Threshold crossed → tile flips Empty + ant.carrying_soil = true
+    /// 3. Ant exits Digging, FSM steers it back to nest entrance
+    /// 4. At a `NestEntrance` cell, drop pellet → adjacent cell becomes
+    ///    or grows `SoilPile` (the kickout mound), ant.carrying_soil = false
     fn dig_tick(&mut self) {
-        // Collect (module_id, x, y) targets first so we can borrow the
-        // ant immutably and the world mutably afterwards.
-        let mut targets: Vec<(ModuleId, usize, usize)> = Vec::new();
-        for ant in &self.ants {
+        // Per-species threshold. 60 substeps ≈ 2 in-game seconds at
+        // calibrated rate — fast enough to be visible, slow enough to
+        // feel like real work. Future: scale by an `appearance.dig_speed_multiplier`.
+        const DIG_PROGRESS_THRESHOLD: u32 = 60;
+        const KICKOUT_MAX_INTENSITY: u32 = 255;
+
+        // Pass 1: Diggers — accumulate progress, flip tiles, pick up pellets.
+        let mut flips: Vec<(usize, ModuleId, usize, usize)> = Vec::new(); // (ant_idx, module, x, y)
+        for (i, ant) in self.ants.iter_mut().enumerate() {
             if ant.state != AntState::Digging || ant.is_in_transit() {
+                ant.dig_progress = 0;
+                ant.dig_target = None;
+                continue;
+            }
+            // Skip if already carrying — can't dig with a pellet.
+            if ant.carrying_soil {
                 continue;
             }
             let module = self.topology.module(ant.module_id);
@@ -1952,31 +2101,118 @@ impl Simulation {
                 continue;
             }
             let (ux, uy) = (gx as usize, gy as usize);
-            // Look at 4-neighbors.
+            // 4-neighbor lookup for a Solid target (deterministic order:
+            // east, west, south, north — matches surface→underground
+            // entrance bias in `attach_underground`).
             let candidates = [
-                (ux.wrapping_sub(1), uy),
                 (ux + 1, uy),
-                (ux, uy.wrapping_sub(1)),
+                (ux.wrapping_sub(1), uy),
                 (ux, uy + 1),
+                (ux, uy.wrapping_sub(1)),
             ];
+            let mut chosen: Option<(usize, usize)> = None;
             for (nx, ny) in candidates {
                 if nx < module.world.width
                     && ny < module.world.height
                     && module.world.get(nx, ny) == Terrain::Solid
                 {
-                    targets.push((ant.module_id, nx, ny));
+                    chosen = Some((nx, ny));
                     break;
                 }
             }
+            let Some((tx, ty)) = chosen else {
+                ant.dig_progress = 0;
+                ant.dig_target = None;
+                continue;
+            };
+            // If the target changed (ant shuffled), reset progress.
+            let target_pair = (tx as u16, ty as u16);
+            if ant.dig_target != Some(target_pair) {
+                ant.dig_progress = 0;
+                ant.dig_target = Some(target_pair);
+            }
+            ant.dig_progress = ant.dig_progress.saturating_add(1);
+            if ant.dig_progress >= DIG_PROGRESS_THRESHOLD {
+                flips.push((i, ant.module_id, tx, ty));
+            }
         }
-        if targets.is_empty() {
-            return;
+        if !flips.is_empty() {
+            for (ant_idx, mid, x, y) in &flips {
+                // Flip the tile.
+                self.topology.module_mut(*mid).world.set(*x, *y, Terrain::Empty);
+                let ant = &mut self.ants[*ant_idx];
+                ant.carrying_soil = true;
+                ant.dig_progress = 0;
+                ant.dig_target = None;
+                // Transition out of Digging — FSM picks up where to go
+                // next; movement steering will pull them home.
+                ant.state = AntState::ReturningHome;
+            }
+            tracing::debug!(excavated = flips.len(), "dig_tick: tile flips this substep");
         }
-        let excavated = targets.len();
-        for (mid, x, y) in targets {
-            self.topology.module_mut(mid).world.set(x, y, Terrain::Empty);
+
+        // Pass 2: Diggers carrying pellets — drop at nest entrance, build
+        // the kickout mound.
+        let mut drops: Vec<(usize, ModuleId, usize, usize)> = Vec::new();
+        for (i, ant) in self.ants.iter().enumerate() {
+            if !ant.carrying_soil || ant.is_in_transit() {
+                continue;
+            }
+            let module = self.topology.module(ant.module_id);
+            let (gx, gy) = module.world.world_to_grid(ant.position);
+            if !module.world.in_bounds(gx, gy) {
+                continue;
+            }
+            let (ux, uy) = (gx as usize, gy as usize);
+            // If standing ON a NestEntrance cell, drop the pellet on the
+            // best adjacent walkable cell (prefer SoilPile; else Empty).
+            // Real ants drop a body-length OUTSIDE the entrance hole.
+            if matches!(module.world.get(ux, uy), Terrain::NestEntrance(_)) {
+                let candidates = [
+                    (ux + 1, uy),
+                    (ux.wrapping_sub(1), uy),
+                    (ux, uy + 1),
+                    (ux, uy.wrapping_sub(1)),
+                ];
+                // Prefer growing an existing pile.
+                let mut target: Option<(usize, usize)> = None;
+                for (nx, ny) in candidates {
+                    if nx < module.world.width
+                        && ny < module.world.height
+                        && matches!(module.world.get(nx, ny), Terrain::SoilPile(_))
+                    {
+                        target = Some((nx, ny));
+                        break;
+                    }
+                }
+                // Else seed a new pile on the first Empty neighbor.
+                if target.is_none() {
+                    for (nx, ny) in candidates {
+                        if nx < module.world.width
+                            && ny < module.world.height
+                            && module.world.get(nx, ny) == Terrain::Empty
+                        {
+                            target = Some((nx, ny));
+                            break;
+                        }
+                    }
+                }
+                if let Some((dx, dy)) = target {
+                    drops.push((i, ant.module_id, dx, dy));
+                }
+            }
         }
-        tracing::debug!(excavated, "dig_tick: cells carved this tick");
+        for (ant_idx, mid, x, y) in drops {
+            let module = self.topology.module_mut(mid);
+            let new_intensity = match module.world.get(x, y) {
+                Terrain::SoilPile(n) => (n + 1).min(KICKOUT_MAX_INTENSITY),
+                _ => 1,
+            };
+            module.world.set(x, y, Terrain::SoilPile(new_intensity));
+            self.ants[ant_idx].carrying_soil = false;
+            // Carrier returns to looking for work.
+            self.ants[ant_idx].state = AntState::Exploring;
+        }
     }
 
     /// P4 territory: each non-transit, non-diapause ant leaves a small
@@ -3009,6 +3245,9 @@ pub fn spawn_initial_ants(
         is_avenger: false,
         is_player: false,
         follow_leader: None,
+        dig_progress: 0,
+        dig_target: None,
+        carrying_soil: false,
     });
 
     for i in 0..config.ant.initial_count {
@@ -4456,7 +4695,12 @@ mod tests {
         digger.state = AntState::Digging;
         sim.ants.push(digger);
 
-        sim.dig_tick();
+        // Multi-substep excavation: digger needs ~60 ticks of progress
+        // before the tile flips. Run 80 to be safe (covers both the
+        // accumulation and the post-flip state-transition substep).
+        for _ in 0..80 {
+            sim.dig_tick();
+        }
 
         let m = sim.topology.module(ug);
         let solid_left = [
@@ -4470,7 +4714,101 @@ mod tests {
         .count();
         assert_eq!(
             solid_left, 3,
-            "exactly one Solid neighbor should be excavated (3 still Solid, 1 now Empty)"
+            "exactly one Solid neighbor should be excavated after 80 substeps \
+             (3 still Solid, 1 now Empty)"
+        );
+        // Digger should now be carrying a soil pellet (pickup happened
+        // when the tile flipped). sim.ants[0] is the auto-spawned queen;
+        // the digger we pushed is the last ant.
+        let digger = sim.ants.last().expect("digger present");
+        assert!(digger.carrying_soil, "digger should carry a soil pellet after excavation");
+        assert_eq!(digger.state, AntState::ReturningHome,
+            "digger should transition to ReturningHome after extracting the pellet");
+    }
+
+    #[test]
+    fn surface_underground_traversal_descends_digger() {
+        use crate::ant::AntCaste;
+        // Build starter formicarium + underground for colony 0. The
+        // surface module gets a NestEntrance from `spawn_initial_ants`;
+        // the underground gets one from `attach_underground`.
+        let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+        let _ug = topology.attach_underground(0, 0, 40, 24);
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new_with_topology(cfg, topology, 1);
+
+        // Find the surface nest entrance position.
+        let surf_mod = sim.topology.surface_nest_for_colony(0).expect("surface nest");
+        let ug_mod = sim.topology.underground_for_colony(0).expect("underground nest");
+        let (sx, sy) = sim
+            .topology
+            .module(surf_mod)
+            .world
+            .find_nest_entrance(0)
+            .expect("surface entrance");
+
+        // Place a worker at the surface entrance in Digging state.
+        let mut digger = Ant::new_with_caste(
+            9999,
+            0,
+            Vec2::new(sx as f32 + 0.5, sy as f32 + 0.5),
+            0.0,
+            10.0,
+            AntCaste::Worker,
+        );
+        digger.module_id = surf_mod;
+        digger.state = AntState::Digging;
+        sim.ants.push(digger);
+        let digger_idx = sim.ants.len() - 1;
+
+        sim.surface_underground_traversal();
+
+        // Digger should now be on the underground module.
+        assert_eq!(
+            sim.ants[digger_idx].module_id, ug_mod,
+            "digger should teleport to underground module on entering nest entrance while Digging"
+        );
+    }
+
+    #[test]
+    fn carrying_digger_returns_to_surface_at_underground_entrance() {
+        use crate::ant::AntCaste;
+        let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
+        let _ug = topology.attach_underground(0, 0, 40, 24);
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        let mut sim = Simulation::new_with_topology(cfg, topology, 1);
+
+        let surf_mod = sim.topology.surface_nest_for_colony(0).expect("surface nest");
+        let ug_mod = sim.topology.underground_for_colony(0).expect("underground nest");
+        let (ux, uy) = sim
+            .topology
+            .module(ug_mod)
+            .world
+            .find_nest_entrance(0)
+            .expect("ug entrance");
+
+        // Place an ant on the underground entrance carrying a pellet.
+        let mut carrier = Ant::new_with_caste(
+            7777,
+            0,
+            Vec2::new(ux as f32 + 0.5, uy as f32 + 0.5),
+            0.0,
+            10.0,
+            AntCaste::Worker,
+        );
+        carrier.module_id = ug_mod;
+        carrier.carrying_soil = true;
+        carrier.state = AntState::ReturningHome;
+        sim.ants.push(carrier);
+        let idx = sim.ants.len() - 1;
+
+        sim.surface_underground_traversal();
+
+        assert_eq!(
+            sim.ants[idx].module_id, surf_mod,
+            "carrying digger should surface at underground entrance"
         );
     }
 

@@ -30,6 +30,15 @@ pub(crate) struct FoodCarryIndicator {
     pub ant_idx: u32,
 }
 
+/// Dig system: dark soil pellet held in mandibles, only visible when
+/// the ant has `carrying_soil = true`. Same pattern as `FoodCarryIndicator`,
+/// different position (forward of the head, not on the gaster) and color
+/// (dusty brown, not green).
+#[derive(Component)]
+pub(crate) struct SoilCarryIndicator {
+    pub ant_idx: u32,
+}
+
 /// Pheromone overlay for a specific module.
 #[derive(Component)]
 pub(crate) struct PheromoneOverlay(pub ModuleId);
@@ -163,6 +172,7 @@ impl Plugin for RenderPlugin {
                     update_lawnmower_blade,
                     animate_ant_legs,
                     update_food_indicators,
+                    update_soil_carry_indicators,
                     update_pheromone_textures,
                     update_temperature_textures,
                     update_territory_textures,
@@ -506,6 +516,33 @@ pub(crate) fn spawn_formicarium(
                             FormicariumEntity,
                         ));
                     }
+                    // Dig system: kickout mound. Sized + tinted by
+                    // accumulated pellet intensity so the mound visibly
+                    // grows as the colony excavates. Cap at 1.4× tile so
+                    // a mature mound visually overflows the entrance cell.
+                    Terrain::SoilPile(intensity) => {
+                        let n = intensity as f32;
+                        // Saturating curve: small piles already visible,
+                        // large piles cap rather than overflow the screen.
+                        let scale = (0.5 + (n / 30.0).min(0.9)) * TILE;
+                        // Warm dusty soil color, slightly brighter than
+                        // unexcavated Solid so the mound reads as
+                        // "ejected dirt" rather than "tunnel wall".
+                        let darken = 1.0 - (n / 200.0).min(0.5);
+                        commands.spawn((
+                            Sprite {
+                                color: Color::srgb(
+                                    0.40 * darken,
+                                    0.26 * darken,
+                                    0.14 * darken,
+                                ),
+                                custom_size: Some(Vec2::splat(scale)),
+                                ..default()
+                            },
+                            Transform::from_translation(world_pos.extend(0.16)),
+                            FormicariumEntity,
+                        ));
+                    }
                     Terrain::Obstacle | Terrain::Empty => {}
                 }
             }
@@ -842,6 +879,22 @@ fn spawn_ant_parts(
         Visibility::Hidden,
         FoodCarryIndicator { ant_idx },
     ));
+
+    // Dig system: soil pellet indicator — dusty-brown dot held in
+    // mandibles (forward of the head, not on the gaster). Hidden until
+    // ant.carrying_soil is set; toggled by `update_soil_carry_indicators`.
+    let soil_pellet_mat = body_mat.clone(); // re-use body color matrix; will tint via Sprite
+    c.spawn((
+        Sprite {
+            color: Color::srgb(0.42, 0.28, 0.16),
+            custom_size: Some(Vec2::splat(s * 0.55)),
+            ..default()
+        },
+        Transform::from_translation(Vec3::new(1.95 * s, 0.0, 0.12)),
+        Visibility::Hidden,
+        SoilCarryIndicator { ant_idx },
+    ));
+    let _ = soil_pellet_mat;
 
     // P7 avatar overlay: bright yellow halo, hidden unless this ant is
     // the possessed player avatar. Rendered below the body so the
@@ -1184,6 +1237,28 @@ fn update_food_indicators(
             .ants
             .get(ind.ant_idx as usize)
             .map(|a| a.food_carried > 0.0)
+            .unwrap_or(false);
+        *vis = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// Dig system: toggle soil-pellet visibility on each ant based on
+/// `carrying_soil`. Mirrors `update_food_indicators` but reads the
+/// dig-system flag instead of food.
+fn update_soil_carry_indicators(
+    sim: Res<SimulationState>,
+    mut q: Query<(&SoilCarryIndicator, &mut Visibility), Without<FoodCarryIndicator>>,
+) {
+    for (ind, mut vis) in q.iter_mut() {
+        let visible = sim
+            .sim
+            .ants
+            .get(ind.ant_idx as usize)
+            .map(|a| a.carrying_soil)
             .unwrap_or(false);
         *vis = if visible {
             Visibility::Inherited
