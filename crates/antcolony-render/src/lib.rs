@@ -4,6 +4,7 @@ pub mod atlas;
 pub mod editor;
 pub mod encyclopedia;
 pub mod inspector;
+pub mod narrator;
 pub mod picker;
 pub mod player_input;
 pub mod plugin;
@@ -15,6 +16,7 @@ pub mod ui;
 use bevy::prelude::States;
 
 pub use atlas::{SpriteAtlas, SpriteAtlasPlugin};
+pub use narrator::{Chronicler, ChroniclerPlugin, ColonyChronicle};
 pub use editor::EditorPlugin;
 pub use encyclopedia::EncyclopediaPlugin;
 pub use picker::PickerPlugin;
