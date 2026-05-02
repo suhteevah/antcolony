@@ -2724,7 +2724,25 @@ impl Simulation {
             colony.food_inflow_recent *= 0.993;
 
             let mut starve_count: u32 = 0;
-            if colony.food_stored < 0.0 {
+            // Diapause biology: skip the entire starvation block when
+            // the colony is hibernating. Adults run on body fat (no
+            // colony food draw); brood pipeline is paused (no
+            // maturation, no death); brood cannibalism is an ACTIVE-
+            // colony starvation response, NOT a winter survival
+            // mechanism (Hahn & Denlinger 2011). Pre-fix, cannibalism
+            // ran through winter and chewed through the entire brood
+            // pipeline, so spring arrived with adults + zero brood to
+            // mature into replacements. The colony then collapsed at
+            // spring emergence when adults resumed full consumption
+            // and there were no workers in the pipeline. Observed
+            // empirically with Camponotus + Pogonomyrmex dying at
+            // tick 518500 = March year 1.
+            if in_diapause {
+                if colony.food_stored < 0.0 {
+                    colony.food_stored = 0.0;
+                }
+                starve.push((colony.id, 0));
+            } else if colony.food_stored < 0.0 {
                 // P7+ biology: before killing adults, cannibalize
                 // brood if the tech is unlocked. Eggs first, then
                 // larvae, then pupae — younger brood has less nutrient
@@ -2803,50 +2821,31 @@ impl Simulation {
                 }
                 // Any remaining deficit falls through to worker
                 // starvation (capped per tick to avoid a single-tick
-                // colony wipe).
-                //
-                // EXCEPT during diapause: real adults survive winter on
-                // body fat reserves accumulated during autumn, NOT on
-                // colony food stores. Worker mortality in a healthy
-                // hibernating colony is very low. The 5%/tick adult
-                // death cap was killing colonies (especially Pogonomyrmex,
-                // observed empirically in 2y smoke) when reserves ran
-                // out around 60-90 days into winter — biologically
-                // wrong because in nature those workers would still be
-                // alive on personal fat. We zero food_stored without
-                // killing adults; brood cannibalism above already
-                // covered the queen's actual needs (her egg-laying is
-                // gated and she runs on endogenous reserves anyway).
+                // colony wipe). Diapause is handled at the outer guard
+                // above, so this branch only fires for ACTIVE colonies.
                 if colony.food_stored < 0.0 {
-                    if in_diapause {
-                        // Reserves run out — clamp to zero and move on.
-                        // Workers metabolize body fat through winter,
-                        // queen lay rate already gated. No deaths.
-                        colony.food_stored = 0.0;
-                    } else {
-                        let deficit = -colony.food_stored;
-                        let cost = ccfg.adult_food_consumption.max(1e-6);
-                        let raw = (deficit / cost).ceil() as u32;
-                        let cap = ((adult_total as f32 * 0.05).ceil() as u32).max(1);
-                        let mut deaths = raw.min(cap);
-                        if deaths > adult_total {
-                            deaths = adult_total;
-                        }
-                        starve_count = deaths;
-                        colony.food_stored = 0.0;
-                        if deaths > 0 {
-                            tracing::warn!(
-                                colony_id = colony.id,
-                                deaths,
-                                adult_total,
-                                raw,
-                                "starvation deaths (capped per tick; brood exhausted)"
-                            );
-                        }
+                    let deficit = -colony.food_stored;
+                    let cost = ccfg.adult_food_consumption.max(1e-6);
+                    let raw = (deficit / cost).ceil() as u32;
+                    let cap = ((adult_total as f32 * 0.05).ceil() as u32).max(1);
+                    let mut deaths = raw.min(cap);
+                    if deaths > adult_total {
+                        deaths = adult_total;
+                    }
+                    starve_count = deaths;
+                    colony.food_stored = 0.0;
+                    if deaths > 0 {
+                        tracing::warn!(
+                            colony_id = colony.id,
+                            deaths,
+                            adult_total,
+                            raw,
+                            "starvation deaths (capped per tick; brood exhausted)"
+                        );
                     }
                 }
+                starve.push((colony.id, starve_count));
             }
-            starve.push((colony.id, starve_count));
 
             let queen_alive = colony.queen_health > 0.0;
             if !queen_alive && colony.queen_alive_last_tick {
