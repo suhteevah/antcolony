@@ -216,6 +216,172 @@ impl AiBrain for HeuristicBrain {
 }
 
 // ============================================================
+// Archetype brains — fixed-personality heuristics for tournament
+// diversity. Each one has a distinct strategic identity. Together
+// they form the matchup pool that produces a diverse training
+// corpus for behavior cloning, instead of bootstrapping from one
+// heuristic against itself.
+//
+// Each archetype carries:
+// - a default (caste_ratio, behavior_weights) prior expressing its
+//   strategic identity
+// - reaction rules that adjust those priors in response to combat
+//   losses, food shortage, or enemy proximity
+// - a stable name for tournament reporting
+// ============================================================
+
+/// Internal helper — common reaction-rule shape for archetype brains.
+fn archetype_decide(
+    base: &mut BrainInternalState,
+    state: &ColonyAiState,
+    losses_response: f32, // 0.0 = ignore losses, 1.0 = max escalation
+    food_response: f32,   // 0.0 = ignore low food, 1.0 = max forage
+    food_threshold: f32,
+) -> AiDecision {
+    if state.combat_losses_recent > 0 && losses_response > 0.0 {
+        let shift = 0.01 * state.combat_losses_recent as f32 * losses_response;
+        let target = (base.caste_ratio_soldier + shift).min(0.7);
+        let delta = target - base.caste_ratio_soldier;
+        base.caste_ratio_soldier = target;
+        base.caste_ratio_worker = (base.caste_ratio_worker - delta).max(0.05);
+    }
+    if state.food_stored < food_threshold && food_response > 0.0 {
+        let shift = 0.02 * food_response;
+        let target = (base.forage_weight + shift).min(0.95);
+        let delta = target - base.forage_weight;
+        base.forage_weight = target;
+        base.nurse_weight = (base.nurse_weight - delta * 0.5).max(0.05);
+        base.dig_weight = (base.dig_weight - delta * 0.5).max(0.02);
+    }
+    AiDecision {
+        caste_ratio_worker: base.caste_ratio_worker,
+        caste_ratio_soldier: base.caste_ratio_soldier,
+        caste_ratio_breeder: base.caste_ratio_breeder,
+        forage_weight: base.forage_weight,
+        dig_weight: base.dig_weight,
+        nurse_weight: base.nurse_weight,
+        research_choice: None,
+    }
+}
+
+/// Defender — fortified turtle. High soldier baseline + nurse-heavy.
+/// Mild reaction to losses (already prepared); slow to shift.
+pub struct DefenderBrain { state: BrainInternalState }
+impl DefenderBrain {
+    pub fn new() -> Self {
+        Self { state: BrainInternalState {
+            caste_ratio_worker: 0.50, caste_ratio_soldier: 0.45, caste_ratio_breeder: 0.05,
+            forage_weight: 0.20, dig_weight: 0.10, nurse_weight: 0.70,
+        } }
+    }
+}
+impl Default for DefenderBrain { fn default() -> Self { Self::new() } }
+impl AiBrain for DefenderBrain {
+    fn name(&self) -> &str { "defender" }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
+        archetype_decide(&mut self.state, s, 0.3, 0.5, 20.0)
+    }
+}
+
+/// Aggressor — pushes the fight. Soldier-heavy, forage-heavy, fast
+/// escalation on combat losses, all-hands-foraging when food drops.
+pub struct AggressorBrain { state: BrainInternalState }
+impl AggressorBrain {
+    pub fn new() -> Self {
+        Self { state: BrainInternalState {
+            caste_ratio_worker: 0.30, caste_ratio_soldier: 0.65, caste_ratio_breeder: 0.05,
+            forage_weight: 0.70, dig_weight: 0.10, nurse_weight: 0.20,
+        } }
+    }
+}
+impl Default for AggressorBrain { fn default() -> Self { Self::new() } }
+impl AiBrain for AggressorBrain {
+    fn name(&self) -> &str { "aggressor" }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
+        archetype_decide(&mut self.state, s, 1.5, 1.0, 30.0)
+    }
+}
+
+/// Economist — worker monoculture. Maximize food + worker count first,
+/// late-tier soldier ramp only when actively invaded.
+pub struct EconomistBrain { state: BrainInternalState }
+impl EconomistBrain {
+    pub fn new() -> Self {
+        Self { state: BrainInternalState {
+            caste_ratio_worker: 0.85, caste_ratio_soldier: 0.05, caste_ratio_breeder: 0.10,
+            forage_weight: 0.85, dig_weight: 0.05, nurse_weight: 0.10,
+        } }
+    }
+}
+impl Default for EconomistBrain { fn default() -> Self { Self::new() } }
+impl AiBrain for EconomistBrain {
+    fn name(&self) -> &str { "economist" }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
+        // Ignore early losses; only react when enemies are visible adjacent.
+        let losses_resp = if s.enemy_distance_min < 5.0 { 1.5 } else { 0.0 };
+        archetype_decide(&mut self.state, s, losses_resp, 0.3, 10.0)
+    }
+}
+
+/// Breeder — alate factory, founds far-flung daughters. High breeder share.
+pub struct BreederBrain { state: BrainInternalState }
+impl BreederBrain {
+    pub fn new() -> Self {
+        Self { state: BrainInternalState {
+            caste_ratio_worker: 0.55, caste_ratio_soldier: 0.05, caste_ratio_breeder: 0.40,
+            forage_weight: 0.50, dig_weight: 0.20, nurse_weight: 0.30,
+        } }
+    }
+}
+impl Default for BreederBrain { fn default() -> Self { Self::new() } }
+impl AiBrain for BreederBrain {
+    fn name(&self) -> &str { "breeder" }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
+        archetype_decide(&mut self.state, s, 0.5, 0.7, 25.0)
+    }
+}
+
+/// Forager — pure pacifist economy. No soldiers ever. Maximum food
+/// throughput. Loses to anything that fights but produces a clean
+/// "what foraging looks like" signal in the training corpus.
+pub struct ForagerBrain { state: BrainInternalState }
+impl ForagerBrain {
+    pub fn new() -> Self {
+        Self { state: BrainInternalState {
+            caste_ratio_worker: 0.95, caste_ratio_soldier: 0.00, caste_ratio_breeder: 0.05,
+            forage_weight: 0.90, dig_weight: 0.05, nurse_weight: 0.05,
+        } }
+    }
+}
+impl Default for ForagerBrain { fn default() -> Self { Self::new() } }
+impl AiBrain for ForagerBrain {
+    fn name(&self) -> &str { "forager" }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
+        // Even under attack, forager refuses to make soldiers.
+        archetype_decide(&mut self.state, s, 0.0, 1.0, 30.0)
+    }
+}
+
+/// Conservative Builder — infrastructure first, slow reaction.
+/// Heavy on dig + nurse, modest forage + soldier baseline.
+pub struct ConservativeBuilderBrain { state: BrainInternalState }
+impl ConservativeBuilderBrain {
+    pub fn new() -> Self {
+        Self { state: BrainInternalState {
+            caste_ratio_worker: 0.70, caste_ratio_soldier: 0.20, caste_ratio_breeder: 0.10,
+            forage_weight: 0.30, dig_weight: 0.30, nurse_weight: 0.40,
+        } }
+    }
+}
+impl Default for ConservativeBuilderBrain { fn default() -> Self { Self::new() } }
+impl AiBrain for ConservativeBuilderBrain {
+    fn name(&self) -> &str { "conservative" }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
+        archetype_decide(&mut self.state, s, 0.3, 0.4, 15.0)
+    }
+}
+
+// ============================================================
 // RandomBrain — noise-floor opponent / smoke test.
 // ============================================================
 
@@ -261,6 +427,144 @@ impl AiBrain for RandomBrain {
             forage_weight: f / wsum,
             dig_weight: d / wsum,
             nurse_weight: n / wsum,
+            research_choice: None,
+        }
+    }
+}
+
+// ============================================================
+// MlpBrain — pure-Rust MLP forward pass, GPU-trained weights.
+// ============================================================
+
+/// Compact MLP brain. Trained externally (`scripts/train_mlp_brain.py`,
+/// PyTorch on CUDA), checkpoint loaded as JSON, forward pass in pure
+/// Rust at inference time. No subprocess overhead, no model framework
+/// at runtime — just matrix-vector math.
+///
+/// Architecture: 17 (state features) -> hidden -> hidden -> 6 (decision)
+/// with ReLU between layers and sigmoid on output. Outputs are
+/// renormalized by `apply_ai_decision` so the brain doesn't have to
+/// emit perfectly-summing values.
+///
+/// # File format
+///
+/// JSON object with shape:
+/// ```text
+/// {
+///   "input_dim":  17, "hidden_dim": 64, "output_dim": 6,
+///   "input_mean": [...17 floats...],   // z-score normalization
+///   "input_std":  [...17 floats...],
+///   "w1":  [[...]], "b1": [...],   // 17 -> hidden (row-major)
+///   "w2":  [[...]], "b2": [...],   // hidden -> hidden
+///   "w3":  [[...]], "b3": [...]    // hidden -> 6
+/// }
+/// ```
+pub struct MlpBrain {
+    pub label: String,
+    input_mean: Vec<f32>,
+    input_std: Vec<f32>,
+    w1: Vec<Vec<f32>>, b1: Vec<f32>,
+    w2: Vec<Vec<f32>>, b2: Vec<f32>,
+    w3: Vec<Vec<f32>>, b3: Vec<f32>,
+}
+
+#[derive(serde::Deserialize)]
+struct MlpWeightsFile {
+    #[allow(dead_code)] input_dim: usize,
+    #[allow(dead_code)] hidden_dim: usize,
+    #[allow(dead_code)] output_dim: usize,
+    input_mean: Vec<f32>,
+    input_std: Vec<f32>,
+    w1: Vec<Vec<f32>>, b1: Vec<f32>,
+    w2: Vec<Vec<f32>>, b2: Vec<f32>,
+    w3: Vec<Vec<f32>>, b3: Vec<f32>,
+}
+
+impl MlpBrain {
+    /// Load from a JSON weights file produced by `train_mlp_brain.py`.
+    pub fn load(path: impl AsRef<std::path::Path>, label: impl Into<String>) -> std::io::Result<Self> {
+        let path = path.as_ref();
+        let raw = std::fs::read_to_string(path)?;
+        let parsed: MlpWeightsFile = serde_json::from_str(&raw)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(Self {
+            label: label.into(),
+            input_mean: parsed.input_mean,
+            input_std: parsed.input_std,
+            w1: parsed.w1, b1: parsed.b1,
+            w2: parsed.w2, b2: parsed.b2,
+            w3: parsed.w3, b3: parsed.b3,
+        })
+    }
+}
+
+/// matmul + bias + ReLU. `w` is row-major (each inner vec = one output row).
+fn relu_layer(input: &[f32], w: &[Vec<f32>], b: &[f32]) -> Vec<f32> {
+    let mut out = vec![0.0f32; w.len()];
+    for (i, row) in w.iter().enumerate() {
+        let mut acc = b[i];
+        for (j, x) in input.iter().enumerate() {
+            acc += row[j] * x;
+        }
+        out[i] = if acc > 0.0 { acc } else { 0.0 };
+    }
+    out
+}
+
+fn sigmoid_layer(input: &[f32], w: &[Vec<f32>], b: &[f32]) -> Vec<f32> {
+    let mut out = vec![0.0f32; w.len()];
+    for (i, row) in w.iter().enumerate() {
+        let mut acc = b[i];
+        for (j, x) in input.iter().enumerate() {
+            acc += row[j] * x;
+        }
+        out[i] = 1.0 / (1.0 + (-acc).exp());
+    }
+    out
+}
+
+fn state_to_features(s: &ColonyAiState) -> Vec<f32> {
+    let ed = if s.enemy_distance_min.is_finite() {
+        s.enemy_distance_min
+    } else {
+        1e6
+    };
+    vec![
+        s.food_stored, s.food_inflow_recent,
+        s.worker_count as f32, s.soldier_count as f32, s.breeder_count as f32,
+        s.brood_egg as f32, s.brood_larva as f32, s.brood_pupa as f32,
+        s.queens_alive as f32, s.combat_losses_recent as f32,
+        ed, s.enemy_worker_count as f32, s.enemy_soldier_count as f32,
+        s.day_of_year as f32, s.ambient_temp_c,
+        if s.diapause_active { 1.0 } else { 0.0 },
+        if s.is_daytime { 1.0 } else { 0.0 },
+    ]
+}
+
+impl AiBrain for MlpBrain {
+    fn name(&self) -> &str {
+        &self.label
+    }
+
+    fn decide(&mut self, state: &ColonyAiState) -> AiDecision {
+        let raw = state_to_features(state);
+        // z-score normalization
+        let normalized: Vec<f32> = raw
+            .iter()
+            .zip(self.input_mean.iter())
+            .zip(self.input_std.iter())
+            .map(|((x, m), s)| (x - m) / s)
+            .collect();
+        let h1 = relu_layer(&normalized, &self.w1, &self.b1);
+        let h2 = relu_layer(&h1, &self.w2, &self.b2);
+        let out = sigmoid_layer(&h2, &self.w3, &self.b3);
+        AiDecision {
+            caste_ratio_worker: out[0],
+            caste_ratio_soldier: out[1],
+            caste_ratio_breeder: out[2],
+            forage_weight: out[3],
+            dig_weight: out[4],
+            nurse_weight: out[5],
             research_choice: None,
         }
     }
@@ -659,6 +963,40 @@ mod tests {
         assert_eq!(d.caste_ratio_soldier, 0.0);
         assert_eq!(d.forage_weight, 1.0);
         assert_eq!(d.nurse_weight, 0.0);
+    }
+
+    #[test]
+    fn mlp_brain_forward_pass_is_deterministic() {
+        // Hand-crafted tiny MLP: 17 -> 2 -> 2 -> 6 with all weights 0
+        // and biases that produce a known output. After sigmoid:
+        // sigmoid(0) = 0.5 for every output.
+        use std::io::Write;
+        let weights = serde_json::json!({
+            "input_dim": 17, "hidden_dim": 2, "output_dim": 6,
+            "input_mean": vec![0.0_f32; 17],
+            "input_std":  vec![1.0_f32; 17],
+            "w1": vec![vec![0.0_f32; 17]; 2],
+            "b1": vec![0.0_f32; 2],
+            "w2": vec![vec![0.0_f32; 2]; 2],
+            "b2": vec![0.0_f32; 2],
+            "w3": vec![vec![0.0_f32; 2]; 6],
+            "b3": vec![0.0_f32; 6],
+        });
+        let tmp = std::env::temp_dir().join(format!("antcolony-mlp-test-{}.json", std::process::id()));
+        std::fs::File::create(&tmp).unwrap().write_all(weights.to_string().as_bytes()).unwrap();
+
+        let mut brain = MlpBrain::load(&tmp, "mlp-test").expect("load");
+        let s = neutral_state();
+        let d1 = brain.decide(&s);
+        let d2 = brain.decide(&s);
+        // Determinism check.
+        assert_eq!(d1.caste_ratio_worker, d2.caste_ratio_worker);
+        // sigmoid(0) = 0.5 — every output should be ~0.5 with all-zero weights.
+        for v in [d1.caste_ratio_worker, d1.caste_ratio_soldier, d1.caste_ratio_breeder,
+                  d1.forage_weight, d1.dig_weight, d1.nurse_weight] {
+            assert!((v - 0.5).abs() < 1e-5, "sigmoid(0) should be 0.5, got {v}");
+        }
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]

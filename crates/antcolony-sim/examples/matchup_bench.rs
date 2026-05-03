@@ -32,8 +32,9 @@
 use std::path::PathBuf;
 
 use antcolony_sim::{
-    AetherLmBrain, AiBrain, AiDecision, ColonyAiState, HeuristicBrain, MatchStatus,
-    RandomBrain, Simulation, Topology,
+    AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BreederBrain, ColonyAiState,
+    ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain,
+    MatchStatus, MlpBrain, RandomBrain, Simulation, Topology,
     config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
 };
 use serde::Serialize;
@@ -115,10 +116,25 @@ fn build_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
     if let Some(rest) = spec.strip_prefix("aether:") {
         return Box::new(AetherLmBrain::new(rest, format!("aether-{seed}")));
     }
+    if let Some(rest) = spec.strip_prefix("mlp:") {
+        return match MlpBrain::load(rest, format!("mlp-{seed}")) {
+            Ok(b) => Box::new(b),
+            Err(e) => panic!("failed to load MlpBrain weights from `{rest}`: {e}"),
+        };
+    }
     match spec {
         "heuristic" => Box::new(HeuristicBrain::new(5.0)),
         "random" => Box::new(RandomBrain::new(seed)),
-        other => panic!("unknown brain spec `{other}` — try heuristic / random / aether:<path>"),
+        "defender" => Box::new(DefenderBrain::new()),
+        "aggressor" => Box::new(AggressorBrain::new()),
+        "economist" => Box::new(EconomistBrain::new()),
+        "breeder" => Box::new(BreederBrain::new()),
+        "forager" => Box::new(ForagerBrain::new()),
+        "conservative" => Box::new(ConservativeBuilderBrain::new()),
+        other => panic!(
+            "unknown brain spec `{other}` — try heuristic / random / defender / aggressor / \
+             economist / breeder / forager / conservative / aether:<path> / mlp:<path>"
+        ),
     }
 }
 

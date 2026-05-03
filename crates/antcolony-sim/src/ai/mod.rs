@@ -27,7 +27,9 @@ pub mod arbiter;
 pub use arbiter::Arbiter;
 pub use blackboard::{Blackboard, BlackboardSnapshot, Directive, Fact, FactRef};
 pub use brain::{
-    AetherLmBrain, AiBrain, AiDecision, ColonyAiState, HeuristicBrain, MatchStatus, RandomBrain,
+    AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BreederBrain, ColonyAiState,
+    ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain,
+    MatchStatus, MlpBrain, RandomBrain,
 };
 pub use combat::CombatKs;
 pub use forager::ForagerKs;
