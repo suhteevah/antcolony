@@ -381,6 +381,51 @@ impl AiBrain for ConservativeBuilderBrain {
     }
 }
 
+/// TunedBrain — parameterized archetype. Same shape as the named
+/// archetypes (9 floats: caste W/S/B + behavior F/D/N + reaction
+/// LR/FR/FT) but constructed from explicit values instead of a
+/// hardcoded identity. Used by the variant-tournament pipeline to
+/// spin up perturbed strategy variants without recompiling.
+pub struct TunedBrain {
+    label: String,
+    state: BrainInternalState,
+    losses_response: f32,
+    food_response: f32,
+    food_threshold: f32,
+}
+
+impl TunedBrain {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        label: impl Into<String>,
+        worker: f32, soldier: f32, breeder: f32,
+        forage: f32, dig: f32, nurse: f32,
+        losses_response: f32, food_response: f32, food_threshold: f32,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            state: BrainInternalState {
+                caste_ratio_worker: worker,
+                caste_ratio_soldier: soldier,
+                caste_ratio_breeder: breeder,
+                forage_weight: forage,
+                dig_weight: dig,
+                nurse_weight: nurse,
+            },
+            losses_response,
+            food_response,
+            food_threshold,
+        }
+    }
+}
+
+impl AiBrain for TunedBrain {
+    fn name(&self) -> &str { &self.label }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
+        archetype_decide(&mut self.state, s, self.losses_response, self.food_response, self.food_threshold)
+    }
+}
+
 // ============================================================
 // RandomBrain — noise-floor opponent / smoke test.
 // ============================================================

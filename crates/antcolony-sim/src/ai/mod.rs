@@ -29,7 +29,7 @@ pub use blackboard::{Blackboard, BlackboardSnapshot, Directive, Fact, FactRef};
 pub use brain::{
     AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BreederBrain, ColonyAiState,
     ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain,
-    MatchStatus, MlpBrain, RandomBrain,
+    MatchStatus, MlpBrain, RandomBrain, TunedBrain,
 };
 pub use combat::CombatKs;
 pub use forager::ForagerKs;

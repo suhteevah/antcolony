@@ -30,6 +30,7 @@ pub use ai::{
     BreederBrain, Cadence, CombatKs, ColonyAiState, ConservativeBuilderBrain, Contribution,
     DefenderBrain, Directive, EconomistBrain, Fact, FactRef, ForagerBrain, ForagerKs,
     HeuristicBrain, KnowledgeSource, KsName, MatchStatus, MlpBrain, RandomBrain, StrategistKs,
+    TunedBrain,
 };
 pub use ant::{Ant, AntCaste, AntState};
 pub use colony::{BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, PopulationCounts, TechUnlock};

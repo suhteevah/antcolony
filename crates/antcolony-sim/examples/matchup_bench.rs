@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use antcolony_sim::{
     AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BreederBrain, ColonyAiState,
     ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain,
-    MatchStatus, MlpBrain, RandomBrain, Simulation, Topology,
+    MatchStatus, MlpBrain, RandomBrain, Simulation, Topology, TunedBrain,
     config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
 };
 use serde::Serialize;
@@ -121,6 +121,22 @@ fn build_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
             Ok(b) => Box::new(b),
             Err(e) => panic!("failed to load MlpBrain weights from `{rest}`: {e}"),
         };
+    }
+    if let Some(rest) = spec.strip_prefix("tuned:") {
+        // Format: tuned:<label>:w,s,b,f,d,n,lr,fr,ft  (9 floats)
+        let mut parts = rest.splitn(2, ':');
+        let label = parts.next().expect("tuned spec missing label");
+        let nums = parts.next().expect("tuned spec missing 9 floats after label");
+        let vals: Vec<f32> = nums.split(',')
+            .map(|s| s.parse::<f32>().unwrap_or_else(|e| panic!("tuned: bad float `{s}`: {e}")))
+            .collect();
+        assert_eq!(vals.len(), 9, "tuned: expected 9 floats (w,s,b,f,d,n,lr,fr,ft), got {}", vals.len());
+        return Box::new(TunedBrain::new(
+            label,
+            vals[0], vals[1], vals[2],
+            vals[3], vals[4], vals[5],
+            vals[6], vals[7], vals[8],
+        ));
     }
     match spec {
         "heuristic" => Box::new(HeuristicBrain::new(5.0)),
