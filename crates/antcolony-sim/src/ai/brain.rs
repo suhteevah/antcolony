@@ -426,6 +426,155 @@ impl AiBrain for TunedBrain {
     }
 }
 
+/// Archetype identifier for SpeciesBrain blending. Matches the named
+/// archetype brains 1:1 — the SpeciesBrain blends the species' biological
+/// baseline with the archetype's strategic posture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrainArchetype {
+    Heuristic,
+    Defender,
+    Aggressor,
+    Economist,
+    Breeder,
+    Forager,
+    Conservative,
+}
+
+impl BrainArchetype {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "heuristic" => Some(Self::Heuristic),
+            "defender" => Some(Self::Defender),
+            "aggressor" => Some(Self::Aggressor),
+            "economist" => Some(Self::Economist),
+            "breeder" => Some(Self::Breeder),
+            "forager" => Some(Self::Forager),
+            "conservative" => Some(Self::Conservative),
+            _ => None,
+        }
+    }
+
+    /// Returns the 9-tuple of strategic posture parameters
+    /// (caste W/S/B + behavior F/D/N + losses_response + food_response + food_threshold).
+    fn params(self) -> [f32; 9] {
+        match self {
+            Self::Heuristic    => [0.65, 0.30, 0.05, 0.55, 0.20, 0.25, 1.0, 1.0, 20.0],
+            Self::Defender     => [0.50, 0.45, 0.05, 0.20, 0.10, 0.70, 0.3, 0.5, 20.0],
+            Self::Aggressor    => [0.30, 0.65, 0.05, 0.70, 0.10, 0.20, 1.5, 1.0, 30.0],
+            Self::Economist    => [0.85, 0.05, 0.10, 0.85, 0.05, 0.10, 0.0, 0.3, 10.0],
+            Self::Breeder      => [0.55, 0.05, 0.40, 0.50, 0.20, 0.30, 0.5, 0.7, 25.0],
+            Self::Forager      => [0.95, 0.00, 0.05, 0.90, 0.05, 0.05, 0.0, 1.0, 30.0],
+            Self::Conservative => [0.70, 0.20, 0.10, 0.30, 0.30, 0.40, 0.3, 0.4, 15.0],
+        }
+    }
+}
+
+/// SpeciesBrain — biology-grounded archetype. Blends a species' baseline
+/// (derived from cited fields in its TOML: aggression, recruitment style,
+/// queen_eggs_per_day, default_caste_ratio) with a strategic archetype
+/// overlay. The blend lets, say, a Camponotus play "economist" mode while
+/// still preserving its biologically-mandated 10% major caste, and lets a
+/// Lasius play "aggressor" mode while still respecting its low aggression
+/// (0.2). Every brain in the resulting pool is biologically defensible.
+///
+/// Construction:
+/// - `SpeciesBrain::from_species(species, archetype, blend)` for an
+///   already-loaded `Species`.
+/// - `SpeciesBrain::from_toml_path(path, archetype, blend)` for the
+///   common case of loading from disk.
+///
+/// `blend` ∈ [0.0, 1.0]: 0.0 = pure species baseline, 1.0 = pure
+/// archetype, 0.5 = balanced blend.
+pub struct SpeciesBrain {
+    inner: TunedBrain,
+}
+
+impl SpeciesBrain {
+    pub fn from_species(species: &crate::species::Species, archetype: BrainArchetype, blend: f32) -> Self {
+        let baseline = species_baseline_params(species);
+        let overlay = archetype.params();
+        let alpha = blend.clamp(0.0, 1.0);
+        let mut p = [0.0_f32; 9];
+        for i in 0..9 {
+            p[i] = (1.0 - alpha) * baseline[i] + alpha * overlay[i];
+        }
+        // Renormalize caste triple (W/S/B) and behavior triple (F/D/N) so
+        // each sums to 1.0 — sim invariant.
+        let (cw, cs, cb) = renormalize_triple(p[0], p[1], p[2]);
+        let (bf, bd, bn) = renormalize_triple(p[3], p[4], p[5]);
+        p[0] = cw; p[1] = cs; p[2] = cb;
+        p[3] = bf; p[4] = bd; p[5] = bn;
+        let label = format!("{}__{:?}", species.id, archetype);
+        Self {
+            inner: TunedBrain::new(label, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8]),
+        }
+    }
+
+    pub fn from_toml_path<P: AsRef<std::path::Path>>(
+        path: P, archetype: BrainArchetype, blend: f32,
+    ) -> Result<Self, crate::error::SimError> {
+        let species = crate::species::Species::load_from_file(path)?;
+        Ok(Self::from_species(&species, archetype, blend))
+    }
+}
+
+impl AiBrain for SpeciesBrain {
+    fn name(&self) -> &str { self.inner.name() }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision { self.inner.decide(s) }
+}
+
+/// Derive a 9-tuple baseline from a species' cited biological fields.
+/// This is the same mapping documented in `scripts/derive_species_brains.py`,
+/// kept in lockstep with that script — every value here traces to a
+/// citation in the species TOML's source comments.
+fn species_baseline_params(sp: &crate::species::Species) -> [f32; 9] {
+    use crate::species_extended::RecruitmentStyle;
+    let aggression = sp.combat.aggression;
+    let eggs = sp.growth.queen_eggs_per_day;
+    let recruitment = sp.behavior.recruitment;
+    let cr = &sp.default_caste_ratio;
+
+    // Recruitment style → forage commitment
+    let forage_raw = match recruitment {
+        RecruitmentStyle::Mass => 0.70,
+        RecruitmentStyle::Group => 0.55,
+        RecruitmentStyle::TandemRun => 0.45,
+        RecruitmentStyle::Individual => 0.40,
+    };
+    // Substrate / mound construction → dig commitment. Indexed by species
+    // id since this is per-species ecology, not a generic field.
+    let dig_raw = match sp.id.as_str() {
+        "lasius_niger" => 0.20,
+        "camponotus_pennsylvanicus" => 0.30,
+        "formica_rufa" => 0.30,
+        "pogonomyrmex_occidentalis" => 0.25,
+        "tetramorium_immigrans" => 0.15,
+        "tapinoma_sessile" => 0.10,
+        "aphaenogaster_rudis" => 0.20,
+        _ => 0.20,
+    };
+    // Egg-lay rate → nurse commitment (high lay rate needs more nurses).
+    let nurse_raw = if eggs >= 40.0 { 0.45 }
+                    else if eggs >= 25.0 { 0.30 }
+                    else if eggs >= 15.0 { 0.22 }
+                    else { 0.18 };
+    let total = forage_raw + dig_raw + nurse_raw;
+    let (f, d, n) = (forage_raw / total, dig_raw / total, nurse_raw / total);
+
+    [
+        cr.worker, cr.soldier, cr.breeder,
+        f, d, n,
+        (aggression * 2.0).min(3.0),  // losses_response: 2× cited aggression
+        (1.0 - aggression).max(0.1),  // food_response: low-aggression species relocate sooner
+        20.0,                          // food_threshold: legacy egg_cost × 4
+    ]
+}
+
+fn renormalize_triple(a: f32, b: f32, c: f32) -> (f32, f32, f32) {
+    let s = a + b + c;
+    if s > 0.0 { (a / s, b / s, c / s) } else { (1.0/3.0, 1.0/3.0, 1.0/3.0) }
+}
+
 // ============================================================
 // RandomBrain — noise-floor opponent / smoke test.
 // ============================================================

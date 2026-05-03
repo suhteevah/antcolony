@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use antcolony_sim::{
     AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BreederBrain, ColonyAiState,
     ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain,
-    MatchStatus, MlpBrain, RandomBrain, Simulation, Topology, TunedBrain,
+    BrainArchetype, MatchStatus, MlpBrain, RandomBrain, Simulation, SpeciesBrain, Topology, TunedBrain,
     config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
 };
 use serde::Serialize;
@@ -120,6 +120,20 @@ fn build_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
         return match MlpBrain::load(rest, format!("mlp-{seed}")) {
             Ok(b) => Box::new(b),
             Err(e) => panic!("failed to load MlpBrain weights from `{rest}`: {e}"),
+        };
+    }
+    if let Some(rest) = spec.strip_prefix("species:") {
+        // Format: species:<toml_path>:<archetype>[:<blend>]
+        // e.g. species:assets/species/formica_rufa.toml:aggressor:0.5
+        let parts: Vec<&str> = rest.splitn(3, ':').collect();
+        let toml_path = parts.first().expect("species spec missing TOML path");
+        let arch_name = parts.get(1).expect("species spec missing archetype name");
+        let blend: f32 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.5);
+        let archetype = BrainArchetype::from_str(arch_name)
+            .unwrap_or_else(|| panic!("unknown archetype `{arch_name}` in species spec"));
+        return match SpeciesBrain::from_toml_path(toml_path, archetype, blend) {
+            Ok(b) => Box::new(b),
+            Err(e) => panic!("failed to load species TOML `{toml_path}`: {e}"),
         };
     }
     if let Some(rest) = spec.strip_prefix("tuned:") {

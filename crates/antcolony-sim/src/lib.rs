@@ -29,8 +29,8 @@ pub use ai::{
     AetherLmBrain, AggressorBrain, AiBrain, AiDecision, Arbiter, Blackboard, BlackboardSnapshot,
     BreederBrain, Cadence, CombatKs, ColonyAiState, ConservativeBuilderBrain, Contribution,
     DefenderBrain, Directive, EconomistBrain, Fact, FactRef, ForagerBrain, ForagerKs,
-    HeuristicBrain, KnowledgeSource, KsName, MatchStatus, MlpBrain, RandomBrain, StrategistKs,
-    TunedBrain,
+    BrainArchetype, HeuristicBrain, KnowledgeSource, KsName, MatchStatus, MlpBrain, RandomBrain,
+    SpeciesBrain, StrategistKs, TunedBrain,
 };
 pub use ant::{Ant, AntCaste, AntState};
 pub use colony::{BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, PopulationCounts, TechUnlock};
