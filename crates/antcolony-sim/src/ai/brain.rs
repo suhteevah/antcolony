@@ -527,20 +527,33 @@ impl AiBrain for SpeciesBrain {
 /// This is the same mapping documented in `scripts/derive_species_brains.py`,
 /// kept in lockstep with that script — every value here traces to a
 /// citation in the species TOML's source comments.
+///
+/// Phase B hook #14 — `ecological_role.invasive_status` modulates the
+/// strategic baseline. Invasive pests (Linepithema, Solenopsis invicta)
+/// get a 30% expansion+aggression bias; introduced species (Lasius
+/// niger in NA, Tetramorium immigrans) get 10%. This is what drives
+/// real-world displacement — invasives outcompete natives by being
+/// more expansion-aggressive, not by being individually stronger ants.
 fn species_baseline_params(sp: &crate::species::Species) -> [f32; 9] {
-    use crate::species_extended::RecruitmentStyle;
+    use crate::species_extended::{InvasiveStatus, RecruitmentStyle};
     let aggression = sp.combat.aggression;
     let eggs = sp.growth.queen_eggs_per_day;
     let recruitment = sp.behavior.recruitment;
     let cr = &sp.default_caste_ratio;
+    let invasive_bias: f32 = match sp.ecological_role.invasive_status {
+        InvasiveStatus::InvasivePest => 1.3,
+        InvasiveStatus::Introduced => 1.1,
+        InvasiveStatus::Native => 1.0,
+    };
 
-    // Recruitment style → forage commitment
-    let forage_raw = match recruitment {
+    // Recruitment style → forage commitment (modulated by invasive bias)
+    let forage_base = match recruitment {
         RecruitmentStyle::Mass => 0.70,
         RecruitmentStyle::Group => 0.55,
         RecruitmentStyle::TandemRun => 0.45,
         RecruitmentStyle::Individual => 0.40,
     };
+    let forage_raw = (forage_base * invasive_bias).min(0.95);
     // Substrate / mound construction → dig commitment. Indexed by species
     // id since this is per-species ecology, not a generic field.
     let dig_raw = match sp.id.as_str() {
@@ -564,7 +577,7 @@ fn species_baseline_params(sp: &crate::species::Species) -> [f32; 9] {
     [
         cr.worker, cr.soldier, cr.breeder,
         f, d, n,
-        (aggression * 2.0).min(3.0),  // losses_response: 2× cited aggression
+        (aggression * 2.0 * invasive_bias).min(3.0),  // losses_response: 2× cited aggression × invasive bias
         (1.0 - aggression).max(0.1),  // food_response: low-aggression species relocate sooner
         20.0,                          // food_threshold: legacy egg_cost × 4
     ]
