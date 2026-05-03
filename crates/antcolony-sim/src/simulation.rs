@@ -1208,6 +1208,15 @@ impl Simulation {
         let warm_t = cfg.ant.hibernation_warm_threshold_c;
         let is_daytime = self.is_daytime();
         let n = self.ants.len();
+        // Per-colony forage_weight snapshot — read once before the
+        // parallel decision phase, indexed by colony_id. Lets the
+        // decide_next_state Idle→Exploring transition gate on the
+        // brain-set forage probability so brain decisions actually
+        // affect ant behavior (was previously a dead field).
+        let mut forage_by_colony: [f32; 256] = [1.0; 256];
+        for c in &self.colonies {
+            forage_by_colony[c.id as usize] = c.behavior_weights.forage.clamp(0.0, 1.0);
+        }
 
         // Per-ant deterministic RNG seeds, drawn in serial order from
         // the main RNG so the parallel decision phase below is fully
@@ -1253,7 +1262,10 @@ impl Simulation {
                 {
                     h = alarm_h;
                 }
-                let next = decide_next_state(ant, &module.world, &module.pheromones, cfg, is_daytime);
+                let forage_prob = forage_by_colony[ant.colony_id as usize];
+                let next = decide_next_state(
+                    ant, &module.world, &module.pheromones, cfg, is_daytime, forage_prob, &mut local_rng,
+                );
                 (h, next)
             })
             .collect();
@@ -3442,6 +3454,8 @@ fn decide_next_state(
     pher: &PheromoneGrid,
     cfg: &SimConfig,
     is_daytime: bool,
+    forage_prob: f32,
+    rng: &mut ChaCha8Rng,
 ) -> Option<AntState> {
     let (gx, gy) = world.world_to_grid(ant.position);
     if !world.in_bounds(gx, gy) {
@@ -3462,7 +3476,24 @@ fn decide_next_state(
     }
 
     match ant.state {
-        AntState::Idle => Some(AntState::Exploring),
+        AntState::Idle => {
+            // Phase B / brain hook — Idle worker promotes to Exploring
+            // with probability = colony's forage_weight. Lets the AI
+            // brain (or red_ai_tick heuristic) actually throttle the
+            // forager fraction by setting forage_weight in [0,1].
+            // forage_prob == 1.0 reproduces the legacy "always promote"
+            // behavior; lower values keep more workers in-nest as
+            // nurses/diggers.
+            if forage_prob >= 1.0 {
+                return Some(AntState::Exploring);
+            }
+            use rand::Rng;
+            if rng.r#gen::<f32>() < forage_prob {
+                Some(AntState::Exploring)
+            } else {
+                None
+            }
+        }
         AntState::Exploring => {
             if matches!(terrain, Terrain::Food(_)) {
                 return Some(AntState::PickingUpFood);
@@ -5240,17 +5271,41 @@ mod tests {
 
         // Diurnal baseline: Idle worker promotes to Exploring at any time.
         cfg.ant.nocturnal = false;
-        let next_day = decide_next_state(&ant, &world, &pher, &cfg, /* is_daytime */ true);
-        let next_night = decide_next_state(&ant, &world, &pher, &cfg, /* is_daytime */ false);
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        let next_day = decide_next_state(&ant, &world, &pher, &cfg, true, 1.0, &mut rng);
+        let next_night = decide_next_state(&ant, &world, &pher, &cfg, false, 1.0, &mut rng);
         assert_eq!(next_day, Some(AntState::Exploring));
         assert_eq!(next_night, Some(AntState::Exploring));
 
         // Nocturnal: Idle worker stays Idle during the day, leaves at night.
         cfg.ant.nocturnal = true;
-        let next_day = decide_next_state(&ant, &world, &pher, &cfg, /* is_daytime */ true);
-        let next_night = decide_next_state(&ant, &world, &pher, &cfg, /* is_daytime */ false);
+        let next_day = decide_next_state(&ant, &world, &pher, &cfg, true, 1.0, &mut rng);
+        let next_night = decide_next_state(&ant, &world, &pher, &cfg, false, 1.0, &mut rng);
         assert_eq!(next_day, None, "nocturnal Idle worker should not transition during day");
         assert_eq!(next_night, Some(AntState::Exploring), "nocturnal worker emerges at night");
+    }
+
+    /// Phase B brain hook — forage_weight on the colony actually
+    /// throttles the Idle→Exploring transition. forage_prob=0 means
+    /// no Idle worker promotes; forage_prob=1 reproduces legacy
+    /// always-promote.
+    #[test]
+    fn forage_prob_zero_keeps_workers_idle() {
+        use crate::config::SimConfig;
+        let world = WorldGrid::new(20, 20);
+        let pher = PheromoneGrid::new(20, 20);
+        let cfg = SimConfig::default();
+        let mut ant = Ant::new_worker(1, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
+        ant.state = AntState::Idle;
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        // forage_prob = 0 → 100 trials, all should return None.
+        for _ in 0..100 {
+            let next = decide_next_state(&ant, &world, &pher, &cfg, true, 0.0, &mut rng);
+            assert_eq!(next, None, "forage_prob=0 should never promote Idle");
+        }
+        // forage_prob = 1 → always promotes.
+        let next = decide_next_state(&ant, &world, &pher, &cfg, true, 1.0, &mut rng);
+        assert_eq!(next, Some(AntState::Exploring));
     }
 
     /// Phase B hook #4 — stinging species damage predators per bite.
