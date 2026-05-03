@@ -234,16 +234,31 @@ fn main() -> anyhow::Result<()> {
         }
 
         // Patch trajectory outcomes now that we know the result.
+        // Decisive winner: 1.0 / 0.0 split. Timeout / draw: graded by
+        // end-state worker ratio so trajectories still carry supervision
+        // signal even when no colony died (which is the common case at
+        // current sim balance — matches usually timeout rather than
+        // resolve). The graded signal means a colony that ended a
+        // timeout with 12 vs 4 workers gets outcome = 0.75 (still
+        // a "winner" signal even without a queen kill).
         let (status_str, winner) = match final_status {
             MatchStatus::Won { winner, .. } => ("won".to_string(), Some(winner)),
             MatchStatus::Draw { .. } => ("draw".to_string(), None),
             MatchStatus::InProgress => ("timeout".to_string(), None),
         };
+        let workers_left = sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0);
+        let workers_right = sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0);
+        let total_workers = (workers_left + workers_right).max(1) as f32;
+        let timeout_outcome_left = workers_left as f32 / total_workers;
         for t in &mut trajectories {
-            t.outcome_for_this_colony = match (winner, t.colony) {
-                (Some(w), c) if w == c => 1.0,
-                (Some(_), _) => 0.0,
-                _ => 0.5,
+            t.outcome_for_this_colony = match winner {
+                Some(w) if w == t.colony => 1.0,
+                Some(_) => 0.0,
+                None => {
+                    // Graded by end-state worker share for this colony.
+                    if t.colony == 0 { timeout_outcome_left }
+                    else { 1.0 - timeout_outcome_left }
+                }
             };
         }
 
