@@ -270,46 +270,144 @@ impl AiBrain for RandomBrain {
 // AetherLmBrain — STUB. Trained checkpoint integration.
 // ============================================================
 
-/// Aether-LM-backed brain. Loads a checkpoint produced by
-/// `J:/aether/target/release/aether-train.exe` and runs inference per
-/// decision tick.
+/// Aether-LM-backed brain. Serializes `ColonyAiState` to a text prompt,
+/// invokes `aether-infer.exe` with the prompt, parses the completion
+/// back into an `AiDecision`.
 ///
-/// # Status: STUB
+/// # Status: integration ready, no checkpoint yet
 ///
-/// The integration point and signature are in place; the actual model
-/// call is `todo!()` because we have no trained checkpoint yet. To wire
-/// this for real:
-/// 1. Define a state-feature serializer (`ColonyAiState` → fixed-length
-///    f32 vector). Aether's tokenizer expects either text or a numeric
-///    sequence — pick the format you train against.
-/// 2. Define a decision deserializer (model output → `AiDecision`).
-///    Recommended: 7 sigmoid'd outputs (3 caste + 3 weight + 1 research
-///    softmax index) → renormalize → AiDecision.
-/// 3. Replace `decide`'s `todo!()` with a call to either:
-///    - In-process: link `aether_runtime` and call its inference API
-///      directly (best perf; requires aether to expose a Rust API).
-///    - Out-of-process: shell out to `aether-infer.exe` per tick (slow;
-///      easy to get wrong; only good for prototyping).
+/// The serialization round-trip + subprocess plumbing are in place. If
+/// the configured `aether_infer_exe` or `checkpoint_path` is missing,
+/// `decide()` falls back to a safe deterministic default and logs a
+/// warning — so a misconfigured PvP setup won't crash, just won't learn.
 ///
-/// # Self-play data
+/// # Wire format
 ///
-/// Once this brain is in place, the AI-vs-AI bench harness's
-/// `--dump-trajectories <path>` flag should be added to write
-/// `(state, decision, outcome)` triples to JSONL — that's the training
-/// corpus for the next iteration.
+/// Prompt (one line):
+/// ```text
+/// state food=100.0 inflow=0.5 workers=30 soldiers=5 breeders=1 \
+///       eggs=10 larvae=5 pupae=5 queens=1 losses=0 ed=inf ew=0 es=0 \
+///       doy=150 t=22.0 dia=0 day=1 action=
+/// ```
+/// (the trailing `action=` cues the model to complete the action).
+///
+/// Completion expected as:
+/// ```text
+/// w:0.65 s:0.30 b:0.05 f:0.55 d:0.20 n:0.25 r:none
+/// ```
+/// Robust to extra whitespace + trailing tokens. Missing fields fall
+/// back to safe defaults.
+///
+/// # Future
+///
+/// In-process integration once aether exposes a Rust API would skip the
+/// subprocess overhead entirely. The `to_prompt` / `from_completion`
+/// helpers are public so a future in-process binding can reuse them.
 pub struct AetherLmBrain {
     pub checkpoint_path: std::path::PathBuf,
+    pub aether_infer_exe: std::path::PathBuf,
     pub label: String,
+    /// How many output tokens to ask aether-infer for. The wire format
+    /// above fits in ~30 tokens.
+    pub max_new_tokens: u32,
+    /// Number of consecutive infer failures before we stop trying and
+    /// fall back permanently for the rest of the run.
+    pub failure_budget: u32,
+    /// Internal counter — reaches 0, brain stops shelling out.
+    failures_remaining: u32,
 }
 
 impl AetherLmBrain {
-    /// Construct a brain pointing at a checkpoint. Doesn't load until
-    /// first `decide()` call (lazy — keeps Simulation construction cheap).
+    /// Construct with default `aether-infer.exe` path (`J:/aether/target/release/aether-infer.exe`).
     pub fn new(checkpoint_path: impl Into<std::path::PathBuf>, label: impl Into<String>) -> Self {
         Self {
             checkpoint_path: checkpoint_path.into(),
+            aether_infer_exe: std::path::PathBuf::from("J:/aether/target/release/aether-infer.exe"),
             label: label.into(),
+            max_new_tokens: 40,
+            failure_budget: 3,
+            failures_remaining: 3,
         }
+    }
+
+    /// Override the path to `aether-infer.exe`.
+    pub fn with_exe(mut self, exe: impl Into<std::path::PathBuf>) -> Self {
+        self.aether_infer_exe = exe.into();
+        self
+    }
+}
+
+/// Format a `ColonyAiState` as a single-line aether prompt. Public so
+/// future in-process integration + tests can share the format.
+pub fn state_to_prompt(s: &ColonyAiState) -> String {
+    let ed = if s.enemy_distance_min.is_finite() {
+        format!("{:.1}", s.enemy_distance_min)
+    } else {
+        "inf".to_string()
+    };
+    format!(
+        "state food={:.1} inflow={:.2} workers={} soldiers={} breeders={} \
+         eggs={} larvae={} pupae={} queens={} losses={} ed={} ew={} es={} \
+         doy={} t={:.1} dia={} day={} action=",
+        s.food_stored, s.food_inflow_recent,
+        s.worker_count, s.soldier_count, s.breeder_count,
+        s.brood_egg, s.brood_larva, s.brood_pupa, s.queens_alive,
+        s.combat_losses_recent, ed, s.enemy_worker_count, s.enemy_soldier_count,
+        s.day_of_year, s.ambient_temp_c,
+        s.diapause_active as u8, s.is_daytime as u8,
+    )
+}
+
+/// Parse an aether-infer completion into an `AiDecision`. Returns `None`
+/// if the completion is unparseable enough that defaults are safer.
+pub fn completion_to_decision(completion: &str) -> Option<AiDecision> {
+    let mut w = None;
+    let mut s = None;
+    let mut b = None;
+    let mut f = None;
+    let mut d = None;
+    let mut n = None;
+    for tok in completion.split_whitespace() {
+        let Some((k, v)) = tok.split_once(':') else { continue };
+        let parsed: Option<f32> = v.parse().ok();
+        match (k, parsed) {
+            ("w", Some(x)) => w = Some(x),
+            ("s", Some(x)) => s = Some(x),
+            ("b", Some(x)) => b = Some(x),
+            ("f", Some(x)) => f = Some(x),
+            ("d", Some(x)) => d = Some(x),
+            ("n", Some(x)) => n = Some(x),
+            _ => {}
+        }
+    }
+    // Need at least one caste field AND one weight field to consider it
+    // a valid completion. Missing fields use safe defaults.
+    if w.is_none() && s.is_none() && b.is_none() {
+        return None;
+    }
+    if f.is_none() && d.is_none() && n.is_none() {
+        return None;
+    }
+    Some(AiDecision {
+        caste_ratio_worker: w.unwrap_or(0.7).clamp(0.0, 1.0),
+        caste_ratio_soldier: s.unwrap_or(0.25).clamp(0.0, 1.0),
+        caste_ratio_breeder: b.unwrap_or(0.05).clamp(0.0, 1.0),
+        forage_weight: f.unwrap_or(0.5).clamp(0.0, 1.0),
+        dig_weight: d.unwrap_or(0.2).clamp(0.0, 1.0),
+        nurse_weight: n.unwrap_or(0.3).clamp(0.0, 1.0),
+        research_choice: None,
+    })
+}
+
+fn safe_default_decision() -> AiDecision {
+    AiDecision {
+        caste_ratio_worker: 0.7,
+        caste_ratio_soldier: 0.25,
+        caste_ratio_breeder: 0.05,
+        forage_weight: 0.5,
+        dig_weight: 0.2,
+        nurse_weight: 0.3,
+        research_choice: None,
     }
 }
 
@@ -318,22 +416,101 @@ impl AiBrain for AetherLmBrain {
         &self.label
     }
 
-    fn decide(&mut self, _state: &ColonyAiState) -> AiDecision {
-        // TODO(ai): wire to aether-runtime / aether-infer. See doc above.
-        // Until we have a trained checkpoint, fall back to a deterministic
-        // safe default so a misconfigured PvP setup doesn't crash.
-        tracing::warn!(
-            checkpoint = %self.checkpoint_path.display(),
-            "AetherLmBrain::decide — STUB; returning default. Wire integration before relying on this brain."
-        );
-        AiDecision {
-            caste_ratio_worker: 0.7,
-            caste_ratio_soldier: 0.25,
-            caste_ratio_breeder: 0.05,
-            forage_weight: 0.5,
-            dig_weight: 0.2,
-            nurse_weight: 0.3,
-            research_choice: None,
+    fn decide(&mut self, state: &ColonyAiState) -> AiDecision {
+        if self.failures_remaining == 0 {
+            return safe_default_decision();
+        }
+        if !self.aether_infer_exe.exists() {
+            tracing::warn!(
+                exe = %self.aether_infer_exe.display(),
+                "AetherLmBrain: aether-infer.exe not found — falling back to safe default for the rest of the run",
+            );
+            self.failures_remaining = 0;
+            return safe_default_decision();
+        }
+        // aether stores checkpoints as `<base>.weights` + `<base>.meta`,
+        // so `--ckpt foo/bar` corresponds to files `foo/bar.weights` and
+        // `foo/bar.meta`. Probe the .weights file since it's the bigger
+        // one and unambiguously identifies a real checkpoint.
+        let weights_file = {
+            let mut p = self.checkpoint_path.clone();
+            let new_name = format!(
+                "{}.weights",
+                p.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+            );
+            p.set_file_name(new_name);
+            p
+        };
+        if !weights_file.exists() {
+            tracing::warn!(
+                ckpt = %self.checkpoint_path.display(),
+                weights_probe = %weights_file.display(),
+                "AetherLmBrain: checkpoint not found — falling back to safe default for the rest of the run",
+            );
+            self.failures_remaining = 0;
+            return safe_default_decision();
+        }
+        let prompt = state_to_prompt(state);
+        // aether-infer requires its --ckpt argument to be relative to
+        // the cwd it's spawned in (aether refuses paths that "escape
+        // cwd"). We pass the canonical absolute exe path but set the
+        // subprocess cwd to the exe's grandparent (e.g. J:/aether/),
+        // and rewrite the ckpt arg to be relative to that.
+        let exe_canon = self
+            .aether_infer_exe
+            .canonicalize()
+            .unwrap_or_else(|_| self.aether_infer_exe.clone());
+        // exe is at <aether_root>/target/release/aether-infer.exe → root is two parents up.
+        let aether_root = exe_canon
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let ckpt_canon = self
+            .checkpoint_path
+            .canonicalize()
+            .unwrap_or_else(|_| self.checkpoint_path.clone());
+        let ckpt_rel = ckpt_canon
+            .strip_prefix(&aether_root)
+            .map(|p| p.to_path_buf())
+            .unwrap_or(self.checkpoint_path.clone());
+        let output = match std::process::Command::new(&exe_canon)
+            .current_dir(&aether_root)
+            .arg("--ckpt").arg(&ckpt_rel)
+            .arg("--prompt").arg(&prompt)
+            .arg("--max-new").arg(self.max_new_tokens.to_string())
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!(error = %e, "AetherLmBrain: aether-infer spawn failed");
+                self.failures_remaining = self.failures_remaining.saturating_sub(1);
+                return safe_default_decision();
+            }
+        };
+        if !output.status.success() {
+            tracing::warn!(
+                status = ?output.status,
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "AetherLmBrain: aether-infer non-zero exit",
+            );
+            self.failures_remaining = self.failures_remaining.saturating_sub(1);
+            return safe_default_decision();
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Strip the prompt prefix from completion if aether-infer echoes it.
+        let completion = stdout.strip_prefix(&prompt).unwrap_or(&stdout);
+        match completion_to_decision(completion) {
+            Some(d) => d,
+            None => {
+                tracing::warn!(
+                    completion = %completion.chars().take(80).collect::<String>(),
+                    "AetherLmBrain: completion unparseable — using safe default",
+                );
+                self.failures_remaining = self.failures_remaining.saturating_sub(1);
+                safe_default_decision()
+            }
         }
     }
 }
@@ -438,7 +615,64 @@ mod tests {
     fn aether_brain_stub_returns_safe_default() {
         let mut b = AetherLmBrain::new("nonexistent/checkpoint", "aether-test");
         let d = b.decide(&neutral_state());
-        assert!(d.is_valid(), "stub must return a valid decision");
+        assert!(d.is_valid(), "missing exe/ckpt must return a valid safe-default decision");
         assert_eq!(b.name(), "aether-test");
+    }
+
+    #[test]
+    fn aether_state_to_prompt_has_required_fields() {
+        let p = state_to_prompt(&neutral_state());
+        // Spot-check a handful of fields show up in the right format.
+        assert!(p.starts_with("state food="), "prompt: {p}");
+        assert!(p.ends_with("action="), "prompt should cue completion: {p}");
+        assert!(p.contains("workers=30"), "prompt missing workers field: {p}");
+        assert!(p.contains("queens=1"), "prompt missing queens field: {p}");
+        assert!(p.contains("ed=inf"), "prompt should encode infinite enemy distance as 'inf'");
+    }
+
+    #[test]
+    fn aether_completion_to_decision_parses_well_formed() {
+        let c = "w:0.6 s:0.3 b:0.1 f:0.4 d:0.2 n:0.4 r:none";
+        let d = completion_to_decision(c).expect("well-formed completion");
+        assert!(d.is_valid());
+        assert!((d.caste_ratio_worker - 0.6).abs() < 1e-5);
+        assert!((d.caste_ratio_soldier - 0.3).abs() < 1e-5);
+        assert!((d.forage_weight - 0.4).abs() < 1e-5);
+    }
+
+    #[test]
+    fn aether_completion_to_decision_rejects_empty_or_partial() {
+        // Missing both caste fields AND weight fields → None.
+        assert!(completion_to_decision("garbage no:colon r:none").is_none());
+        // Has caste but no weight → None.
+        assert!(completion_to_decision("w:0.6 s:0.3 b:0.1").is_none());
+        // Has weight but no caste → None.
+        assert!(completion_to_decision("f:0.4 d:0.2 n:0.4").is_none());
+    }
+
+    #[test]
+    fn aether_completion_to_decision_clamps_out_of_range() {
+        // Out-of-band values clamp into [0,1].
+        let c = "w:1.5 s:-0.2 b:0.05 f:2.0 d:0.2 n:-1.0";
+        let d = completion_to_decision(c).expect("partial-band still parses");
+        assert_eq!(d.caste_ratio_worker, 1.0);
+        assert_eq!(d.caste_ratio_soldier, 0.0);
+        assert_eq!(d.forage_weight, 1.0);
+        assert_eq!(d.nurse_weight, 0.0);
+    }
+
+    #[test]
+    fn aether_round_trip_preserves_state_essentials() {
+        // Spot check that a state's salient numbers survive the prompt format
+        // — the model itself is what learns the input, but the format must
+        // be lossless enough that we can train on it.
+        let mut s = neutral_state();
+        s.food_stored = 73.5;
+        s.worker_count = 142;
+        s.combat_losses_recent = 7;
+        let p = state_to_prompt(&s);
+        assert!(p.contains("food=73.5"));
+        assert!(p.contains("workers=142"));
+        assert!(p.contains("losses=7"));
     }
 }
