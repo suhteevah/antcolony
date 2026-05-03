@@ -376,6 +376,10 @@ impl Simulation {
         let Some(c) = self.colonies.iter_mut().find(|c| c.id == colony_id) else {
             return;
         };
+        // Mark the colony as externally-driven so the legacy red_ai_tick
+        // heuristic skips it on subsequent ticks (otherwise the brain's
+        // decisions get overwritten every tick by the heuristic loop).
+        c.external_brain = true;
         let csum = (decision.caste_ratio_worker
             + decision.caste_ratio_soldier
             + decision.caste_ratio_breeder)
@@ -2585,6 +2589,15 @@ impl Simulation {
     pub fn red_ai_tick(&mut self) {
         let low_food = self.config.colony.egg_cost * 4.0;
         for c in self.colonies.iter_mut() {
+            // External brains (Aether-LM, Random, etc.) drive their own
+            // colony's caste_ratio + behavior_weights via apply_ai_decision.
+            // Skipping the legacy heuristic loop for those colonies
+            // prevents the brain's per-N-tick decisions from being
+            // overwritten every tick by the heuristic.
+            if c.external_brain {
+                c.combat_losses_this_tick = 0;
+                continue;
+            }
             if c.is_ai_controlled {
                 // Taking losses → shift toward soldiers (cap 0.5).
                 if c.combat_losses_this_tick > 0 {

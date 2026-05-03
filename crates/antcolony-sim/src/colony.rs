@@ -159,6 +159,14 @@ pub struct ColonyState {
     /// human player. Flips the economy's behavior/caste auto-adjust on.
     #[serde(default)]
     pub is_ai_controlled: bool,
+    /// AI-vs-AI MVP: this colony has an EXTERNAL `AiBrain` controlling
+    /// its caste_ratio + behavior_weights via `apply_ai_decision`. When
+    /// true, the legacy `red_ai_tick` SKIPS this colony so the brain's
+    /// per-N-tick decisions aren't overwritten every tick by the
+    /// heuristic loop. Set automatically the first time
+    /// `apply_ai_decision` is called for this colony.
+    #[serde(default)]
+    pub external_brain: bool,
     /// P4: cross-colony kills the sim has resolved against this colony
     /// so far. Cumulative.
     #[serde(default)]
@@ -215,6 +223,7 @@ impl ColonyState {
             nuptial_predation_deaths: 0,
             last_nuptial_flight_tick: 0,
             is_ai_controlled: false,
+            external_brain: false,
             combat_losses: 0,
             combat_kills: 0,
             combat_losses_this_tick: 0,

@@ -32,13 +32,13 @@ foreach ($ckpt in $ckpts) {
     Write-Output "=========================="
     $weights = "checkpoints\$ckpt.weights"
     if (-not (Test-Path $weights)) {
-        Write-Output "  (skipped — weights file missing)"
+        Write-Output "  (skipped: weights file missing)"
         continue
     }
     foreach ($p in $prompts) {
-        $label = if ($p.Contains("losses=8")) { "[under attack]" }
-                 elseif ($p.Contains("food=5.0")) { "[starving]" }
-                 else { "[healthy mid-game]" }
+        $label = if ($p.Contains('losses=8')) { '[under attack]' }
+                 elseif ($p.Contains('food=5.0')) { '[starving]' }
+                 else { '[healthy mid-game]' }
         Write-Output ""
         Write-Output "--- prompt $label ---"
         Write-Output "  $p"
