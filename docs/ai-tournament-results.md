@@ -104,7 +104,29 @@ Ran one DAgger pass via `scripts/dagger_iteration.ps1`:
 
 **Uniform +5pp lift across every opponent.** DAgger works. The MLP went from "below all archetypes" to "ties Aggressor + closes the gap on the rest."
 
-Subsequent DAgger iterations should continue this trajectory — the next session work is to run iterations 2, 3, 4, etc. and watch when the model crosses 50% mean. From there, evolutionary self-play (3-5 trained MLPs compete, pick the best, retrain) is the next axis.
+## DAgger iteration 2 — RAN, regressed to baseline
+
+Tried naive corpus accumulation (DAgger v1 corpus + v2 self-play trajectories combined, retrained):
+
+| Opponent | Tournament | DAgger v1 | DAgger v2 |
+|---|---|---|---|
+| aggressor | 9/20 | **10/20** | 9/20 |
+| heuristic | 8/20 | 9/20 | 8/20 |
+| defender | 8/20 | 9/20 | 8/20 |
+| conservative | 7/20 | 8/20 | 7/20 |
+| economist | 6/20 | 7/20 | 6/20 |
+| breeder | 6/20 | 7/20 | 6/20 |
+| forager | 6/20 | 7/20 | 6/20 |
+| **Mean** | 35.7% | **40.7%** | 35.7% |
+
+V2 regressed to baseline. Training loss went DOWN (0.0266 → 0.0256, model fits data better) but match outcomes WORSENED. Diagnosis: naive corpus accumulation overfits to the model's own previous behavior at the cost of strategic diversity. The model learned to imitate "what DAgger v1 MLP did" — but DAgger v1 MLP was already the model that produced this data, so the supervision is a stale loop.
+
+**The fix isn't more data; it's the right kind of data:**
+1. **Replace, don't accumulate.** Each iteration generates fresh trajectories from the current model and trains on those alone (no carryover). Keeps the corpus reflective of the current strategy distribution.
+2. **Add opponent variants.** Train new tuned-archetype variants (aggressive-defender, expansionist-economist, etc.) and re-tournament — broadens the strategic space.
+3. **Switch to proper RL.** Replace behavior cloning with PPO or REINFORCE. Reward = match outcome. The model learns "what wins from THIS state" rather than "what previous-version-of-me did from this state." Real ML work; needs separate trainer (Python+PyTorch CUDA is the natural fit).
+
+For this session: the **7 archetypes + GPU MLP + tournament harness + DAgger pipeline** all work. DAgger v1 demonstrably moves the model. The path past v1 is a known-shape problem (above options).
 
 ---
 
