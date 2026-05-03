@@ -126,7 +126,29 @@ V2 regressed to baseline. Training loss went DOWN (0.0266 → 0.0256, model fits
 2. **Add opponent variants.** Train new tuned-archetype variants (aggressive-defender, expansionist-economist, etc.) and re-tournament — broadens the strategic space.
 3. **Switch to proper RL.** Replace behavior cloning with PPO or REINFORCE. Reward = match outcome. The model learns "what wins from THIS state" rather than "what previous-version-of-me did from this state." Real ML work; needs separate trainer (Python+PyTorch CUDA is the natural fit).
 
-For this session: the **7 archetypes + GPU MLP + tournament harness + DAgger pipeline** all work. DAgger v1 demonstrably moves the model. The path past v1 is a known-shape problem (above options).
+## DAgger iteration 3 — Replacement test, also regressed
+
+Tested option 1 directly. `scripts/dagger_iteration_v3.ps1` ran the same loop as v2 but kept ONLY the new self-play trajectories (16 matches per pairing → ~14k records, no carryover from tournament corpus). Result:
+
+| Run | Mean win rate | Loss | Notes |
+|---|---|---|---|
+| Tournament v1 (bootstrap MLP) | 35.7% | 0.018 | baseline |
+| DAgger v1 (tournament + self-play) | **40.7%** | 0.027 | one-shot lift |
+| DAgger v2 (accumulation: tournament + v1 self-play) | 35.7% | 0.026 | regressed |
+| DAgger v3 (replacement: v1 self-play only) | 35.7% | 0.017 | regressed |
+
+V3 has the LOWEST training loss (0.017 — model fits its self-play data tightly) but match outcomes match the bootstrap baseline. So:
+
+- Replacement vs accumulation isn't the discriminating axis.
+- The +5pp lift in v1 came from the **first injection** of self-play on top of the diverse tournament corpus. Both subsequent iterations (whether they keep tournament data or drop it) plateau because the opponent pool is fixed and the model is no longer expanding its strategic vocabulary.
+
+**Behavior cloning from a fixed teacher pool plateaus at ~40% mean win rate against that pool.** Real-ML-finding-grade result. Three paths to break the plateau (in increasing order of effort):
+
+1. **Evolve the opponent pool** — generate 3-5 tuned variants of each archetype per iteration, re-tournament. The "strategic frontier" advances each pass.
+2. **Switch to RL** — PPO/REINFORCE in Python with `outcome` as reward. ~1-2 days of new code; uses the existing matchup_bench as the environment.
+3. **Tune sim balance** — current matches are dominated by combat (most archetypes converge to 6-9 worker outcomes). If the sim rewarded economic strategies more sharply (food accumulation as a separate win condition?) the strategic space would naturally diversify.
+
+For this session: the **7 archetypes + GPU MLP + tournament harness + DAgger pipeline** all work. DAgger v1's +5pp lift demonstrates that self-play CAN move the model. Beyond v1 needs structural changes (opponent diversity OR algorithm), not just more data.
 
 ---
 
