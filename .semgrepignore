@@ -9,12 +9,16 @@
 
 # Developer CLI binaries — operator-typed file paths are by design.
 crates/antcolony-sim/src/bin/
+**/src/bin/
+**/bin/
 
 # Headless examples / harnesses — same reason.
 crates/antcolony-sim/examples/
+**/examples/
 
 # Test files — test fixtures intentionally exercise edge inputs.
 crates/*/tests/
+**/tests/
 tests/
 
 # Build artifacts / generated.

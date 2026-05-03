@@ -17,6 +17,7 @@
 //! commit once the v2 validation sweep clears the binary lock.
 
 pub mod blackboard;
+pub mod brain;
 pub mod knowledge_source;
 pub mod strategist;
 pub mod forager;
@@ -25,6 +26,9 @@ pub mod arbiter;
 
 pub use arbiter::Arbiter;
 pub use blackboard::{Blackboard, BlackboardSnapshot, Directive, Fact, FactRef};
+pub use brain::{
+    AetherLmBrain, AiBrain, AiDecision, ColonyAiState, HeuristicBrain, MatchStatus, RandomBrain,
+};
 pub use combat::CombatKs;
 pub use forager::ForagerKs;
 pub use knowledge_source::{Cadence, Contribution, KnowledgeSource, KsName};

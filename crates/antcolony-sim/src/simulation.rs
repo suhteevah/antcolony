@@ -170,10 +170,10 @@ impl Simulation {
     }
 
     /// Phase 4 entry point: build a sim with TWO colonies sharing a
-    /// topology. Colony 0 (black) spawns on `nest_black_module` (default 0).
-    /// Colony 1 (red) is AI-controlled and spawns on `nest_red_module`
-    /// (default 2, i.e. the far nest in `two_colony_arena`). Initial
-    /// populations for each come from `config.ant.initial_count`.
+    /// topology. Colony 0 (black) is the player by default; colony 1
+    /// (red) is AI-controlled. For AI-vs-AI mode use
+    /// [`Self::new_ai_vs_ai_with_topology`] which flips colony 0 to
+    /// AI as well — same body, different default for `is_ai_controlled`.
     pub fn new_two_colony_with_topology(
         config: SimConfig,
         mut topology: Topology,
@@ -269,6 +269,170 @@ impl Simulation {
             next_beacon_id: 0,
             excavation_events: Vec::new(),
         }
+    }
+
+    /// Match-end detection for AI-vs-AI / 2-colony modes. Returns
+    /// `MatchStatus::InProgress` while both colonies have at least one
+    /// queen + at least one adult ant. Transitions to `Won` when exactly
+    /// one colony loses its last queen, or to `Draw` when both die on
+    /// the same tick.
+    ///
+    /// Cheap to call every tick — O(colonies + ants).
+    pub fn match_status(&self) -> crate::ai::MatchStatus {
+        if self.colonies.len() < 2 {
+            return crate::ai::MatchStatus::InProgress;
+        }
+        let queens_per_colony = |cid: u8| -> u32 {
+            self.ants
+                .iter()
+                .filter(|a| a.colony_id == cid && matches!(a.caste, AntCaste::Queen))
+                .count() as u32
+        };
+        let alive = |cid: u8| -> bool {
+            let c = &self.colonies[cid as usize];
+            queens_per_colony(cid) > 0 && c.adult_total() > 0
+        };
+        let a_alive = alive(0);
+        let b_alive = alive(1);
+        match (a_alive, b_alive) {
+            (true, true) => crate::ai::MatchStatus::InProgress,
+            (true, false) => crate::ai::MatchStatus::Won {
+                winner: 0,
+                loser: 1,
+                ended_at_tick: self.tick,
+            },
+            (false, true) => crate::ai::MatchStatus::Won {
+                winner: 1,
+                loser: 0,
+                ended_at_tick: self.tick,
+            },
+            (false, false) => crate::ai::MatchStatus::Draw {
+                ended_at_tick: self.tick,
+            },
+        }
+    }
+
+    /// Snapshot a colony's state into the brain-friendly feature vector.
+    /// Used by AI-brain plumbing in AI-vs-AI mode.
+    pub fn colony_ai_state(&self, colony_id: u8) -> Option<crate::ai::ColonyAiState> {
+        let c = self.colonies.iter().find(|c| c.id == colony_id)?;
+        // Compute enemy distance + count from THIS colony's perspective.
+        let mut enemy_distance_min = f32::INFINITY;
+        let mut enemy_worker = 0u32;
+        let mut enemy_soldier = 0u32;
+        let queens_alive = self
+            .ants
+            .iter()
+            .filter(|a| a.colony_id == colony_id && matches!(a.caste, AntCaste::Queen))
+            .count() as u32;
+        // Cheap heuristic: take any ant from this colony as the "viewpoint."
+        // For enemy distance we use min over all enemy ants on the same module.
+        let viewpoint = self.ants.iter().find(|a| a.colony_id == colony_id);
+        for ant in &self.ants {
+            if ant.colony_id == colony_id {
+                continue;
+            }
+            match ant.caste {
+                AntCaste::Worker => enemy_worker += 1,
+                AntCaste::Soldier => enemy_soldier += 1,
+                _ => {}
+            }
+            if let Some(vp) = viewpoint {
+                if ant.module_id == vp.module_id {
+                    let d = (ant.position - vp.position).length();
+                    if d < enemy_distance_min {
+                        enemy_distance_min = d;
+                    }
+                }
+            }
+        }
+        let diapause_active = self.ambient_temp_c() < self.config.ant.hibernation_cold_threshold_c;
+        Some(crate::ai::ColonyAiState {
+            food_stored: c.food_stored,
+            food_inflow_recent: c.food_inflow_recent,
+            worker_count: c.population.workers,
+            soldier_count: c.population.soldiers,
+            breeder_count: c.population.breeders,
+            brood_egg: c.eggs,
+            brood_larva: c.larvae,
+            brood_pupa: c.pupae,
+            queens_alive,
+            combat_losses_recent: c.combat_losses_this_tick,
+            enemy_distance_min,
+            enemy_worker_count: enemy_worker,
+            enemy_soldier_count: enemy_soldier,
+            day_of_year: self.day_of_year(),
+            ambient_temp_c: self.ambient_temp_c(),
+            diapause_active,
+            is_daytime: self.is_daytime(),
+        })
+    }
+
+    /// Apply a brain-emitted `AiDecision` to a colony. Renormalizes the
+    /// caste ratio + behavior weights so the values sum to 1.0 (brains
+    /// may emit any non-negative split; we don't punish them for not
+    /// summing perfectly).
+    pub fn apply_ai_decision(&mut self, colony_id: u8, decision: &crate::ai::AiDecision) {
+        let Some(c) = self.colonies.iter_mut().find(|c| c.id == colony_id) else {
+            return;
+        };
+        let csum = (decision.caste_ratio_worker
+            + decision.caste_ratio_soldier
+            + decision.caste_ratio_breeder)
+            .max(1e-6);
+        c.caste_ratio.worker = decision.caste_ratio_worker / csum;
+        c.caste_ratio.soldier = decision.caste_ratio_soldier / csum;
+        c.caste_ratio.breeder = decision.caste_ratio_breeder / csum;
+        let wsum =
+            (decision.forage_weight + decision.dig_weight + decision.nurse_weight).max(1e-6);
+        c.behavior_weights.forage = decision.forage_weight / wsum;
+        c.behavior_weights.dig = decision.dig_weight / wsum;
+        c.behavior_weights.nurse = decision.nurse_weight / wsum;
+        if let Some(tech) = decision.research_choice {
+            // Idempotent: ColonyState dedupes via Vec contains.
+            if !c.tech_unlocks.contains(&tech) {
+                c.tech_unlocks.push(tech);
+            }
+        }
+    }
+
+    /// AI-vs-AI mode constructor — same as `new_two_colony_with_topology`
+    /// but flips both colonies' `is_ai_controlled = true` so the
+    /// existing per-tick AI brain (`red_ai_tick`) acts on both sides.
+    /// Use this for headless matchup benches and for the in-editor
+    /// "AI vs AI" observer mode.
+    ///
+    /// Cross-ref: `docs/biology-roadmap.md` §"Beyond MVP" (PvP / AI vs AI).
+    pub fn new_ai_vs_ai_with_topology(
+        config: SimConfig,
+        topology: Topology,
+        seed: u64,
+        nest_black_module: ModuleId,
+        nest_red_module: ModuleId,
+    ) -> Self {
+        let mut sim = Self::new_two_colony_with_topology(
+            config,
+            topology,
+            seed,
+            nest_black_module,
+            nest_red_module,
+        );
+        // Promote colony 0 to AI as well.
+        if let Some(c0) = sim.colonies.get_mut(0) {
+            c0.is_ai_controlled = true;
+            // Match colony 1's defensive lean so neither side has a
+            // structural caste-ratio advantage at start.
+            c0.caste_ratio = CasteRatio { worker: 0.65, soldier: 0.30, breeder: 0.05 };
+        }
+        // Mirror the avenger promotion on the black side too.
+        if let Some(idx) = sim.ants.iter().position(|a| {
+            a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen)
+        }) {
+            sim.ants[idx].is_avenger = true;
+            tracing::info!(ant = sim.ants[idx].id, "avenger assigned (black colony, AI vs AI mode)");
+        }
+        tracing::info!("AI vs AI mode enabled — both colonies under heuristic control");
+        sim
     }
 
     /// Expose the internal predator-id counter for snapshotting.
