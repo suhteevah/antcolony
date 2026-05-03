@@ -164,3 +164,102 @@ For this session: the **7 archetypes + GPU MLP + tournament harness + DAgger pip
 | `bench/tournament-run/REPORT.md` | Auto-generated win-rate report |
 
 **Tests:** 137/137 lib + 6 ai_vs_ai + 3 brain_actually_drives + others = all green.
+
+---
+
+## Day 2 (2026-05-03) — biology-grounded brains break the plateau
+
+Started the day at DAgger v1 SOTA (40.7%). Finished at MLP_v1 (FSP) SOTA (45.7%). Total day-2 lift: +5pp on top of prior +5pp = +10pp from baseline.
+
+### Variant tournament — diversity ≠ better signal
+
+21-brain pool (7 originals + 14 hand-tuned variants like `glass_cannon`, `pure_econ`, `nurse_heavy`, etc.). Each variant a perturbation of an archetype seed.
+
+Result: **28.6%** mean win rate vs original 7. **Regressed** below baseline.
+
+Diagnosis: bigger pool with mixed-quality teachers is *worse* than smaller pool with viable teachers. The model averages contradictory winning strategies and gets weaker than any single specialist. **Diversity helps only when teachers are viable.**
+
+### Curated tournament — drop the dead-weight teachers
+
+Quick scoreboard (each variant plays 4 matches vs heuristic) identified the 5 strongest variants (50% vs heuristic): `queen_focus`, `alate_swarm`, `pure_econ`, `worker_swarm`, `nurse_heavy`. Glass cannon, berserker, balanced_a/b, swarm, turtle, excavator, panic_fort, expansionist all scored 0-25% vs heuristic — dead weight.
+
+12-brain curated pool (7 originals + top 5 variants):
+- 4 m/p (528 matches): **41.9%** SOTA
+- 8 m/p (1056 matches, 2x data): **42.6%** new SOTA, marginal scaling
+
+### Curated × bigger model — capacity not the bottleneck
+
+`hidden=256` model on curated corpus: **39.0%** (regressed). Confirmed: capacity is not the bottleneck, the *signal* is.
+
+### DAgger-on-curated — self-play doesn't compose with curation
+
+Stack the two known wins: DAgger pass starting from curated MLP. Result: **39.0%** (regressed). Same DAgger v2/v3 trap — adding self-play on top of an already-good model adds biased noise.
+
+### Species-blend tournaments — biology-grounded archetype substitution
+
+Replaced the made-up variants with biology-grounded blends derived from cited TOML fields:
+
+  - `aggression` (cited per-species) → `losses_response` (× 2.0)
+  - `recruitment` style → `forage_weight` (mass=0.70 group=0.55 tandem=0.45 indiv=0.40)
+  - `queen_eggs_per_day` → `nurse_weight` (high lay = nurse-heavy)
+  - `default_caste_ratio` → caste W/S/B (direct)
+
+Two attempts:
+- 5 species × `heuristic` archetype: **37.1%** (regressed). Insufficient strategic diversity — all 5 blends were heuristic-shaped variants.
+- 5 species × ecology-matched archetype (formica × aggressor, aphaenogaster × forager, pogonomyrmex × economist, camponotus × defender, tapinoma × breeder): **38.2%**. Better strategic identity per blend, still below curated SOTA. The 5-blend pool just doesn't have enough economy-strategy diversity to beat curated.
+
+### FSP round 1 — full 49-brain pool wins
+
+Generated all 49 species×archetype combinations (7 species × 7 strategic postures). Each blend is biologically defensible (Camponotus playing economist still has 10% major caste; Lasius playing aggressor still has aggression≤0.4).
+
+Tournament: 49×48 = 2352 unique pairings × 1 m/p ≈ 13k filtered winning records.
+
+Result: **45.7% NEW SOTA.** First time MLP > heuristic with margin (11-9), tied defender/aggressor/conservative (10-10 each). Persistent blind spot: economy specialists (economist 40%, breeder 35%, forager 40%).
+
+### FSP rounds 2-3 — vanilla iterative self-play plateaus
+
+Added MLP_v1 to the pool, retrained → MLP_v2 = 45.7% (no gain). Added v1+v2, retrained → MLP_v3 = 42.9% (regressed).
+
+Same trap as DAgger v2/v3 at smaller scale: adding the model to its own teacher pool teaches it to imitate itself. **Population-based BC needs the new MLPs to be genuinely different from existing pool.** Vanilla BC produces an *average* of teachers, not a distinct new strategy.
+
+### Final leaderboard (Day 2)
+
+| Approach | Result | Δ from baseline |
+|---|---|---|
+| Day-0 baseline (tournament v1) | 35.7% | — |
+| DAgger v1 (Day-0 SOTA) | 40.7% | +5.0 |
+| Curated 12 × 2x data | 42.6% | +6.9 |
+| Species-blend 12 (heuristic only) | 37.1% | +1.4 |
+| Species-canon 12 (ecology-matched) | 38.2% | +2.5 |
+| **FSP-r1: 49 species×archetype pool** | **45.7%** | **+10.0** |
+| FSP-r2 (49 + v1) | 45.7% | (no gain) |
+| FSP-r3 (49 + v1 + v2) | 42.9% | (regressed) |
+
+### Key takeaways for next session
+
+1. **Stop inventing strategy labels; ground brains in cited biology.** 49 species×archetype blends produced the breakthrough, not bigger pool size or more iterations.
+2. **BC over a fixed teacher pool plateaus around 45%.** Confirmed across multiple corpus shapes.
+3. **Vanilla iterative FSP doesn't help.** Adding the trained MLP to its own teacher pool produces no new strategic info — it just teaches the model to imitate itself (DAgger v2/v3 + FSP r2/r3 all hit this).
+4. **Three paths past 45%:**
+   - **Adversarial-FSP** — train on trajectories where the current MLP LOST (cheap, in-flight as of session end). Forces the model to learn responses to its own weaknesses.
+   - **Targeted opponent generation** — generate variants of the archetypes the model loses to (forager, breeder, economist), retrain. Like DAgger but strategically targeted.
+   - **Real RL** — PPO/REINFORCE with outcome as reward. Discovers strategies the BC pool never demonstrated. Bigger separate effort.
+5. **Persistent blind spot: economy specialists.** Forager/breeder/economist consistently beat the MLP at 30-40%. Either the sim over-rewards economy or the BC corpus under-represents what beats it.
+
+### File map (Day-2 additions)
+
+| File | What |
+|---|---|
+| `crates/antcolony-sim/src/ai/brain.rs` | `TunedBrain`, `BrainArchetype`, `SpeciesBrain` (biology-grounded blends) |
+| `scripts/derive_species_brains.py` | Python parity for species → 9-tuple mapping |
+| `scripts/generate_blended_brains.py` | All 49 species×archetype specs |
+| `scripts/generate_full_brain_pool.py` | TSV pool file for FSP runner |
+| `scripts/iterative_fsp.ps1` | Vanilla FSP runner (3 rounds) |
+| `scripts/adversarial_fsp.ps1` | Adversarial-FSP runner (in-flight at session end) |
+| `scripts/variant_tournament.ps1` | 21-brain hand-tuned pool (regressed result) |
+| `scripts/curated_tournament.ps1` | 12-brain curated pool (41.9%) |
+| `scripts/curated_2x_data.ps1` | 12 brains × 8 m/p (42.6%) |
+| `scripts/species_blend_tournament.ps1` | 5 × heuristic blends (37.1%) |
+| `scripts/species_canon_tournament.ps1` | 5 ecology-matched blends (38.2%) |
+
+Best model: `bench/iterative-fsp/round_1/mlp_weights_v1.json` — 45.7% mean vs original 7.
