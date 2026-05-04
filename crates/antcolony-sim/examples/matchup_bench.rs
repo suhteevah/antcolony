@@ -54,6 +54,11 @@ struct CliArgs {
     max_ticks: u64,
     out_dir: Option<PathBuf>,
     dump_trajectories: Option<PathBuf>,
+    /// Optional override of the bench fixture's world dimension (square).
+    /// Default 32 — the small-arena-fast-iteration choice.
+    arena_size: Option<u32>,
+    /// Optional override of starting ant count per colony. Default 10.
+    initial_ants: Option<u32>,
 }
 
 impl Default for CliArgs {
@@ -67,6 +72,8 @@ impl Default for CliArgs {
             max_ticks: 5_000,
             out_dir: None,
             dump_trajectories: None,
+            arena_size: None,
+            initial_ants: None,
         }
     }
 }
@@ -85,6 +92,8 @@ fn parse_args() -> anyhow::Result<CliArgs> {
             "--max-ticks" => { a.max_ticks = raw.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(a.max_ticks); i += 2; }
             "--out" => { a.out_dir = raw.get(i + 1).map(PathBuf::from); i += 2; }
             "--dump-trajectories" => { a.dump_trajectories = raw.get(i + 1).map(PathBuf::from); i += 2; }
+            "--arena-size" => { a.arena_size = raw.get(i + 1).and_then(|s| s.parse().ok()); i += 2; }
+            "--initial-ants" => { a.initial_ants = raw.get(i + 1).and_then(|s| s.parse().ok()); i += 2; }
             "--help" | "-h" => { print_help(); std::process::exit(0); }
             other => anyhow::bail!("unknown arg `{other}` — try --help"),
         }
@@ -169,10 +178,14 @@ fn build_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
 }
 
 fn small_two_colony_config() -> SimConfig {
+    two_colony_config(32, 10)
+}
+
+fn two_colony_config(arena_size: u32, initial_ants: u32) -> SimConfig {
     SimConfig {
-        world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+        world: WorldConfig { width: arena_size as usize, height: arena_size as usize, ..WorldConfig::default() },
         pheromone: PheromoneConfig::default(),
-        ant: AntConfig { initial_count: 10, ..AntConfig::default() },
+        ant: AntConfig { initial_count: initial_ants as usize, ..AntConfig::default() },
         colony: ColonyConfig::default(),
         combat: CombatConfig::default(),
         hazards: HazardConfig::default(),
@@ -234,8 +247,12 @@ fn main() -> anyhow::Result<()> {
         let mut left = build_brain(&args.left, args.left_seed);
         let mut right = build_brain(&args.right, args.right_seed);
 
-        let cfg = small_two_colony_config();
-        let topology = Topology::two_colony_arena((24, 24), (32, 32));
+        let arena = args.arena_size.unwrap_or(32);
+        let initial_ants = args.initial_ants.unwrap_or(10);
+        let cfg = two_colony_config(arena, initial_ants);
+        // Place colonies in opposite-corner regions, scaled to arena size.
+        let q = (arena / 4).max(8) as usize;
+        let topology = Topology::two_colony_arena((q, q), (arena as usize, arena as usize));
         let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, sim_seed, 0, 2);
 
         let mut trajectories: Vec<Trajectory> = Vec::new();
