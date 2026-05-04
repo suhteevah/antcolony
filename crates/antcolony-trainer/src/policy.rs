@@ -84,41 +84,36 @@ impl ActorCritic {
     }
 
     /// Stochastic sample for training rollouts. Returns (action, log_prob).
-    /// log_prob accounts for the tanh squash via the standard
-    /// log_prob -= sum log(1 - tanh^2(u)) Jacobian correction.
+    /// All internal tensors are batched [1, OUTPUT_DIM] to match the
+    /// linear-layer output. log_std is [OUTPUT_DIM] so we use
+    /// broadcast_* ops where shapes differ.
     pub fn sample(&self, x: &Tensor, rng: &mut rand_chacha::ChaCha8Rng) -> Result<(Tensor, Tensor)> {
         use rand::Rng;
-        let mean = self.actor_mean(x)?;
-        let std = self.log_std.exp()?;
+        let mean = self.actor_mean(x)?;          // [1, 6]
+        let std = self.log_std.exp()?;            // [6]
         // Sample noise via host RNG (Aether FR: native randn would avoid this round-trip)
         let noise: Vec<f32> = (0..OUTPUT_DIM).map(|_| {
-            // Box-Muller for standard normal
             let u1: f32 = rng.gen_range(1e-6..1.0);
             let u2: f32 = rng.gen_range(0.0..1.0);
             (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
         }).collect();
-        let noise_t = Tensor::from_vec(noise, (1, OUTPUT_DIM), mean.device())?;
-        // Pre-squash sample: u = mean + std * noise
-        let u = (&mean + &(noise_t * &std)?)?;
+        let noise_t = Tensor::from_vec(noise, (1, OUTPUT_DIM), mean.device())?;  // [1, 6]
+        // Pre-squash sample: u = mean + noise * std (broadcast std over batch)
+        let scaled_noise = noise_t.broadcast_mul(&std)?;
+        let u = (&mean + &scaled_noise)?;
         let action = Self::squash(&u)?;
-        // log_prob under Normal(mean, std):
-        //   log N(u | mean, std) = -0.5 * ((u - mean)/std)^2 - log(std) - 0.5 * log(2*pi)
-        // Squash correction:
-        //   log p(action) = log p(u) - sum log(1 - tanh(u)^2 * 0.5) ... actually
-        //   for action = 0.5*(tanh(u)+1), d action / d u = 0.5 * (1 - tanh^2(u))
-        //   so log |jac| = log(0.5) + log(1 - tanh^2(u))
+        // log_prob under Normal(mean, std)
         let diff = (&u - &mean)?;
-        let std_sq = (&std * &std)?;
-        let neg_log_pdf = (((&diff * &diff)? / &std_sq)? * 0.5_f64)?;
-        let log_std_term = self.log_std.clone();  // log(std) directly
-        let two_pi_log = 0.9189385332_f32;  // 0.5 * log(2*pi)
-        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log as f64)?;
-        let log_pdf = (&log_pdf_part1 - &log_std_term)?;
+        let std_sq = std.broadcast_mul(&std)?;     // [6]
+        let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
+        let two_pi_log = 0.9189385332_f64;
+        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log)?;
+        let log_pdf = log_pdf_part1.broadcast_sub(&self.log_std)?;
         // Squash Jacobian: log(0.5) + log(1 - tanh^2(u))
         let tanh_u = u.tanh()?;
         let one = Tensor::ones_like(&tanh_u)?;
         let one_minus_tanh_sq = (&one - &(&tanh_u * &tanh_u)?)?;
-        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;  // -0.6931 = log(0.5)
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
         let log_prob = (log_pdf - log_jac)?.sum_all()?;
         Ok((action, log_prob))
     }
@@ -139,11 +134,11 @@ impl ActorCritic {
         let minus = (&one - &clamped)?;
         let u = (plus / minus)?.log()?.affine(0.5, 0.0)?;
         let diff = (&u - &mean)?;
-        let std_sq = (&std * &std)?;
-        let neg_log_pdf = (((&diff * &diff)? / &std_sq)? * 0.5_f64)?;
-        let two_pi_log = 0.9189385332_f32;
-        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log as f64)?;
-        let log_pdf = (&log_pdf_part1 - &self.log_std)?;
+        let std_sq = std.broadcast_mul(&std)?;
+        let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
+        let two_pi_log = 0.9189385332_f64;
+        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log)?;
+        let log_pdf = log_pdf_part1.broadcast_sub(&self.log_std)?;
         let tanh_u = u.tanh()?;
         let one_t = Tensor::ones_like(&tanh_u)?;
         let one_minus_tanh_sq = (&one_t - &(&tanh_u * &tanh_u)?)?;

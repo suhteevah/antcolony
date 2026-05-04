@@ -73,7 +73,9 @@ impl PpoTrainer {
     /// The 3 caste params + 3 behavior params are softmaxed separately
     /// at the sim layer; here we just hand off the raw values.
     pub fn tensor_to_decision(action: &Tensor) -> anyhow::Result<AiDecision> {
-        let v: Vec<f32> = action.to_vec1()?;
+        // action is [1, 6]; flatten to [6] before extracting
+        let flat = if action.dims().len() == 2 { action.squeeze(0)? } else { action.clone() };
+        let v: Vec<f32> = flat.to_vec1()?;
         Ok(AiDecision {
             caste_ratio_worker: v[0],
             caste_ratio_soldier: v[1],
@@ -111,7 +113,11 @@ impl PpoTrainer {
             batch.states.push(s_tensor.detach());
             batch.actions.push(action_t.detach());
             batch.log_probs.push(log_prob_t.detach().to_scalar::<f32>()?);
-            batch.values.push(value_t.detach().to_scalar::<f32>()?);
+            // value_t may be rank 1 ([1]) or rank 0 depending on squeeze path; coerce.
+            let v_flat = value_t.detach();
+            let v_scalar = if v_flat.dims().len() == 0 { v_flat.to_scalar::<f32>()? }
+                else { v_flat.squeeze(0)?.to_scalar::<f32>()? };
+            batch.values.push(v_scalar);
             batch.rewards.push(step.reward_left);
             batch.dones.push(step.done);
             if step.done || env.sim.tick >= env.max_ticks {
