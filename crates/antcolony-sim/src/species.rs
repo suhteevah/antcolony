@@ -288,7 +288,15 @@ impl Species {
             exploration_rate: 0.15,
             alpha: 1.0,
             beta: 2.0,
-            food_capacity: 1.0,
+            // Phase B hook #11 (lite) — seed-dispersing species carry
+            // larger food packets per trip. Seeds with elaiosomes are
+            // an order of magnitude bigger than typical insect prey
+            // chunks (Beattie 1985); even the lite version (no
+            // Food::Seed Terrain variant yet) captures the foraging
+            // throughput advantage. Aphaenogaster rudis is the only
+            // myrmecochore in the current pool.
+            // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #11.
+            food_capacity: if self.diet_extended.seed_dispersal { 1.5 } else { 1.0 },
             initial_count: self.growth.initial_workers as usize,
             worker_size_mm: self.appearance.size_mm,
             polymorphic: self.biology.polymorphic,
