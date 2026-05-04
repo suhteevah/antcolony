@@ -313,3 +313,63 @@ Conclusion: **adversarial trajectories from MLP_v1 don't generalize regardless o
 - Mixed-corpus retry (regressed)
 
 Path past 45.7% is no longer "more BC tricks." Real RL or genuinely richer base pool (e.g., add more species + add the cross-displacement species like Brachyponera/Solenopsis to enable Aphaenogaster's documented displacement bias).
+
+---
+
+## Day 2 (cont.) — sim balance fix + FSP on rebalanced sim
+
+**Diagnostic that prompted the change:** ran a 7×7 archetype dominance matrix on the bench fixture. Result was lopsided:
+
+| Archetype | Mean win rate (before balance fix) |
+|---|---|
+| forager | 47.9% |
+| breeder | 47.9% |
+| economist | 35.4% |
+| heuristic | 22.9% |
+| conservative | 25.0% |
+| defender | 16.7% |
+| aggressor | 16.7% |
+
+Pure economy strategies dominated; combat archetypes lost 65% of matches. The MLP's persistent "loses to economy specialists" blind spot was a SIM BALANCE problem, not a model problem.
+
+**Two-line balance change:**
+- `CombatConfig::default().soldier_attack`: 3.0 → 5.0 (soldier × soldier_vs_worker_bonus 3.0 = 15 dmg vs 10 HP worker = one-shot kill)
+- `ColonyConfig::default().soldier_food_multiplier`: 1.5 → 1.2 (soldiers no longer choke economy)
+
+**Post-balance dominance matrix** (all archetypes now competitive):
+
+| Archetype | Mean win rate (after balance fix) | Δ |
+|---|---|---|
+| aggressor | 60.4% | +43.7 |
+| heuristic | 50.0% | +27.1 |
+| conservative | 47.9% | +22.9 |
+| economist | 43.8% | +8.4 |
+| forager | 43.8% | -4.1 |
+| defender | 37.5% | +20.8 |
+| breeder | 33.3% | -14.6 |
+
+No archetype dominates >65% now. Real meta exists.
+
+**FSP-r1 on the rebalanced sim (8 species × 7 archetypes = 56-brain pool):**
+
+| Opponent | Old MLP (unbalanced) | New MLP (rebalanced) | Δ |
+|---|---|---|---|
+| heuristic | 55% | 45% | -10 |
+| defender | 50% | 35% | -15 |
+| aggressor | 50% | 35% | -15 |
+| economist | 40% | **50%** | +10 |
+| breeder | **35%** | **50%** | **+15** |
+| forager | 40% | **50%** | +10 |
+| conservative | 50% | 55% | +5 |
+| **Mean** | **45.7%** | **45.7%** | 0.0 |
+
+Same mean total but completely different competence profile:
+- Economy blind spot ELIMINATED (was 35-40%, now 50% across all economy archetypes)
+- Combat archetypes harder to beat now (35-45% vs prior 50%) — they're actually strong
+- Net: model is competent across the entire matchup space, not broken on any single archetype
+
+For game-AI purposes this is much more useful even at the same headline number. The pre-balance model would consistently lose to forager play; the post-balance model can hold its own across the full strategic landscape.
+
+**Final BC ceiling against a balanced teacher pool: ~46-50%.** Mathematically — if all archetypes are competitive (~50% expected against each other), the BC-cloned model is ~50% expected against them too. To exceed this needs RL where the model can discover strategies the teacher pool doesn't demonstrate.
+
+Best model: `bench/iterative-fsp/round_1/mlp_weights_v1.json` — 45.7% mean BUT with balanced competence profile.
