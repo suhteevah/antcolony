@@ -10,6 +10,7 @@
 //!   cargo run --release --features antcolony-trainer/cuda --bin ppo-train -- ...
 
 use antcolony_trainer::{CandleBackend, PpoConfig, PpoTrainer, Backend};
+use antcolony_trainer::ppo::RolloutBatch;
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
@@ -47,26 +48,52 @@ fn main() -> anyhow::Result<()> {
     trainer.export_mlp_weights(&weights_path)?;
     tracing::info!(path = %weights_path.display(), "initial weights exported");
 
-    // === Smoke loop: run one rollout per opponent and report shapes ===
-    use rand::seq::SliceRandom;
-    let mut rng = rand_chacha::ChaCha8Rng::from_seed([7u8; 32]);
-    use rand::SeedableRng;
-    let _ = rng;  // prep
-
+    // === Training loop: rollout → GAE → PPO update → log ===
+    let mut optimizer = trainer.make_optimizer()?;
+    let n_opps = trainer.league.entries.len();
     for it in 1..=iterations {
-        let mut total_steps = 0_usize;
+        // Aggregate rollouts across all matches in this iteration
+        let mut all_states: Vec<candle_core::Tensor> = Vec::new();
+        let mut all_actions: Vec<candle_core::Tensor> = Vec::new();
+        let mut all_returns: Vec<f32> = Vec::new();
+        let mut all_advantages: Vec<f32> = Vec::new();
+        let mut all_log_probs: Vec<f32> = Vec::new();
         let mut total_reward = 0.0_f32;
-        let n_opps = trainer.league.entries.len();
+
         for m in 0..matches_per_iter {
             let opp_idx = (it * matches_per_iter + m) % n_opps;
             let opp_spec = trainer.league.entries[opp_idx].spec.clone();
             let seed = (10_000u64 * it as u64) + m as u64;
-            let batch = trainer.rollout(&opp_spec, seed)?;
-            total_steps += batch.states.len();
+            let batch: RolloutBatch = trainer.rollout(&opp_spec, seed)?;
             total_reward += batch.rewards.iter().sum::<f32>();
+            // GAE per episode
+            let (adv, ret) = PpoTrainer::compute_gae(
+                &batch.rewards, &batch.values, &batch.dones,
+                trainer.config.gamma, trainer.config.gae_lambda,
+            );
+            all_states.extend(batch.states);
+            all_actions.extend(batch.actions);
+            all_log_probs.extend(batch.log_probs);
+            all_advantages.extend(adv);
+            all_returns.extend(ret);
         }
-        tracing::info!(it, total_steps, avg_reward = total_reward / matches_per_iter as f32, "rollout iteration done");
-        // PPO update placeholder — to be wired next.
+
+        let n = all_states.len();
+        if n == 0 {
+            tracing::warn!(it, "no trajectories — skipping update");
+            continue;
+        }
+
+        let loss = trainer.ppo_update(
+            &mut optimizer,
+            &all_states, &all_actions,
+            &all_returns, &all_advantages, &all_log_probs,
+        )?;
+
+        tracing::info!(it, n_samples = n, avg_reward = total_reward / matches_per_iter as f32, loss, "iter done");
+
+        // Export weights so the league can sample them as opponents next round
+        trainer.export_mlp_weights(&weights_path)?;
     }
 
     trainer.export_mlp_weights(&weights_path)?;

@@ -5,7 +5,7 @@ use crate::{ActorCritic, MatchEnv, League, INPUT_DIM, OUTPUT_DIM};
 use crate::backend::state_to_tensor;
 use antcolony_sim::AiDecision;
 use candle_core::{DType, Device, Tensor};
-use candle_nn::{VarBuilder, VarMap};
+use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, VarMap};
 
 #[derive(Clone, Debug)]
 pub struct PpoConfig {
@@ -125,6 +125,106 @@ impl PpoTrainer {
             }
         }
         Ok(batch)
+    }
+
+    /// Build an AdamW optimizer over all VarMap params.
+    pub fn make_optimizer(&self) -> anyhow::Result<AdamW> {
+        let params = ParamsAdamW {
+            lr: self.config.lr,
+            beta1: 0.9, beta2: 0.999, eps: 1e-8,
+            weight_decay: 0.0,
+        };
+        Ok(AdamW::new(self.varmap.all_vars(), params)?)
+    }
+
+    /// One PPO update over a batch. Returns mean loss for logging.
+    /// Stacks (states, actions, returns, advantages, old_log_probs)
+    /// across the rollout, computes the clipped surrogate, value MSE,
+    /// and entropy bonus, runs `epochs_per_batch` passes.
+    pub fn ppo_update(
+        &mut self,
+        opt: &mut AdamW,
+        states: &[Tensor],          // each [1, 17]
+        actions: &[Tensor],         // each [1, 6]
+        returns: &[f32],
+        advantages: &[f32],
+        old_log_probs: &[f32],
+    ) -> anyhow::Result<f32> {
+        // Concat [N, 17] / [N, 6] / [N] tensors once
+        let s = Tensor::cat(states, 0)?;        // [N, 17]
+        let a = Tensor::cat(actions, 0)?;       // [N, 6]
+        let n = states.len();
+        let rt = Tensor::from_slice(returns, n, &self.device)?;
+        // Normalize advantages — standard PPO trick
+        let mean_adv: f32 = advantages.iter().sum::<f32>() / n as f32;
+        let var_adv: f32 = advantages.iter().map(|x| (x - mean_adv).powi(2)).sum::<f32>() / n as f32;
+        let std_adv = (var_adv + 1e-8).sqrt();
+        let normed: Vec<f32> = advantages.iter().map(|x| (x - mean_adv) / std_adv).collect();
+        let adv = Tensor::from_slice(&normed, n, &self.device)?;
+        let old_lp = Tensor::from_slice(old_log_probs, n, &self.device)?;
+
+        let mut loss_sum = 0.0_f32;
+        let mut steps = 0;
+        for _epoch in 0..self.config.epochs_per_batch {
+            // For PPO with our scalar log_prob (sum over action dims), we
+            // recompute log_prob under current policy as a single tensor.
+            // We process the WHOLE batch as one minibatch (batch sizes are
+            // small ~thousands; minibatching can come later).
+            let new_lp = self.batched_log_prob(&s, &a)?;       // [N]
+            let value_pred = self.policy.value(&s)?;           // [N]
+            // Ratio = exp(new_lp - old_lp)
+            let log_ratio = (&new_lp - &old_lp)?;
+            let ratio = log_ratio.exp()?;
+            let surr1 = (&ratio * &adv)?;
+            let lo = 1.0 - self.config.clip;
+            let hi = 1.0 + self.config.clip;
+            let clipped_ratio = ratio.clamp(lo, hi)?;
+            let surr2 = (&clipped_ratio * &adv)?;
+            // Negative because we minimize; PPO maximizes expected surrogate
+            let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
+            // Value MSE
+            let val_diff = (&value_pred - &rt)?;
+            let value_loss = (val_diff.sqr()?).mean_all()?;
+            // Entropy bonus (encourage exploration)
+            // entropy of Normal(mean, std) = sum(log_std) + 0.5 * D * (1 + log(2*pi))
+            // log_std is shared across batch, so this is constant per pass —
+            // still differentiable through log_std (a Var)
+            let entropy_per_dim = self.policy.log_std.affine(1.0, 0.5_f64 * (1.0_f64 + (2.0_f64 * std::f64::consts::PI).ln()))?;
+            let entropy = entropy_per_dim.sum_all()?;
+            // Total loss: policy + 0.5*value - 0.01*entropy
+            let total = ((&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?
+                - entropy.affine(self.config.entropy_coef, 0.0)?)?;
+            opt.backward_step(&total)?;
+            loss_sum += total.to_scalar::<f32>().unwrap_or(0.0);
+            steps += 1;
+        }
+        Ok(loss_sum / steps.max(1) as f32)
+    }
+
+    /// Recompute log_prob over a BATCH of states + actions.
+    fn batched_log_prob(&self, states: &Tensor, actions: &Tensor) -> anyhow::Result<Tensor> {
+        let mean = self.policy.actor_mean(states)?;     // [N, 6]
+        let std = self.policy.log_std.exp()?;            // [6]
+        // Invert squash: u = atanh(2a - 1)
+        let two_a = actions.affine(2.0, -1.0)?;
+        let clamped = two_a.clamp(-0.999999_f32, 0.999999_f32)?;
+        let one = Tensor::ones_like(&clamped)?;
+        let plus = (&one + &clamped)?;
+        let minus = (&one - &clamped)?;
+        let u = (plus / minus)?.log()?.affine(0.5, 0.0)?;
+        let diff = (&u - &mean)?;
+        let std_sq = std.broadcast_mul(&std)?;
+        let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
+        let two_pi_log = 0.9189385332_f64;
+        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log)?;
+        let log_pdf = log_pdf_part1.broadcast_sub(&self.policy.log_std)?;
+        let tanh_u = u.tanh()?;
+        let one_t = Tensor::ones_like(&tanh_u)?;
+        let one_minus_tanh_sq = (&one_t - &(&tanh_u * &tanh_u)?)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
+        // Per-action log_prob = sum over dims
+        let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;  // [N]
+        Ok(log_prob)
     }
 
     /// Compute Generalized Advantage Estimation.
