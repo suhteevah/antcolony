@@ -344,7 +344,7 @@ impl Default for ColonyConfig {
             larva_stage_ticks: 300,
             pupa_stage_ticks: 200,
             adult_food_consumption: 0.01,
-            soldier_food_multiplier: 1.5,
+            soldier_food_multiplier: 1.2,  // bumped down from 1.5 (combat balance pass 2026-05-03) — soldiers no longer choke colony economy
             queen_egg_rate: 0.05,
             target_population: 5_000,
             nuptial_breeder_min: 3,
@@ -360,7 +360,14 @@ impl Default for CombatConfig {
     fn default() -> Self {
         Self {
             worker_attack: 1.0,
-            soldier_attack: 3.0,
+            // Combat balance pass (2026-05-03): bumped from 3.0. The
+            // bench dominance matrix showed combat archetypes losing
+            // 65%+ to economy archetypes because soldiers were too
+            // expensive (food multiplier 1.5x) AND not lethal enough
+            // to compensate. 5.0 × soldier_vs_worker_bonus 3.0 = 15
+            // dmg/tick vs 10 HP worker — one-shot kill, makes a small
+            // soldier force genuinely threatening to a worker swarm.
+            soldier_attack: 5.0,
             worker_health: 10.0,
             soldier_health: 25.0,
             interaction_radius: 1.2,
