@@ -4,6 +4,7 @@ members = [
     "crates/antcolony-sim",
     "crates/antcolony-game",
     "crates/antcolony-render",
+    "crates/antcolony-trainer",
 ]
 
 [workspace.package]
@@ -46,6 +47,17 @@ bevy = { version = "0.15", default-features = false, features = [
 antcolony-sim = { path = "crates/antcolony-sim" }
 antcolony-game = { path = "crates/antcolony-game" }
 antcolony-render = { path = "crates/antcolony-render" }
+antcolony-trainer = { path = "crates/antcolony-trainer" }
+
+# Candle stack — pure-Rust ML/RL framework. Pulled from local fork at
+# J:\candle-src\ which has CUDA optimizations for the RTX 3070 Ti
+# (compute_cap=86) already applied.
+# Aether parity tracker: J:\aether\ANTCOLONY_FR.md — every Candle
+# capability used here is tracked there as a feature Aether should
+# eventually supply, so we can swap Candle out cleanly when Aether is
+# ready.
+candle-core = { path = "../candle-src/candle-core" }
+candle-nn = { path = "../candle-src/candle-nn" }
 
 [profile.dev]
 opt-level = 1
