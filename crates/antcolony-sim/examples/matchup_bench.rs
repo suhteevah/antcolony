@@ -59,6 +59,11 @@ struct CliArgs {
     arena_size: Option<u32>,
     /// Optional override of starting ant count per colony. Default 10.
     initial_ants: Option<u32>,
+    /// Opt-in: write per-tick full ant-position frame replay to this
+    /// directory. Each match gets a `match_<N>.jsonl` file. Expensive
+    /// (~50KB per match-tick); intended for replay-feature use + heavy
+    /// debug only. Recommended path: G:\antcolony-replays\<run_name>\.
+    frame_replay_dir: Option<PathBuf>,
 }
 
 impl Default for CliArgs {
@@ -74,8 +79,54 @@ impl Default for CliArgs {
             dump_trajectories: None,
             arena_size: None,
             initial_ants: None,
+            frame_replay_dir: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CombatEvent {
+    match_id: u32,
+    tick: u64,
+    colony: u8,
+    workers_lost: i32,
+    soldiers_lost: i32,
+    breeders_lost: i32,
+    queen_died: bool,
+    queen_health_after: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Snapshot {
+    match_id: u32,
+    tick: u64,
+    colony: u8,
+    workers: u32,
+    soldiers: u32,
+    breeders: u32,
+    queens_alive: u32,
+    queen_health: f32,
+    food_stored: f32,
+    eggs: u32,
+    larvae: u32,
+    pupae: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FrameAnt {
+    id: u32,
+    colony: u8,
+    caste: String,
+    pos_x: f32,
+    pos_y: f32,
+    state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Frame {
+    match_id: u32,
+    tick: u64,
+    ants: Vec<FrameAnt>,
 }
 
 fn parse_args() -> anyhow::Result<CliArgs> {
@@ -94,6 +145,7 @@ fn parse_args() -> anyhow::Result<CliArgs> {
             "--dump-trajectories" => { a.dump_trajectories = raw.get(i + 1).map(PathBuf::from); i += 2; }
             "--arena-size" => { a.arena_size = raw.get(i + 1).and_then(|s| s.parse().ok()); i += 2; }
             "--initial-ants" => { a.initial_ants = raw.get(i + 1).and_then(|s| s.parse().ok()); i += 2; }
+            "--frame-replay-dir" => { a.frame_replay_dir = raw.get(i + 1).map(PathBuf::from); i += 2; }
             "--help" | "-h" => { print_help(); std::process::exit(0); }
             other => anyhow::bail!("unknown arg `{other}` — try --help"),
         }
@@ -233,8 +285,15 @@ fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(d)?;
     }
 
+    if let Some(d) = &args.frame_replay_dir {
+        std::fs::create_dir_all(d)?;
+    }
+
     let mut summaries: Vec<MatchSummary> = Vec::new();
     let mut all_trajectories: Vec<Trajectory> = Vec::new();
+    let mut all_combat_events: Vec<CombatEvent> = Vec::new();
+    let mut all_snapshots: Vec<Snapshot> = Vec::new();
+    const SNAPSHOT_INTERVAL: u64 = 100;
     let mut left_wins = 0u32;
     let mut right_wins = 0u32;
     let mut draws = 0u32;
@@ -256,7 +315,23 @@ fn main() -> anyhow::Result<()> {
         let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, sim_seed, 0, 2);
 
         let mut trajectories: Vec<Trajectory> = Vec::new();
+        let mut combat_events: Vec<CombatEvent> = Vec::new();
+        let mut snapshots: Vec<Snapshot> = Vec::new();
+        let mut frames: Vec<Frame> = if args.frame_replay_dir.is_some() { Vec::new() } else { Vec::new() };
         let mut final_status = MatchStatus::InProgress;
+
+        // Pre-tick population snapshot, used to detect deaths.
+        let mut prev_pop: [(u32, u32, u32, f32, u32); 2] = [(0, 0, 0, 0.0, 0); 2];
+        for cid in 0..2u8 {
+            if let Some(c) = sim.colonies.get(cid as usize) {
+                let queens_alive = sim.ants.iter().filter(|a|
+                    a.colony_id == cid && matches!(a.caste, antcolony_sim::AntCaste::Queen)).count() as u32;
+                prev_pop[cid as usize] = (
+                    c.population.workers, c.population.soldiers, c.population.breeders,
+                    c.queen_health, queens_alive,
+                );
+            }
+        }
 
         for _ in 0..args.max_ticks {
             if sim.tick % DECISION_CADENCE == 0 {
@@ -290,11 +365,89 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             sim.tick();
+
+            // Per-tick combat-event detection: pop deltas + queen status.
+            for cid in 0..2u8 {
+                if let Some(c) = sim.colonies.get(cid as usize) {
+                    let queens_alive_now = sim.ants.iter().filter(|a|
+                        a.colony_id == cid && matches!(a.caste, antcolony_sim::AntCaste::Queen)).count() as u32;
+                    let prev = prev_pop[cid as usize];
+                    let workers_lost = prev.0 as i32 - c.population.workers as i32;
+                    let soldiers_lost = prev.1 as i32 - c.population.soldiers as i32;
+                    let breeders_lost = prev.2 as i32 - c.population.breeders as i32;
+                    let queen_died = prev.4 > 0 && queens_alive_now == 0;
+                    let any_loss = workers_lost > 0 || soldiers_lost > 0 || breeders_lost > 0 || queen_died;
+                    if any_loss {
+                        combat_events.push(CombatEvent {
+                            match_id: m, tick: sim.tick, colony: cid,
+                            workers_lost: workers_lost.max(0),
+                            soldiers_lost: soldiers_lost.max(0),
+                            breeders_lost: breeders_lost.max(0),
+                            queen_died,
+                            queen_health_after: c.queen_health,
+                        });
+                    }
+                    prev_pop[cid as usize] = (
+                        c.population.workers, c.population.soldiers, c.population.breeders,
+                        c.queen_health, queens_alive_now,
+                    );
+                }
+            }
+
+            // Periodic snapshot every SNAPSHOT_INTERVAL ticks.
+            if sim.tick > 0 && sim.tick % SNAPSHOT_INTERVAL == 0 {
+                for cid in 0..2u8 {
+                    if let Some(c) = sim.colonies.get(cid as usize) {
+                        let queens_alive_now = sim.ants.iter().filter(|a|
+                            a.colony_id == cid && matches!(a.caste, antcolony_sim::AntCaste::Queen)).count() as u32;
+                        snapshots.push(Snapshot {
+                            match_id: m, tick: sim.tick, colony: cid,
+                            workers: c.population.workers,
+                            soldiers: c.population.soldiers,
+                            breeders: c.population.breeders,
+                            queens_alive: queens_alive_now,
+                            queen_health: c.queen_health,
+                            food_stored: c.food_stored,
+                            eggs: c.eggs,
+                            larvae: c.larvae,
+                            pupae: c.pupae,
+                        });
+                    }
+                }
+            }
+
+            // Frame replay (opt-in, expensive): per-tick full ant snapshot.
+            if args.frame_replay_dir.is_some() {
+                let ants: Vec<FrameAnt> = sim.ants.iter().enumerate().map(|(i, a)| FrameAnt {
+                    id: i as u32,
+                    colony: a.colony_id,
+                    caste: format!("{:?}", a.caste),
+                    pos_x: a.position.x,
+                    pos_y: a.position.y,
+                    state: format!("{:?}", a.state),
+                }).collect();
+                frames.push(Frame { match_id: m, tick: sim.tick, ants });
+            }
+
             final_status = sim.match_status();
             if !matches!(final_status, MatchStatus::InProgress) {
                 break;
             }
         }
+
+        // Flush this match's frame replay to disk immediately so memory
+        // doesn't balloon over many matches.
+        if let Some(dir) = &args.frame_replay_dir {
+            let path = dir.join(format!("match_{}.jsonl", m));
+            let mut f = std::fs::File::create(&path)?;
+            use std::io::Write;
+            for fr in &frames {
+                writeln!(f, "{}", serde_json::to_string(fr)?)?;
+            }
+            println!("    [frame-replay] match {} -> {} ({} ticks)", m, path.display(), frames.len());
+        }
+        all_combat_events.extend(combat_events);
+        all_snapshots.extend(snapshots);
 
         // Patch trajectory outcomes now that we know the result.
         // Decisive winner: 1.0 / 0.0 split. Timeout / draw: graded by
@@ -371,6 +524,26 @@ fn main() -> anyhow::Result<()> {
     if let Some(path) = &args.dump_trajectories {
         write_trajectories_jsonl(path, &all_trajectories)?;
         println!("wrote {} trajectory records to {}", all_trajectories.len(), path.display());
+    }
+    if let Some(dir) = &args.out_dir {
+        // Always emit combat-events + snapshots when --out is set.
+        let ce_path = dir.join("combat_events.jsonl");
+        let mut f = std::fs::File::create(&ce_path)?;
+        use std::io::Write;
+        for ev in &all_combat_events {
+            writeln!(f, "{}", serde_json::to_string(ev)?)?;
+        }
+        println!("wrote {} combat events to {}", all_combat_events.len(), ce_path.display());
+
+        let sn_path = dir.join("snapshots.jsonl");
+        let mut f = std::fs::File::create(&sn_path)?;
+        for sn in &all_snapshots {
+            writeln!(f, "{}", serde_json::to_string(sn)?)?;
+        }
+        println!("wrote {} snapshots to {}", all_snapshots.len(), sn_path.display());
+    }
+    if let Some(dir) = &args.frame_replay_dir {
+        println!("frame-replay JSONL files written to {}", dir.display());
     }
     Ok(())
 }
