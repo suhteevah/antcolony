@@ -295,3 +295,21 @@ Updated next-session paths:
 3. **Sim-balance** — economy specialists keep winning; investigate whether forager genuinely beats reactive AI by ignoring combat entirely (sim balance issue) or whether the BC corpus underweights anti-economy plays.
 
 Best model unchanged: `bench/iterative-fsp/round_1/mlp_weights_v1.json` (45.7%).
+
+### Mixed-corpus retry — also fails (42.9%)
+
+Following the adv-FSP analysis, tried mixing the FSP-r1 corpus (general competence, 534k records) with the adversarial corpus (132k records) replicated 4× to weight it heavier. Total mixed corpus: 1.06M records.
+
+Result: **42.9%.** Same as pure adversarial. Identical per-archetype breakdown: 10/10/10/7/7/7/9.
+
+Conclusion: **adversarial trajectories from MLP_v1 don't generalize regardless of mix ratio.** They contain "winning opponent actions in states where MLP-v1 was about to lose." That's too narrow a distribution to broaden the model — it just biases toward anti-MLP-v1 plays in narrow state regions, and the model loses general competence.
+
+**Final BC ceiling for today's experiments: 45.7%.** Confirmed across:
+- DAgger v1/v2/v3 (40.7%)
+- Curated tournament (42.6%)
+- FSP-r1 (45.7% NEW SOTA)
+- FSP-r2/r3 vanilla iteration (regressed)
+- Adversarial-FSP r1/r2/r3 (regressed)
+- Mixed-corpus retry (regressed)
+
+Path past 45.7% is no longer "more BC tricks." Real RL or genuinely richer base pool (e.g., add more species + add the cross-displacement species like Brachyponera/Solenopsis to enable Aphaenogaster's documented displacement bias).
