@@ -4,6 +4,94 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-03 / 2026-05-04 — AI deep dive + Rust+Candle PPO trainer
+
+🟡 In progress — AI ceiling at 45.7% confirmed across 10+ approaches; Rust trainer foundation shipped; needs population-based RL or curriculum to break ceiling.
+
+### What was done
+
+**AI experiments (10+ approaches mapped, all converge to ~45.7% BC ceiling):**
+- Variant tournament (21 brains, made-up perturbations) → 28.6% (regressed)
+- Curated 12-brain (7 originals + 5 strong variants) → 41.9–42.6% (prior SOTA)
+- DAgger v1/v2/v3 (BC + self-play iterations) → 40.7% peak, regressed on iter
+- Species-blend tournaments (5 species × heuristic / × ecology-matched) → 37–38%
+- **FSP-r1 49 species×archetype pool** → **45.7% (current SOTA)** (`bench/iterative-fsp/round_1/mlp_weights_v1.json`)
+- FSP r2/r3 (vanilla iteration) → 45.7%/42.9% (no/regression)
+- Adversarial FSP (3 rounds) → 42.9% all rounds (regressed)
+- Mixed-corpus retry → 42.9% (regressed)
+- **PPO Rust r1-r4 (Candle, in-process sim)** → 35.7%–45.7% (none beat baseline)
+
+**Engine work:**
+- 6 new Phase B sim hooks (4/14 → **10/14**): #7 dig_speed, #10b polygyne, #11-lite seed_dispersal, #12 honeydew, #13 host_species (+ Formica fusca species), #14 invasive_status
+- 8th species: Formica fusca with full cited biology TOML
+- **Sim combat balance pass:** soldier_attack 3→5, soldier_food_multiplier 1.5→1.2 (combat archetypes climbed from 16% to 60% mean)
+- 3-tier replay logging: combat events, snapshots (always-on with `--out`), full frame replay (`--frame-replay-dir`, recommended `G:\antcolony-replays\`)
+- `matchup_bench` CLI flags: `--arena-size`, `--initial-ants`, `--frame-replay-dir`, `noisy_mlp:<path>:<std>`, `tuned:label:9floats`, `species:<toml>:<archetype>:<blend>`
+
+**New crate: `crates/antcolony-trainer/`** — pure-Rust+Candle PPO trainer:
+- Sim runs IN-PROCESS (no subprocess overhead) — ~100x faster wall time than Python+subprocess
+- `ActorCritic` mirrors MlpBrain architecture (17→64→64→6) so trained weights round-trip into existing `MlpBrain` inference path
+- Tanh-squashed Gaussian policy with full PPO loss (clipped surrogate + value MSE + entropy bonus)
+- AdamW optimizer over VarMap.all_vars()
+- GAE for advantages
+- Warm-start support via `--start <mlp_weights.json>`
+- League seeded with 7 hardcoded archetypes (fixed exploiters); snapshots can be added
+- `Backend` trait abstraction so Aether can swap Candle later
+- Tracks all Candle deps in `J:\aether\ANTCOLONY_FR.md`
+
+**CUDA blocker discovered + documented:**
+- candle-kernels needs MSVC `cl.exe` (nvcc requires MSVC host on Windows)
+- kokonoe is stable-gnu (no MSVC) — Candle CUDA blocked
+- Documented as Aether competitive advantage in `J:\aether\ANTCOLONY_FR.md`
+- All training so far is CPU; still 100x faster than Python+subprocess
+
+**Documentation shipped:**
+- `docs/ai-tournament-results.md` — full multi-approach progression
+- `docs/ai-literature-review-2026-05.md` — 50+ cited sources, May 2026 collective-cognition modeling research (3 headline findings: colony IS the agent per Soma et al., BC has provable ceiling per Ren et al., single-pheromone may match multi-pheromone)
+- `docs/pvp-mode-design.md` — WC3 SimAnt-derived PvP design (P1-P5 phased)
+- `docs/ppo-r1-postmortem.md` — Python PPO failure analysis
+- `J:\aether\ANTCOLONY_FR.md` — Candle parity FR tracker
+
+### Current state
+
+**Working:**
+- All 137 lib tests green
+- 10/14 Phase B hooks shipped + cited
+- 8 species loaded + validated
+- MLP_v1 at 45.7% mean win rate is the current SOTA (`bench/iterative-fsp/round_1/mlp_weights_v1.json`)
+- Pure-Rust Candle PPO trainer compiles + runs end-to-end on CPU
+- Combat balance landed (no archetype dominates >65% on bench fixture)
+
+**Stubbed/incomplete:**
+- CUDA training blocked (needs MSVC install OR Aether parity)
+- 4/14 Phase B hooks unfinished: #5 polymorphism (semantic mismatch), #6 substrate placement (editor), #8 mound construction (render), #9 polydomy + relocation system (invasive)
+- Long-run colony collapse at non-Seasonal time scales (the original April-25 bug — substep architecture still pending)
+
+### Blocking issues
+
+1. **MSVC missing → no CUDA Candle build.** Either install MSVC Build Tools OR wait for Aether CUDA parity. CPU training works but is 30× slower than CUDA would be.
+2. **PPO can't escape BC ceiling** — 4 tuning passes (lr/entropy/epochs sweeps) all converge to either 45.7% (no movement) or 35-40% (degraded). Architectural change needed, not hyperparameter tuning.
+
+### What's next (prioritized)
+
+1. **Population-based RL** — add MLP_v1 itself + earlier snapshots to the league, force PPO to differentiate from its starting point
+2. **Curriculum learning** — train against heuristic only first, gradually add harder archetypes once policy is competent
+3. **KL-target adaptive PPO** (PPO-Penalty variant) — scaling-down LR when KL spikes might let bigger initial steps not blow up the policy
+4. **OR pivot to PvP P1 implementation** — the 45.7% MLP is already a competent game opponent; PvP gameplay is the bigger user-visible feature
+5. **OR fix the long-run substep bug** — the original April 25 architectural fix that's still parked
+
+### Notes for next session
+
+- The 45.7% MLP_v1 is genuinely a strong policy — beats heuristic, ties defender/aggressor/conservative, ~50% vs all economy specialists. For shipping a game AI, this is good enough.
+- Combat balance fix is BIG: archetype mean win rates are now 33-60%, not the prior 16-48%. The bench fixture is finally a fair test.
+- All experiments tracked in `bench/` subdirs; final result tables in `docs/ai-tournament-results.md`.
+- The Rust trainer infrastructure is the real win — proper foundation for serious RL when we come back. ~100x wall-time speedup vs Python+subprocess.
+- Aether FR tracker (`J:\aether\ANTCOLONY_FR.md`) is the "what Candle does that Aether needs to ship" tracker. Update as new Candle ops are used.
+- Skipped today's "5yr Seasonal bench across all 7 species" overnight task because the AI thread monopolized session focus. Easy to fire whenever.
+- The combat balance change is a BREAKING change for any saved model trained before this session — old MLPs that learned "soldiers are weak" no longer apply. MLP_v1 is FROM the rebalanced sim so it's still the SOTA.
+
+---
+
 ## Open Bug — Long-run colony collapse at non-Seasonal time scales (logged 2026-04-25)
 
 **Status:** known cause, NOT yet fixed. Two attempts in this session. The architecturally-correct fix is parked for next session.
