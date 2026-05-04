@@ -167,7 +167,21 @@ pub struct AntConfig {
     /// Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #4.
     #[serde(default)]
     pub sting_potency: f32,
+
+    /// Phase B hook #7 — species-specific dig-rate multiplier.
+    /// Multiplies the per-substrate dig progress in `dig_tick`. 1.0 =
+    /// Lasius baseline; <1.0 species are slow diggers (Camponotus 0.5
+    /// in wood is documented as ~half the per-worker rate of
+    /// equivalent Lasius in soil); >1.0 species have faster soil-
+    /// excavation specializations (Pogonomyrmex 1.3 with psammophore
+    /// for coarse desert sand). Set by `species::apply` from
+    /// `Species.substrate.dig_speed_multiplier`.
+    /// Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #7.
+    #[serde(default = "default_species_dig_multiplier")]
+    pub species_dig_multiplier: f32,
 }
+
+fn default_species_dig_multiplier() -> f32 { 1.0 }
 
 fn default_min_diapause_days() -> u32 {
     60
@@ -315,6 +329,7 @@ impl Default for AntConfig {
             min_diapause_days: 60,
             nocturnal: false,
             sting_potency: 0.0,
+            species_dig_multiplier: 1.0,
         }
     }
 }

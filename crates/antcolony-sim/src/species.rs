@@ -301,13 +301,27 @@ impl Species {
                 crate::species_extended::DielActivity::Nocturnal
             ),
             sting_potency: self.combat_extended.sting_potency,
+            // Phase B hook #7 — species-specific dig rate. Camponotus
+            // (0.5) digs slower in any substrate; Pogonomyrmex (1.3)
+            // digs faster. Compounds with the per-tile substrate rate
+            // already applied in `dig_tick`.
+            species_dig_multiplier: self.substrate.dig_speed_multiplier,
         };
 
         // queen_egg_rate is fraction-of-egg-per-tick.
         // eggs_per_day / in_game_seconds_per_day / in_game_seconds_per_tick
         // Simplified: rate_per_tick = eggs_per_day / ticks_per_in_game_day.
         let ticks_per_day = env.in_game_seconds_to_ticks(86_400).max(1) as f32;
-        let queen_egg_rate = self.growth.queen_eggs_per_day / ticks_per_day;
+        // Phase B hook #12 — honeydew_dependent species without nearby
+        // aphid sources grow more slowly. Aphid-colony entities are a
+        // Phase C feature; until then, the simplest defensible
+        // interpretation is a flat 20% growth penalty for honeydew-
+        // obligates (Formica rufa documented as ~200kg honeydew/yr at
+        // mature mound from Cinara/Lachnus aphid herds — losing that
+        // resource collapses the carb supply driving brood production).
+        // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #12.
+        let honeydew_penalty: f32 = if self.diet_extended.honeydew_dependent { 0.8 } else { 1.0 };
+        let queen_egg_rate = self.growth.queen_eggs_per_day * honeydew_penalty / ticks_per_day;
         let adult_food_consumption =
             self.growth.food_per_adult_per_day / ticks_per_day;
 

@@ -2394,8 +2394,13 @@ impl Simulation {
             // Per-substrate progress rate. Loam baseline = 1.0; harder
             // substrates (Ytong, Wood) take longer per tile, softer
             // ones (Sand, Gel) are faster. Stored as u32 so we round.
+            // Phase B hook #7 — combined with the per-species
+            // dig_speed_multiplier (Camponotus 0.5, Pogonomyrmex 1.3)
+            // so e.g. Camponotus excavating Wood compounds both
+            // multipliers (the only species with both bonuses aligned).
             let substrate_mult = module.substrate.dig_speed_multiplier();
-            let progress_increment = (1.0 * substrate_mult).max(0.1).round() as u32;
+            let species_mult = self.config.ant.species_dig_multiplier;
+            let progress_increment = (1.0 * substrate_mult * species_mult).max(0.1).round() as u32;
             ant.dig_progress = ant.dig_progress.saturating_add(progress_increment.max(1));
             if ant.dig_progress >= DIG_PROGRESS_THRESHOLD {
                 flips.push((i, ant.module_id, tx, ty));
