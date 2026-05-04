@@ -32,11 +32,17 @@ impl Default for PpoConfig {
             gamma: 0.99,
             gae_lambda: 0.95,
             clip: 0.2,
-            epochs_per_batch: 4,
+            // Tuning pass r2: dropped from 4 to 1. Multiple epochs on the
+            // same batch were over-correcting the warm-start policy.
+            epochs_per_batch: 1,
             minibatch_size: 256,
-            lr: 3e-4,
+            // Tuning pass r2: 3e-4 -> 1e-4. With a good warm-start, the
+            // policy needs gentle updates, not aggressive ones.
+            lr: 1e-4,
             value_coef: 0.5,
-            entropy_coef: 0.01,
+            // Tuning pass r2: 0.01 -> 0.001. Less push toward exploration
+            // when the warm-start policy already knows good actions.
+            entropy_coef: 0.001,
             max_grad_norm: 0.5,
             eval_every: 5,
             snapshot_every: 10,
