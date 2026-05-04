@@ -22,6 +22,7 @@ fn main() -> anyhow::Result<()> {
     let mut iterations = 5_usize;
     let mut matches_per_iter = 8_usize;
     let mut out_dir = PathBuf::from("bench/ppo-rust-r1");
+    let mut warm_start: Option<PathBuf> = None;
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < raw.len() {
@@ -29,6 +30,7 @@ fn main() -> anyhow::Result<()> {
             "--iterations" => { iterations = raw[i+1].parse()?; i += 2; }
             "--matches-per-iter" => { matches_per_iter = raw[i+1].parse()?; i += 2; }
             "--out" => { out_dir = PathBuf::from(&raw[i+1]); i += 2; }
+            "--start" => { warm_start = Some(PathBuf::from(&raw[i+1])); i += 2; }
             other => anyhow::bail!("unknown arg `{other}`"),
         }
     }
@@ -42,6 +44,10 @@ fn main() -> anyhow::Result<()> {
     config.matches_per_iter = matches_per_iter;
 
     let mut trainer = PpoTrainer::new(backend.device().clone(), config.clone())?;
+    if let Some(ws_path) = &warm_start {
+        trainer.warm_start_actor(ws_path)?;
+        tracing::info!(path = %ws_path.display(), "warm-started actor from MlpBrain weights");
+    }
 
     // Initial export so we can verify shape immediately.
     let weights_path = out_dir.join("current.json");

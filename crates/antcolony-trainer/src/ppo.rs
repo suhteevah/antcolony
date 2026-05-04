@@ -127,6 +127,51 @@ impl PpoTrainer {
         Ok(batch)
     }
 
+    /// Warm-start the actor weights from an MlpBrain JSON file via VarMap.
+    /// Critic stays at random init (BC has no value head). Names follow
+    /// the VarBuilder.pp() prefixes: actor_l1.weight, actor_l1.bias, etc.
+    pub fn warm_start_actor(&mut self, path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
+        let raw = std::fs::read_to_string(path.as_ref())?;
+        let d: serde_json::Value = serde_json::from_str(&raw)?;
+        let to_2d = |v: &serde_json::Value| -> Vec<Vec<f32>> {
+            v.as_array().unwrap().iter().map(|row|
+                row.as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect()).collect()
+        };
+        let to_1d = |v: &serde_json::Value| -> Vec<f32> {
+            v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect()
+        };
+        let dev = &self.device;
+        let im = to_1d(&d["input_mean"]);
+        let isd = to_1d(&d["input_std"]);
+        let w1 = to_2d(&d["w1"]); let b1 = to_1d(&d["b1"]);
+        let w2 = to_2d(&d["w2"]); let b2 = to_1d(&d["b2"]);
+        let w3 = to_2d(&d["w3"]); let b3 = to_1d(&d["b3"]);
+        let h1 = w1.len(); let h2 = w2.len();
+        let flat = |w: Vec<Vec<f32>>| -> Vec<f32> { w.into_iter().flatten().collect() };
+
+        // Update normalization buffers (not Vars — direct field assign)
+        self.policy.input_mean = Tensor::from_vec(im, (INPUT_DIM,), dev)?;
+        self.policy.input_std = Tensor::from_vec(isd, (INPUT_DIM,), dev)?;
+
+        // Update Var-backed weights via VarMap.set_one (path matches vb.pp() prefixes)
+        let updates: Vec<(&str, Tensor)> = vec![
+            ("actor_l1.weight", Tensor::from_vec(flat(w1), (h1, INPUT_DIM), dev)?),
+            ("actor_l1.bias",   Tensor::from_vec(b1,        (h1,),          dev)?),
+            ("actor_l2.weight", Tensor::from_vec(flat(w2), (h2, h1),       dev)?),
+            ("actor_l2.bias",   Tensor::from_vec(b2,        (h2,),          dev)?),
+            ("actor_l3.weight", Tensor::from_vec(flat(w3), (OUTPUT_DIM, h2), dev)?),
+            ("actor_l3.bias",   Tensor::from_vec(b3,        (OUTPUT_DIM,), dev)?),
+        ];
+        for (name, t) in updates {
+            self.varmap.set_one(name, &t)?;
+        }
+        // Re-bind the policy's Linear references to read from the updated VarMap.
+        // VarMap.set_one mutates the underlying Var in place, so subsequent
+        // forward passes through the same Linear pick up the new weights
+        // automatically (Linear holds the Var, not a snapshot).
+        Ok(())
+    }
+
     /// Build an AdamW optimizer over all VarMap params.
     pub fn make_optimizer(&self) -> anyhow::Result<AdamW> {
         let params = ParamsAdamW {
