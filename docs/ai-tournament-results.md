@@ -263,3 +263,35 @@ Same trap as DAgger v2/v3 at smaller scale: adding the model to its own teacher 
 | `scripts/species_canon_tournament.ps1` | 5 ecology-matched blends (38.2%) |
 
 Best model: `bench/iterative-fsp/round_1/mlp_weights_v1.json` — 45.7% mean vs original 7.
+
+---
+
+## Day 2 (cont.) — adversarial FSP, second negative result
+
+After FSP plateaued, attempted adversarial-FSP (`scripts/adversarial_fsp.ps1`):
+1. Eval current MLP, find weakest matchups (round 1 found `economist`, `breeder`)
+2. Generate 3 variants of each weak archetype (params perturbed ±15%)
+3. Have current MLP play vs full pool (49 species + 6 new variants) for 16 m/p
+4. **ADVERSARIAL FILTER**: keep ONLY trajectories where the OPPONENT won (i.e., the decisions of brains that beat the current MLP)
+5. Train MLP_adv_v(n+1) on this "what beat me" corpus
+6. Eval, repeat
+
+Result over 3 rounds:
+
+| Run | vs original 7 |
+|---|---|
+| Start (MLP_v1, FSP-r1 SOTA) | 45.7% |
+| MLP_adv_v1 | 42.9% |
+| MLP_adv_v2 | 42.9% |
+| MLP_adv_v3 | 42.9% |
+
+**Regressed and stayed flat.** Diagnosis: training EXCLUSIVELY on "what beat me" trajectories biases the state distribution toward "states where MLP was about to lose." Model imitates winning-side actions in losing-state distributions and loses general competence — the "what beats me" lessons are real but they overwrite broader skill.
+
+**The fix would be MIXING:** train on `(full corpus + adversarial subset weighted higher)`. Pure adversarial = throwing baby with bathwater. Adversarial filter is a useful *signal*, not a usable corpus on its own.
+
+Updated next-session paths:
+1. **Mixed-corpus DAgger** — combine full FSP-r1 corpus + adversarial trajectories (e.g., 4× weight on adversarial), retrain. Might lift past 45.7% by adding "specific counters" without losing "general competence."
+2. **Real RL** — still the right long-term answer.
+3. **Sim-balance** — economy specialists keep winning; investigate whether forager genuinely beats reactive AI by ignoring combat entirely (sim balance issue) or whether the BC corpus underweights anti-economy plays.
+
+Best model unchanged: `bench/iterative-fsp/round_1/mlp_weights_v1.json` (45.7%).
