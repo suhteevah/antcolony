@@ -429,6 +429,33 @@ pub fn load_species_dir<P: AsRef<std::path::Path>>(
         }
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // Phase B hook #13 — validate host_species_required references.
+    // Parasitic founders (e.g. Formica rufa requires Formica fusca per
+    // Borowiec et al. 2021 PNAS) need their host species present in the
+    // pool. Log a warning if the host is missing — colonies of the
+    // parasitic species will still spawn (sim is degraded gracefully)
+    // but the founding sequence is biologically incomplete.
+    let loaded_ids: std::collections::HashSet<&str> =
+        out.iter().map(|s| s.id.as_str()).collect();
+    for sp in &out {
+        for host in &sp.diet_extended.host_species_required {
+            if !loaded_ids.contains(host.as_str()) {
+                tracing::warn!(
+                    parasitic = %sp.id,
+                    missing_host = %host,
+                    "Phase B hook #13: parasitic species's required host species not loaded — \
+                     founding sequence will be biologically incomplete"
+                );
+            } else {
+                tracing::info!(
+                    parasitic = %sp.id,
+                    host = %host,
+                    "Phase B hook #13: host species loaded for parasitic founder"
+                );
+            }
+        }
+    }
     Ok(out)
 }
 
@@ -594,8 +621,8 @@ keeper_notes = "Docile, hardy, forgiving."
             .unwrap_or_else(|e| panic!("load_species_dir failed: {e}"));
         assert_eq!(
             species.len(),
-            7,
-            "expected exactly 7 shipped species, got {}: {:?}",
+            8,
+            "expected exactly 8 shipped species (7 player-controllable + Formica fusca host species), got {}: {:?}",
             species.len(),
             species.iter().map(|s| &s.id).collect::<Vec<_>>()
         );

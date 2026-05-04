@@ -1,0 +1,102 @@
+id = "formica_fusca"
+common_name = "Silky Wood Ant"
+genus = "Formica"
+species_epithet = "fusca"
+difficulty = "intermediate"  # subordinate Formica — host species for parasitic congeners (F. rufa, F. sanguinea); strategic vulnerability adds interest above beginner-tier
+schema_version = 1
+
+[biology]
+queen_lifespan_years = 14.0  # game-pacing — natural ~10-15 yr documented (AntWiki Formica fusca; Stockan & Robinson 2016 §"Formica life-history"); midpoint chosen for sim pacing
+worker_lifespan_months = 18.0  # game-pacing — Formica workers ~6-12mo natural lifespan (Stockan & Robinson 2016 ch. 2); scaled up so adult cohort persists across sim sessions
+founding = "claustral"  # strict claustral — gyne overwinters then founds independently; non-parasitic founding (AntWiki F. fusca)
+polymorphic = false  # monomorphic — modest worker size variation but no discrete soldier caste (Czechowski et al. 2002 "Ants of Poland" §Formica fusca; AntWiki)
+hibernation_required = true  # Palearctic temperate species; obligate diapause for fertility (Stockan & Robinson 2016 §3 thermal biology)
+min_diapause_days = 75  # game-pacing — slightly higher than Lasius since Formica overwinter at colder microsites under stones/logs (Czechowski et al. 2002)
+
+[growth]
+egg_maturation_seconds = 1209600  # ~14 days at brood-chamber temp — comparable to other temperate Formica (Stockan & Robinson 2016 ch. 2)
+larva_maturation_seconds = 2419200  # ~28 days — Formica larval stage longer than Lasius due to larger imago body (genus baseline)
+pupa_maturation_seconds = 1814400  # ~21 days — cocoon-spinning pupae (the signature "ant eggs" sold for fish food are F. fusca-group cocoons)
+queen_eggs_per_day = 25.0  # game-pacing — Formica fusca has lower per-queen rate than rufa (50 cited polygyne baseline) since fusca is mature monogyne; no published exact figure
+initial_workers = 20  # game-pacing — onboarding shortcut, real claustral founding starts at 0
+target_population = 8000  # mature colony 1,000-10,000 workers (Czechowski et al. 2002; smaller than rufa polygyne mounds)
+egg_cost_food = 5.0  # abstract sim food unit
+food_per_adult_per_day = 0.4  # abstract sim food unit, calibrated for colony economy balance
+
+[diet]
+prefers = ["sugar", "protein", "honeydew"]  # generalist omnivore + aphid tending (AntWiki F. fusca diet; Stockan & Robinson 2016 §5)
+forages_on = ["ground", "vegetation"]  # ground forager with arboreal aphid tending — does not raid canopies like rufa
+
+[combat]
+worker_attack = 1.5  # game-pacing — between Lasius (1.0) and Camponotus minor (2.0); Formica gaster strength + acid spray (Czechowski et al. 2002)
+soldier_attack = 0.0  # monomorphic — no soldier caste
+worker_health = 10.0  # game-pacing — 4-7mm body, slightly larger than Lasius
+soldier_health = 0.0  # no soldier caste
+aggression = 0.3  # subordinate species — escapes when threatened, lets dulotic species (rufa, sanguinea) raid the brood; this submissiveness is exactly why parasitic congeners exploit them (Czechowski et al. 2002 §F. fusca; Stockan & Robinson 2016 §"social parasitism")
+
+[appearance]
+color_hex = "#2a2a2a"  # uniformly dark brown to black, distinct silky sheen — defining trait, "silky wood ant" common name (AntWiki morphology)
+size_mm = 5.5  # midpoint of 4-7mm worker range (AntWiki)
+speed_multiplier = 1.1  # game-pacing — long-legged Formica gait, modest +10% over Lasius baseline
+
+[default_caste_ratio]
+worker = 0.97  # monomorphic — no soldier caste
+soldier = 0.0  # no soldier caste
+breeder = 0.03  # alate production fraction during reproductive season
+
+[behavior]
+recruitment = "group"  # weak group recruitment — Formica fusca uses chemical trails for prey but is closer to individual/group recruiter than mass like rufa or Lasius (Czechowski et al. 2002; Hölldobler & Wilson 1990 ch. "Mass communication")
+diel_activity = "diurnal"  # primarily daytime forager
+trail_half_life_seconds = 600  # game-pacing — short trail persistence consistent with group-recruiter vs mass-recruiter (no published exact figure for fusca specifically)
+
+[colony_structure]
+queen_count = "monogyne"  # mature monogyne; no documented polygyne populations in F. fusca sensu stricto (Czechowski et al. 2002)
+polydomous = false  # single nest typically, occasional satellite under stones near main mound (AntWiki)
+relocation_tendency = 0.05  # game-pacing — Formica fusca does relocate when nests are disturbed (one of the more relocation-prone Formica)
+supercolony_capable = false  # no supercolony populations documented
+budding_reproduction = false  # nuptial flight is the sole reproductive route
+
+[substrate]
+preferred = ["loam", "leaf_litter"]  # nests under stones, in rotten wood, and in soil with leaf litter cover (AntWiki F. fusca §nesting)
+incompatible = []  # tolerant of most substrates within temperate forest microhabitats
+dig_speed_multiplier = 1.0  # game-pacing — typical soil-excavation rate, comparable to Lasius baseline
+mound_construction = "kickout"  # small kickout mounds under stones; no diagnostic dome (cf. rufa thatch)
+
+[combat_extended]
+weapon = "formic_spray"  # Formicinae acidopore spray paired with mandibular bite
+sting_potency = 0.0  # no sting — Formicinae
+ranged_attack = false  # spray range too short to register as ranged
+soldier_size_categories = []  # monomorphic
+major_attack_multiplier = 1.0  # no majors
+context_aggression = false  # no published context-dependent aggression modulation
+
+[diet_extended]
+seed_dispersal = false  # not a seed disperser
+honeydew_dependent = false  # heavy honeydew user but not obligate
+host_species_required = []  # not a parasitic founder — IS the host for other parasitic Formica
+
+[ecological_role]
+keystone = false  # ecologically important as host for parasitic Formica radiation but not formally keystone-classified
+invasive_status = "native"  # Palearctic native; range extends into North America in places but no aggressive displacement
+displaces = []  # subordinate species — does not displace others
+displaced_by = ["formica_rufa", "formica_sanguinea"]  # documented host species for the dulotic Formica radiation; rufa raids fusca brood at colony founding; sanguinea is full slave-maker (Borowiec et al. 2021 PNAS; Stockan & Robinson 2016 §"social parasitism in Formica")
+
+[encyclopedia]
+tagline = "The host species — Formica's quiet majority, foundation of the parasitic Formica radiation."
+real_world_range = "Native throughout the Palearctic from western Europe through Siberia and into northern Japan; locally common in temperate forest, woodland edge, and grassland."
+description = '''Formica fusca is the unsung anchor of the Formica genus. Where its more famous congeners — rufa with its towering thatch mounds, sanguinea with its slave raids — capture attention, fusca is the quiet majority that makes the rest possible. Workers are 4-7mm, uniformly dark brown to black with a distinct silky sheen, and live under stones, in rotten wood, or in modest soil-and-litter nests with no diagnostic mound architecture.
+
+The species is the documented host for the entire dulotic Formica radiation. F. rufa queens infiltrate F. fusca colonies during founding and exploit the host workforce until enough rufa workers eclose to take over. F. sanguinea takes this further with full-fledged slave raids on fusca colonies, capturing brood and forcing the eclosed workers to serve sanguinea queens. From an ecologist's perspective fusca is what makes Formica's most dramatic life-histories possible — the substrate on which the parasitic strategies evolved.
+
+Behaviorally fusca is subordinate: it flees when threatened rather than engaging, abandons brood under heavy attack, and is one of the more relocation-prone Formica. This timidity is exactly the trait that makes it exploitable. Colonies are mature monogyne with 1,000-10,000 workers, and queens live 10-15 years.'''
+fun_facts = [
+    "The 'ant eggs' historically sold as exotic fish food in European markets are mostly Formica fusca pupae harvested from forest mounds.",
+    "F. fusca's silky cuticle sheen is what gives the species its common name — the genus epithet 'fusca' just means 'dark brown' in Latin.",
+    "F. rufa queens cannot found independently — they MUST infiltrate a F. fusca colony during nuptial flight or die. The entire Formica rufa species depends on fusca's existence.",
+    "When sanguinea slave-raid a fusca nest, the captured pupae eclose without resistance into adult workers and serve sanguinea queens for the rest of their lives — they recognize the wrong queen as their own."
+]
+keeper_notes = '''A fascinating intermediate-tier species for keepers interested in Formica life-history without the polygyny complexity of rufa. Hibernation at 5-10 C from October through April is required.
+
+Diet: standard Formicinae fare — sugar water or honey for carbs, frozen feeder insects (crickets, fruit flies) for protein. Aphid herding is enthusiastic when given the opportunity.
+
+The interesting use-case is as a host for keepers attempting to raise F. rufa from a fertile queen — fusca workers will accept and raise rufa brood as their own once the rufa queen has chemically infiltrated the colony.'''
