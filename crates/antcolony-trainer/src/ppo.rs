@@ -36,13 +36,16 @@ impl Default for PpoConfig {
             // same batch were over-correcting the warm-start policy.
             epochs_per_batch: 1,
             minibatch_size: 256,
-            // Tuning pass r2: 3e-4 -> 1e-4. With a good warm-start, the
-            // policy needs gentle updates, not aggressive ones.
-            lr: 1e-4,
+            // Tuning pass r4: 1e-4 -> 5e-4. r3's tiny LR moved weights
+            // by max 0.015 over 500 iters — too small to escape the BC
+            // local optimum. Bigger steps + accept some risk of
+            // degradation to actually explore the policy space.
+            lr: 5e-4,
             value_coef: 0.5,
-            // Tuning pass r2: 0.01 -> 0.001. Less push toward exploration
-            // when the warm-start policy already knows good actions.
-            entropy_coef: 0.001,
+            // Tuning pass r4: 0.003 -> 0.005. r3's middle ground still
+            // didn't move eval — model needs a stronger exploration push
+            // to escape the BC local optimum.
+            entropy_coef: 0.005,
             max_grad_norm: 0.5,
             eval_every: 5,
             snapshot_every: 10,

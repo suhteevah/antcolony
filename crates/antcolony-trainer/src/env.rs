@@ -114,30 +114,31 @@ impl MatchEnv {
             }
         }
 
-        // Reward shaping (tuning pass r2): TERMINAL-ONLY. The earlier
-        // per-step worker-delta reward (×0.05) accumulated to ±10 over a
-        // 200-step episode, drowning the ±1 terminal signal. PPO ended up
-        // optimizing for "minimize per-step worker losses" (which favors
-        // turtling) rather than "win the match." Switching to clean
-        // terminal-only reward: the value function bootstraps from the
-        // bootstrap (BC warm-start) so the sparse signal still propagates.
+        // Reward shaping (tuning pass r3): TINY per-step worker-delta
+        // (×0.01) + terminal bonus. r2's pure-terminal reward gave
+        // advantage≈0 everywhere → policy gradient≈0 → no learning.
+        // r1's ×0.05 dominated the terminal. ×0.01 is the goldilocks
+        // attempt: weak enough that terminal still matters, strong
+        // enough that intermediate steps have a non-zero learning signal.
         let workers_now = [
             self.sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0),
             self.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0),
         ];
-        let mut reward_left = 0.0_f32;
-        let mut reward_right = 0.0_f32;
+        let dl = workers_now[0] as i32 - self.prev_workers[0] as i32;
+        let dr = workers_now[1] as i32 - self.prev_workers[1] as i32;
+        let mut reward_left = (dl as f32) * 0.01 - (dr as f32) * 0.01;
+        let mut reward_right = -reward_left;
         if done {
             match self.sim.match_status() {
-                MatchStatus::Won { winner: 0, .. } => { reward_left = 1.0; reward_right = -1.0; }
-                MatchStatus::Won { winner: 1, .. } => { reward_left = -1.0; reward_right = 1.0; }
+                MatchStatus::Won { winner: 0, .. } => { reward_left += 1.0; reward_right -= 1.0; }
+                MatchStatus::Won { winner: 1, .. } => { reward_left -= 1.0; reward_right += 1.0; }
                 MatchStatus::Draw { .. } => {}
                 MatchStatus::InProgress => {
                     // Timeout: graded by worker share, scaled to [-1, 1].
                     let total = (workers_now[0] + workers_now[1]).max(1) as f32;
                     let share = workers_now[0] as f32 / total;
-                    reward_left = (share - 0.5) * 2.0;
-                    reward_right = (0.5 - share) * 2.0;
+                    reward_left += (share - 0.5) * 2.0;
+                    reward_right += (0.5 - share) * 2.0;
                 }
                 _ => {}
             }
