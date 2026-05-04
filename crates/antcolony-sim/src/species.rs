@@ -321,7 +321,22 @@ impl Species {
         // resource collapses the carb supply driving brood production).
         // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #12.
         let honeydew_penalty: f32 = if self.diet_extended.honeydew_dependent { 0.8 } else { 1.0 };
-        let queen_egg_rate = self.growth.queen_eggs_per_day * honeydew_penalty / ticks_per_day;
+        // Phase B hook #10b — polygyne queen-count scales the colony's
+        // total egg-laying rate. The species TOML's queen_eggs_per_day
+        // is per-queen (Formica's 50/day is the suppressed per-queen
+        // rate inside polygyne mounds; cited in growth comment), so a
+        // colony with multiple queens lays more eggs per tick. Scaling
+        // is sub-linear (mature polygyne mounds carry 100+ queens but
+        // the brood pipeline saturates well below n×); 2.0 captures
+        // the ecologically meaningful boost without runaway growth.
+        // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #10.
+        use crate::species_extended::QueenCount;
+        let polygyne_factor: f32 = match self.colony_structure.queen_count {
+            QueenCount::Monogyne => 1.0,
+            QueenCount::FacultativelyPolygyne => 1.3,
+            QueenCount::ObligatePolygyne => 2.0,
+        };
+        let queen_egg_rate = self.growth.queen_eggs_per_day * honeydew_penalty * polygyne_factor / ticks_per_day;
         let adult_food_consumption =
             self.growth.food_per_adult_per_day / ticks_per_day;
 
