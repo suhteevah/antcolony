@@ -183,6 +183,17 @@ fn build_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
             Err(e) => panic!("failed to load MlpBrain weights from `{rest}`: {e}"),
         };
     }
+    if let Some(rest) = spec.strip_prefix("noisy_mlp:") {
+        // Format: noisy_mlp:<weights_path>:<std>  e.g. noisy_mlp:weights.json:0.2
+        let mut parts = rest.rsplitn(2, ':');
+        let std_s = parts.next().expect("noisy_mlp spec missing std value");
+        let path = parts.next().expect("noisy_mlp spec missing path");
+        let std: f32 = std_s.parse().unwrap_or_else(|e| panic!("noisy_mlp: bad std `{std_s}`: {e}"));
+        return match MlpBrain::load(path, format!("noisy_mlp-{seed}")) {
+            Ok(mut b) => { b.set_explore_std(std); Box::new(b) }
+            Err(e) => panic!("failed to load MlpBrain weights from `{path}`: {e}"),
+        };
+    }
     if let Some(rest) = spec.strip_prefix("species:") {
         // Format: species:<toml_path>:<archetype>[:<blend>]
         // e.g. species:assets/species/formica_rufa.toml:aggressor:0.5

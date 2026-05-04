@@ -673,6 +673,11 @@ pub struct MlpBrain {
     w1: Vec<Vec<f32>>, b1: Vec<f32>,
     w2: Vec<Vec<f32>>, b2: Vec<f32>,
     w3: Vec<Vec<f32>>, b3: Vec<f32>,
+    /// Training-time exploration noise (sigma for additive Gaussian).
+    /// Default 0.0 (deterministic). Set via set_explore_std() or the
+    /// `noisy_mlp:<path>:<std>` matchup_bench spec.
+    explore_std: f32,
+    rng: rand_chacha::ChaCha8Rng,
 }
 
 #[derive(serde::Deserialize)]
@@ -694,6 +699,7 @@ impl MlpBrain {
         let raw = std::fs::read_to_string(path)?;
         let parsed: MlpWeightsFile = serde_json::from_str(&raw)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        use rand::SeedableRng;
         Ok(Self {
             label: label.into(),
             input_mean: parsed.input_mean,
@@ -701,6 +707,8 @@ impl MlpBrain {
             w1: parsed.w1, b1: parsed.b1,
             w2: parsed.w2, b2: parsed.b2,
             w3: parsed.w3, b3: parsed.b3,
+            explore_std: 0.0,
+            rng: rand_chacha::ChaCha8Rng::seed_from_u64(0xfeed),
         })
     }
 }
@@ -748,6 +756,16 @@ fn state_to_features(s: &ColonyAiState) -> Vec<f32> {
     ]
 }
 
+impl MlpBrain {
+    /// Set training-time exploration noise. Std is the per-dimension
+    /// Gaussian noise added to the sigmoid output (clamped to [0,1]).
+    /// 0.0 = deterministic (default, eval mode). >0.0 = stochastic
+    /// (PPO/REINFORCE training mode).
+    pub fn set_explore_std(&mut self, std: f32) {
+        self.explore_std = std;
+    }
+}
+
 impl AiBrain for MlpBrain {
     fn name(&self) -> &str {
         &self.label
@@ -764,7 +782,19 @@ impl AiBrain for MlpBrain {
             .collect();
         let h1 = relu_layer(&normalized, &self.w1, &self.b1);
         let h2 = relu_layer(&h1, &self.w2, &self.b2);
-        let out = sigmoid_layer(&h2, &self.w3, &self.b3);
+        let mut out = sigmoid_layer(&h2, &self.w3, &self.b3);
+        // Optional exploration noise (PPO training-time only). Each
+        // dimension gets independent Gaussian noise; result clamped
+        // to [0, 1] so caste/behavior triples stay in valid range
+        // post-normalization in the sim.
+        if self.explore_std > 0.0 {
+            use rand::Rng;
+            for x in out.iter_mut() {
+                let z: f32 = self.rng.r#gen::<f32>() * 2.0 - 1.0;  // uniform [-1, 1]
+                let noise = z * self.explore_std;
+                *x = (*x + noise).clamp(0.0, 1.0);
+            }
+        }
         AiDecision {
             caste_ratio_worker: out[0],
             caste_ratio_soldier: out[1],
