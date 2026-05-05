@@ -4,6 +4,50 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-04 (afternoon) — PPO r5: pop-based + curriculum, ceiling re-measured
+
+🟢 Closed-out — Pop-based RL + curriculum opponent sampling shipped + tested. Re-measured baseline at 47.1% (the 45.7% was eval noise at 20 matches/opp). New SOTA still `mlp_weights_v1.json` — neither warm-start r5 (46.3%) nor cold-start r5b (38.6%) cleared baseline. Full writeup: `docs/ppo-r5-postmortem.md`.
+
+### What was added
+
+**Trainer features (`crates/antcolony-trainer/`):**
+- `LeagueEntry.tier` field (0=heuristic, 1=archetype, 2=MLP/snapshot)
+- `League.sample_curriculum(progress, rng)` — weighted draws that ramp tier-2 from 0.2× → 2.0× as training progresses
+- `--include-baseline <path>` flag — adds an MLP weights JSON to the league as tier-2
+- `--snapshot-every N` flag — periodic self-snapshotting that adds tier-2 entries dynamically
+- `--curriculum` flag — switches opponent sampler from round-robin to curriculum-weighted
+
+**Eval infra:**
+- `scripts/eval_ppo_r5.ps1` — runs matchup_bench against all 7 archetypes, prints aggregate %.
+
+### Key finding: eval noise was hiding the real number
+
+20 matches/opp has SE ≈ 11% per-opp = ~4pp on the aggregate. Re-measuring MLP_v1 at 50 matches/opp gives **47.1%**, not 45.7%. The tighter eval is the new standard.
+
+### Identical-eval-different-weights symptom
+
+`snap_it0010`, `snap_it0040`, and `MLP_v1` had distinct file hashes but produced **the exact same 165/350** under deterministic match seeds. PPO at lr=5e-4 / entropy_coef=0.005 is making weight-space moves too small to flip any softmax argmax in `MlpBrain`. Behaviorally frozen. Loss spikes (115k–170k) during late-iter pop-based runs point to value-head divergence when novel opponents enter the league.
+
+### What's next (revised)
+
+The conclusion from the literature review (Ren et al., BC has provable ceiling) holds: the 7-archetype bench has a Nash plateau at ~47%. Routes to break it:
+
+1. **Wider eval bench.** Add stochastic / mixed brains so the Nash isn't a single point — should let the policy actually differentiate.
+2. **Reward shaping beyond worker-delta.** Add food-stored, queen-survival, territory-area as auxiliary rewards. The current signal is too sparse for PPO to find non-trivial improvements.
+3. **Value-loss clipping** in PPO update — would stop the late-iter divergence and let pop-based runs sustain longer training without drift.
+4. **OR pivot: ship 47.1% MLP and move to PvP P1.** The AI is competent. Game-side features beat further tuning at this point.
+
+### Files touched / created this sub-session
+
+- `crates/antcolony-trainer/src/league.rs` — tier field + curriculum sampler
+- `crates/antcolony-trainer/src/bin/ppo_train.rs` — new flags, snapshotting, curriculum-aware sampling, opp-distribution logging
+- `scripts/eval_ppo_r5.ps1` — eval matrix runner
+- `docs/ppo-r5-postmortem.md` — full writeup
+- `bench/ppo-rust-r5/` — warm-start run output (60 iter × 12 match)
+- `bench/ppo-rust-r5b/` — cold-start run output (150 iter × 16 match)
+
+---
+
 ## Session 2026-05-03 / 2026-05-04 — AI deep dive + Rust+Candle PPO trainer
 
 🟡 In progress — AI ceiling at 45.7% confirmed across 10+ approaches; Rust trainer foundation shipped; needs population-based RL or curriculum to break ceiling.
