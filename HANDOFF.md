@@ -181,10 +181,12 @@ The conclusion from the literature review (Ren et al., BC has provable ceiling) 
 ---
 
 ## Last Updated
-2026-04-25
+2026-05-04 (evening — PPO r6 / Nash diagnosis)
 
 ## Project Status
-🟢 **Phases 1-3 + K1-K5 + P4-P7 (full) + biology-grounded economy complete.** 78 sim unit + 1 integration tests passing. Release build clean, 7s smoke clean. P7 player-facing half (input + render) landed this session and user-confirmed working ("I was able to steer the ant"). Keys live: `F` possess-at-cursor, `WASD` steer avatar (auto-suppresses camera pan; arrows still pan), `R` recruit, `Shift+R` dismiss, `Q` toggle beacon mode, `RMB` place beacon. Render: yellow halo on possessed ant, cyan follower ring on bonded ants, beacon sprites with alpha-fade on `ticks_remaining`, HUD status line (avatar id/state/hp/food/followers + beacon mode + active count).
+🟢 **Game (Phases 1-3 + K1-K5 + P4-P7 full + biology economy) complete and shipping-quality.** 🟡 **AI training plateau diagnosed: ~47.1% mean win rate is the Nash equilibrium of the deterministic 7-archetype bench** (confirmed across vanilla PPO, pop+curriculum, +reward-shape+noisy variants). The current SOTA `bench/iterative-fsp/round_1/mlp_weights_v1.json` is at-or-near optimal vs the bench. Routes to break it: widen the bench with stochastic mix-strategy brains, or pivot to PvP P1 (the AI is shippable as is).
+
+**Keep historical context lower in this file** — Phase 1-3 / Keeper / P4-P7 / sprite work is documented in the older session blocks below. P7 player-facing half landed earlier (`F` possess, `WASD` steer, `R` recruit / `Shift+R` dismiss, `Q` beacon mode, `RMB` place beacon).
 
 ## Session 2026-04-21 — P7 input + render
 
