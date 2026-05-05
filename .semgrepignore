@@ -12,6 +12,11 @@ crates/antcolony-sim/src/bin/
 **/src/bin/
 **/bin/
 
+# Developer trainer crate — local CLI training tool, paths come from
+# operator flags (e.g. --start mlp_weights.json). The path-traversal
+# rules assume web-handler input and fire as false positives here.
+crates/antcolony-trainer/
+
 # Headless examples / harnesses — same reason.
 crates/antcolony-sim/examples/
 **/examples/

@@ -114,19 +114,34 @@ impl MatchEnv {
             }
         }
 
-        // Reward shaping (tuning pass r3): TINY per-step worker-delta
-        // (×0.01) + terminal bonus. r2's pure-terminal reward gave
-        // advantage≈0 everywhere → policy gradient≈0 → no learning.
-        // r1's ×0.05 dominated the terminal. ×0.01 is the goldilocks
-        // attempt: weak enough that terminal still matters, strong
-        // enough that intermediate steps have a non-zero learning signal.
+        // Reward shaping r6 (2026-05-04 evening):
+        //   - Worker-delta ×0.01 (kept from r3, the goldilocks rate)
+        //   - Food-stored-delta ×0.002 (denser signal — food turnover happens
+        //     every tick, worker turnover is sparse)
+        //   - Queen-alive bonus +0.005/step per side (penalize queen loss
+        //     before it cascades to worker death)
+        //   - Terminal ±1 (unchanged)
+        // The denser food + queen signals are intended to give PPO traction
+        // beyond the worker-delta-only signal that flatlined r1–r5 at 47%.
         let workers_now = [
             self.sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0),
             self.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0),
         ];
+        let food_now = [
+            self.sim.colonies.get(0).map(|c| c.food_stored).unwrap_or(0.0),
+            self.sim.colonies.get(1).map(|c| c.food_stored).unwrap_or(0.0),
+        ];
+        let queen_alive = [
+            self.sim.colonies.get(0).map(|c| if c.queen_health > 0.0 { 1.0 } else { 0.0 }).unwrap_or(0.0),
+            self.sim.colonies.get(1).map(|c| if c.queen_health > 0.0 { 1.0 } else { 0.0 }).unwrap_or(0.0),
+        ];
         let dl = workers_now[0] as i32 - self.prev_workers[0] as i32;
         let dr = workers_now[1] as i32 - self.prev_workers[1] as i32;
-        let mut reward_left = (dl as f32) * 0.01 - (dr as f32) * 0.01;
+        let df_l = food_now[0] - self.prev_food[0];
+        let df_r = food_now[1] - self.prev_food[1];
+        let mut reward_left = (dl as f32) * 0.01 - (dr as f32) * 0.01
+            + df_l * 0.002 - df_r * 0.002
+            + (queen_alive[0] - queen_alive[1]) * 0.005;
         let mut reward_right = -reward_left;
         if done {
             match self.sim.match_status() {
@@ -144,6 +159,7 @@ impl MatchEnv {
             }
         }
         self.prev_workers = workers_now;
+        self.prev_food = food_now;
 
         StepRecord {
             state_left,

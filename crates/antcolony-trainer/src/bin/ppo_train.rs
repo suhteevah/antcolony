@@ -36,6 +36,10 @@ fn main() -> anyhow::Result<()> {
     let mut include_baselines: Vec<PathBuf> = Vec::new();
     let mut snapshot_every: usize = 0;  // 0 = disabled
     let mut curriculum = false;
+    // --noisy-pool <weights_path>:<std1,std2,...>  e.g.
+    //   --noisy-pool bench/iterative-fsp/round_1/mlp_weights_v1.json:0.05,0.1,0.2
+    // adds 3 stochastic variants of that MLP to the league as tier-2.
+    let mut noisy_pool: Option<(PathBuf, Vec<f32>)> = None;
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < raw.len() {
@@ -47,6 +51,15 @@ fn main() -> anyhow::Result<()> {
             "--include-baseline" => { include_baselines.push(PathBuf::from(&raw[i+1])); i += 2; }
             "--snapshot-every" => { snapshot_every = raw[i+1].parse()?; i += 2; }
             "--curriculum" => { curriculum = true; i += 1; }
+            "--noisy-pool" => {
+                let arg = &raw[i+1];
+                let mut parts = arg.rsplitn(2, ':');
+                let stds_s = parts.next().expect("--noisy-pool missing std list");
+                let path_s = parts.next().expect("--noisy-pool missing path");
+                let stds: Vec<f32> = stds_s.split(',').filter_map(|s| s.parse().ok()).collect();
+                noisy_pool = Some((PathBuf::from(path_s), stds));
+                i += 2;
+            }
             other => anyhow::bail!("unknown arg `{other}`"),
         }
     }
@@ -74,6 +87,14 @@ fn main() -> anyhow::Result<()> {
         let name = format!("baseline_{idx}");
         trainer.league.add_mlp_snapshot(&name, path);
         tracing::info!(name = %name, path = %path.display(), "added league baseline");
+    }
+
+    if let Some((path, stds)) = &noisy_pool {
+        for (idx, std) in stds.iter().enumerate() {
+            let name = format!("noisy_{idx}_std{}", (std * 1000.0) as i32);
+            trainer.league.add_noisy_mlp(&name, path, *std);
+            tracing::info!(name = %name, path = %path.display(), std, "added noisy MLP variant");
+        }
     }
 
     // Initial export so we can verify shape immediately.

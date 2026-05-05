@@ -69,12 +69,42 @@ impl League {
         self.entries.len() - 1
     }
 
+    /// Add a noisy variant of an existing MLP weight file. Useful for
+    /// padding the league with stochastic-ish opponents around a strong
+    /// baseline so PPO sees a continuum of opponent skill, not just
+    /// deterministic exploiters. `std` is the per-decision Gaussian noise
+    /// applied via MlpBrain::set_explore_std.
+    pub fn add_noisy_mlp(
+        &mut self,
+        name: impl Into<String>,
+        weights_path: impl AsRef<std::path::Path>,
+        std: f32,
+    ) {
+        self.entries.push(LeagueEntry {
+            name: name.into(),
+            spec: format!("noisy_mlp:{}:{}", weights_path.as_ref().display(), std),
+            tier: 2,
+        });
+    }
+
     /// Materialize a brain for the given spec. Mirrors matchup_bench's
     /// build_brain() so league entries use the same parser.
     pub fn make_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
         if let Some(rest) = spec.strip_prefix("mlp:") {
             return Box::new(MlpBrain::load(rest, format!("mlp-{seed}"))
                 .expect("failed to load mlp weights"));
+        }
+        if let Some(rest) = spec.strip_prefix("noisy_mlp:") {
+            // Format: noisy_mlp:<path>:<std> — same as matchup_bench.
+            // rsplitn so paths with ':' work (e.g. drive letters on Windows).
+            let mut parts = rest.rsplitn(2, ':');
+            let std_s = parts.next().expect("noisy_mlp spec missing std");
+            let path = parts.next().expect("noisy_mlp spec missing path");
+            let std: f32 = std_s.parse().unwrap_or(0.1);
+            let mut b = MlpBrain::load(path, format!("noisy_mlp-{seed}"))
+                .expect("failed to load mlp weights for noisy_mlp");
+            b.set_explore_std(std);
+            return Box::new(b);
         }
         match spec {
             "heuristic" => Box::new(HeuristicBrain::new(5.0)),

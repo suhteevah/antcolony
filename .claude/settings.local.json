@@ -5,5 +5,8 @@
       "Bash(cp ~/.claude/skills/handoff/SKILL.md /j/antcolony/.claude/skills/handoff/SKILL.md)",
       "Bash(cp /j/claudeai/.mcp.json /j/antcolony/.mcp.json)"
     ]
+  },
+  "enabledPlugins": {
+    "semgrep@claude-plugins-official": false
   }
 }

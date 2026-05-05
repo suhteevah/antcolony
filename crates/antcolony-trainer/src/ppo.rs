@@ -22,6 +22,11 @@ pub struct PpoConfig {
     pub max_grad_norm: f64,
     pub eval_every: usize,
     pub snapshot_every: usize,
+    /// Range for value-loss clipping (PPO's value-clip trick). Limits
+    /// how far value_pred can move from old_value in a single update,
+    /// preventing the 115k+ loss spikes that destabilized r5 when
+    /// novel pop-based opponents entered the league. Set 0 to disable.
+    pub value_clip: f32,
 }
 
 impl Default for PpoConfig {
@@ -49,6 +54,10 @@ impl Default for PpoConfig {
             max_grad_norm: 0.5,
             eval_every: 5,
             snapshot_every: 10,
+            // Default off — opt-in via PpoConfig override. When enabled
+            // (e.g. 0.2), the value head's per-step move is clipped to
+            // ±value_clip around the rollout-time prediction.
+            value_clip: 0.0,
         }
     }
 }
