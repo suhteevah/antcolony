@@ -27,6 +27,13 @@ pub struct PpoConfig {
     /// preventing the 115k+ loss spikes that destabilized r5 when
     /// novel pop-based opponents entered the league. Set 0 to disable.
     pub value_clip: f32,
+    /// Hidden-layer width for the actor & critic MLPs. Default 64
+    /// (matches mlp_weights_v1). Bumping to 128 doubles capacity and
+    /// is one of the candidate architectural changes for breaking the
+    /// 47% Nash plateau. The exported MLP JSON encodes hidden_dim, and
+    /// `MlpBrain::load` reads dims from the matrix shapes — so any
+    /// width round-trips into the existing inference path.
+    pub hidden_dim: usize,
 }
 
 impl Default for PpoConfig {
@@ -58,6 +65,7 @@ impl Default for PpoConfig {
             // (e.g. 0.2), the value head's per-step move is clipped to
             // ±value_clip around the rollout-time prediction.
             value_clip: 0.0,
+            hidden_dim: crate::HIDDEN_DIM,
         }
     }
 }
@@ -76,7 +84,7 @@ impl PpoTrainer {
         use rand::SeedableRng;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let policy = ActorCritic::new(vb, &device)?;
+        let policy = ActorCritic::new(vb, config.hidden_dim, &device)?;
         Ok(Self {
             policy,
             varmap,
@@ -165,6 +173,13 @@ impl PpoTrainer {
         let w2 = to_2d(&d["w2"]); let b2 = to_1d(&d["b2"]);
         let w3 = to_2d(&d["w3"]); let b3 = to_1d(&d["b3"]);
         let h1 = w1.len(); let h2 = w2.len();
+        if h1 != self.config.hidden_dim || h2 != self.config.hidden_dim {
+            anyhow::bail!(
+                "warm_start_actor: dim mismatch — model hidden_dim={} but file is {}x{}. \
+                 Either retrain at hidden_dim={} or pass --hidden-dim {} to ppo-train.",
+                self.config.hidden_dim, h1, h2, h1, h1
+            );
+        }
         let flat = |w: Vec<Vec<f32>>| -> Vec<f32> { w.into_iter().flatten().collect() };
 
         // Update normalization buffers (not Vars — direct field assign)
@@ -212,6 +227,7 @@ impl PpoTrainer {
         returns: &[f32],
         advantages: &[f32],
         old_log_probs: &[f32],
+        old_values: &[f32],         // value head output captured at rollout time
     ) -> anyhow::Result<f32> {
         // Concat [N, 17] / [N, 6] / [N] tensors once
         let s = Tensor::cat(states, 0)?;        // [N, 17]
@@ -225,6 +241,7 @@ impl PpoTrainer {
         let normed: Vec<f32> = advantages.iter().map(|x| (x - mean_adv) / std_adv).collect();
         let adv = Tensor::from_slice(&normed, n, &self.device)?;
         let old_lp = Tensor::from_slice(old_log_probs, n, &self.device)?;
+        let old_v = Tensor::from_slice(old_values, n, &self.device)?;
 
         let mut loss_sum = 0.0_f32;
         let mut steps = 0;
@@ -245,9 +262,27 @@ impl PpoTrainer {
             let surr2 = (&clipped_ratio * &adv)?;
             // Negative because we minimize; PPO maximizes expected surrogate
             let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
-            // Value MSE
+            // Value loss — clipped (PPO-style) when value_clip > 0,
+            // standard MSE otherwise. The clipped variant prevents the
+            // value head from moving more than ±clip away from its
+            // rollout-time prediction in a single update; we then take
+            // the *max* of clipped vs unclipped MSE so the loss is a
+            // pessimistic bound on how far we'd let the value head move.
+            // Without this, novel pop-based opponents drove 115k+ loss
+            // spikes on r5 and 40M+ spikes on r6.
             let val_diff = (&value_pred - &rt)?;
-            let value_loss = (val_diff.sqr()?).mean_all()?;
+            let unclipped_mse = val_diff.sqr()?;
+            let value_loss = if self.config.value_clip > 0.0 {
+                let clip = self.config.value_clip;
+                let delta = (&value_pred - &old_v)?;
+                let clamped = delta.clamp(-clip, clip)?;
+                let v_clipped = (&old_v + &clamped)?;
+                let clipped_diff = (&v_clipped - &rt)?;
+                let clipped_mse = clipped_diff.sqr()?;
+                unclipped_mse.maximum(&clipped_mse)?.mean_all()?
+            } else {
+                unclipped_mse.mean_all()?
+            };
             // Entropy bonus (encourage exploration)
             // entropy of Normal(mean, std) = sum(log_std) + 0.5 * D * (1 + log(2*pi))
             // log_std is shared across batch, so this is constant per pass —

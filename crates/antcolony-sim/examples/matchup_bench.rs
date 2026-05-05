@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use antcolony_sim::{
     AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BreederBrain, ColonyAiState,
     ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain,
-    BrainArchetype, MatchStatus, MlpBrain, RandomBrain, Simulation, SpeciesBrain, Topology, TunedBrain,
+    BrainArchetype, MatchStatus, MixedBrain, MlpBrain, RandomBrain, Simulation, SpeciesBrain, Topology, TunedBrain,
     config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
 };
 use serde::Serialize;
@@ -206,6 +206,15 @@ fn build_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
         return match SpeciesBrain::from_toml_path(toml_path, archetype, blend) {
             Ok(b) => Box::new(b),
             Err(e) => panic!("failed to load species TOML `{toml_path}`: {e}"),
+        };
+    }
+    if let Some(rest) = spec.strip_prefix("mix:") {
+        // Format: mix:archetype1[=w1],archetype2[=w2],...
+        // e.g. mix:defender,aggressor,economist (equal weights)
+        //      mix:defender=2,aggressor=1 (weighted)
+        return match MixedBrain::from_archetype_spec(rest, seed) {
+            Ok(b) => Box::new(b),
+            Err(e) => panic!("failed to build MixedBrain from `{rest}`: {e}"),
         };
     }
     if let Some(rest) = spec.strip_prefix("tuned:") {

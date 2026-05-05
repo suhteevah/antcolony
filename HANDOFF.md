@@ -4,6 +4,87 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-05 (cont) — r7: 3-path attack, cold-start regression, real number revealed
+
+🟡 Mixed result. All three "break the 47%" paths from the diagnosis shipped (stochastic-at-inference via existing `noisy_mlp:`, wider eval bench via `mix:`, architectural change via runtime `--hidden-dim`). Real r7 cold-started at hidden=128 underperformed v1 — 100 iter was not enough budget for a 4× wider param count. **But the eval matrix revealed the real number:** v1 was always 50.7% on the wider bench; the 47% was a property of the deterministic 7-archetype Nash point, not the policy.
+
+### Eval matrix (50 matches/cell)
+
+| Config | 7-archetype | 5-mix |
+|---|---:|---:|
+| v1 deterministic | 47.6% | **50.7%** |
+| v1 noisy 0.05 | 47.1% | 52.7% |
+| v1 noisy 0.10 | 42.4% | 49.3% |
+| r7 (h128 cold) deterministic | 43.7% | 46.8% |
+| r7 noisy 0.05 | 44.0% | 45.2% |
+| r7 noisy 0.10 | 42.0% | 42.0% |
+
+### What was added
+
+**Trainer:**
+- `PpoConfig.hidden_dim` runtime field; `ActorCritic::new(vb, hidden_dim, device)`. `--hidden-dim` CLI flag. `MlpBrain::load` reads dims out of weight matrices, so any width round-trips into deployment.
+- `warm_start_actor` validates dim match, errors clearly when file vs config mismatch.
+
+**Eval:**
+- `scripts/eval_ppo_r7.ps1` — 3-row × 12-col matrix (deterministic / noisy 0.05 / noisy 0.10) × (7 archetypes + 5 mix opps), 50 matches/cell. Use ASCII only — PS5.1 chokes on em-dashes.
+
+### Findings
+
+1. **Stochastic-at-inference doesn't help on the original bench.** v1 noisy_0.05 = 47.1% (within noise of det 47.6%). At 0.10 it actively hurts (42.4%). The Nash plateau on the 7-archetype bench is real, and a small Gaussian over the same policy doesn't shift it.
+2. **The wider bench gives a different, higher number.** v1 is 50.7% against the 5 mix opponents. This is the honest metric. The 47% was always a saturated bench artifact.
+3. **Cold-start at h=128 with 100 iter is a regression.** r7 at 43.7% / 46.8% is worse than v1 at 47.6% / 50.7%. Doubling capacity doubles the from-scratch training need, and 100×16 = 1600 matches is nowhere near v1's BC training corpus. Loss did stay tame (~1-4M, value-clip working — would have been 40M+ pre-clip).
+4. **Value-clip works.** Loss never spiked above ~5M across 100 iters even with snapshots + 4 mix opps. The r6 40M+ spikes are gone.
+
+### What's next
+
+**Update:** r7b warm-start (h=64, value-clip 0.2, curriculum, 4 mix opps, 200 iter, warm from `mlp_weights_v1.json`) ran clean (loss 1-3M, no spikes) but **also regressed**: 46.3% / 47.6%. PPO moved the policy off v1's local optimum into a slightly worse one — same pattern as every PPO run since r1. The Ren et al. finding holds: outcome-driven RL refinement of a BC-trained policy in this setup doesn't push past the BC ceiling.
+
+**Recommendation: ship v1 and pivot to PvP P1.** v1's 50.7% on the honest (wider) bench is a clean shipping number; further AI tuning is hitting diminishing returns and we've now validated 3 architectural changes + 5 training hyperparam regimes all bouncing within ±3pp of v1.
+
+### Files touched
+
+- `crates/antcolony-trainer/src/lib.rs` — `HIDDEN_DIM` doc bumped (still default const)
+- `crates/antcolony-trainer/src/policy.rs` — `ActorCritic::new` takes `hidden_dim`
+- `crates/antcolony-trainer/src/ppo.rs` — `PpoConfig.hidden_dim`, dim-mismatch check in `warm_start_actor`
+- `crates/antcolony-trainer/src/bin/ppo_train.rs` — `--hidden-dim` flag
+- `scripts/eval_ppo_r7.ps1` — 3-path eval matrix (NEW)
+- `bench/ppo-rust-r7/` — h128 cold-start run + eval
+- `bench/eval-v1-stochastic/` — v1 stochastic-at-inference eval
+- `bench/ppo-rust-r7b/` — h=64 warm-start run + eval (regressed to 46.3% / 47.6%)
+
+---
+
+## Session 2026-05-05 — value-clip + stochastic mix-strategy bench
+
+🟢 Closed-out — Both items from the previous session's "what's next" list shipped: PPO value-loss clipping wired into `ppo_update`, and `MixedBrain` (per-tick weighted archetype sampler) added to widen the bench past the 47.1% Nash plateau. Trainer + matchup_bench both accept `mix:` specs.
+
+### What was added
+
+**Trainer (`crates/antcolony-trainer/`):**
+- `ppo_update` now takes `old_values: &[f32]` and applies the standard PPO value-loss clipping when `PpoConfig.value_clip > 0`: `v_clipped = old_v + clamp(v_pred - old_v, ±clip)`, then loss = `max(unclipped_mse, clipped_mse).mean()`. Prevents the 40M+ value-loss spikes seen in r5/r6.
+- `bin/ppo-train` flags: `--value-clip <f>` (default 0 = off, recommended 0.2) and `--add-opp <name>:<spec>` (push arbitrary opponent specs into the league as tier 1; repeatable). Rollout loop tracks `all_old_values` from `batch.values` and threads them through.
+- `League::add_spec(name, spec, tier)` — escape hatch for non-MLP / non-noisy opponents.
+
+**Sim (`crates/antcolony-sim/src/ai/brain.rs`):**
+- New `MixedBrain` — holds `Vec<(Box<dyn AiBrain>, f32)>`, samples one inner brain by weight per `decide()` call. Each component keeps its own state across calls.
+- `MixedBrain::from_archetype_spec` parses `mix:defender,aggressor,economist` (equal weights) or `mix:defender=2,aggressor=1` (weighted).
+- Re-exported through `ai::mod` and `lib.rs`.
+- Both `matchup_bench::build_brain` and `League::make_brain` recognize `mix:` so the same spec works in eval and training.
+
+### Smoke verification
+
+- 137 lib tests still pass.
+- `matchup_bench --left mix:defender,aggressor,economist --right heuristic --matches 4` ran clean — 1/4 wins (variance expected at 4 matches; sanity-only).
+- 2-iter trainer smoke at `bench/ppo-rust-r7-smoke/` with `--value-clip 0.2 --add-opp mix_da:mix:defender,aggressor --add-opp mix_eco:mix:economist=2,forager=1,heuristic=1` ran clean — opp distribution logs confirm both mix entries got sampled.
+
+### What's next
+
+- **Run a real r7** — e.g. `--iterations 100 --matches-per-iter 16 --start bench/iterative-fsp/round_1/mlp_weights_v1.json --curriculum --value-clip 0.2 --snapshot-every 20 --add-opp mix_da:mix:defender,aggressor --add-opp mix_aef:mix:aggressor,economist,forager --add-opp mix_de:mix:defender=2,economist=1 --add-opp mix_full:mix:heuristic,defender,aggressor,economist,breeder,forager,conservative` to see whether value-clip stabilizes loss + the wider bench lets the policy clear 47%.
+- **Widen `eval_ppo_r5.ps1` (or new `eval_ppo_r7.ps1`)** to include the same mix opponents at 50 matches/opp so the new SOTA is measured against a stochastic bench, not the same 7-archetype Nash point.
+- Long-run colony-collapse substep architecture remains parked.
+
+---
+
 ## Session 2026-05-04 (evening) — PPO r6: reward shaping + noisy pool, Nash diagnosis
 
 🟢 Closed-out — Reward shaping (food delta + queen survival in `env.rs`) and noisy MLP variants (`add_noisy_mlp` in `league.rs`, `--noisy-pool` flag) shipped. r6 unfroze the policy (intermediate snapshots produce 158–162/350, distinct from baseline) but the wander is **around** 47%, not above. Diagnosis: **~47% is the Nash equilibrium against the deterministic 7-archetype bench**, not a hyperparameter issue. The plateau is in the bench, not the model.
@@ -181,7 +262,7 @@ The conclusion from the literature review (Ren et al., BC has provable ceiling) 
 ---
 
 ## Last Updated
-2026-05-04 (evening — PPO r6 / Nash diagnosis)
+2026-05-05 (r7 + r7b — both regressed; v1 at 50.7% on wider bench is the ceiling, recommend ship+pivot)
 
 ## Project Status
 🟢 **Game (Phases 1-3 + K1-K5 + P4-P7 full + biology economy) complete and shipping-quality.** 🟡 **AI training plateau diagnosed: ~47.1% mean win rate is the Nash equilibrium of the deterministic 7-archetype bench** (confirmed across vanilla PPO, pop+curriculum, +reward-shape+noisy variants). The current SOTA `bench/iterative-fsp/round_1/mlp_weights_v1.json` is at-or-near optimal vs the bench. Routes to break it: widen the bench with stochastic mix-strategy brains, or pivot to PvP P1 (the AI is shippable as is).

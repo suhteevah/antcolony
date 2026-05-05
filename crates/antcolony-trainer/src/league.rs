@@ -3,7 +3,7 @@
 
 use antcolony_sim::{
     AiBrain, AggressorBrain, BreederBrain, ConservativeBuilderBrain,
-    DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain, MlpBrain, RandomBrain,
+    DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain, MixedBrain, MlpBrain, RandomBrain,
 };
 
 /// Identifier for a league member. Closure box returned via `make_brain`.
@@ -34,6 +34,13 @@ impl League {
             LeagueEntry { name: "conservative".into(), spec: "conservative".into(), tier: 1 },
         ];
         Self { entries }
+    }
+
+    /// Push an arbitrary opponent spec. Used by `--add-opp` to inject
+    /// stochastic mix-strategy brains (`mix:...`) into the bench so the
+    /// Nash equilibrium is no longer a single point.
+    pub fn add_spec(&mut self, name: impl Into<String>, spec: impl Into<String>, tier: u8) {
+        self.entries.push(LeagueEntry { name: name.into(), spec: spec.into(), tier });
     }
 
     pub fn add_mlp_snapshot(&mut self, name: impl Into<String>, weights_path: impl AsRef<std::path::Path>) {
@@ -93,6 +100,10 @@ impl League {
         if let Some(rest) = spec.strip_prefix("mlp:") {
             return Box::new(MlpBrain::load(rest, format!("mlp-{seed}"))
                 .expect("failed to load mlp weights"));
+        }
+        if let Some(rest) = spec.strip_prefix("mix:") {
+            return Box::new(MixedBrain::from_archetype_spec(rest, seed)
+                .unwrap_or_else(|e| panic!("league: bad mix spec `{rest}`: {e}")));
         }
         if let Some(rest) = spec.strip_prefix("noisy_mlp:") {
             // Format: noisy_mlp:<path>:<std> — same as matchup_bench.

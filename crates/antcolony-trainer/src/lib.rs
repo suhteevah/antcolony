@@ -31,7 +31,11 @@ pub use env::{MatchEnv, Trajectory, StepRecord};
 pub use league::League;
 
 /// Match the MlpBrain layout in crates/antcolony-sim/src/ai/brain.rs.
-/// Same input dim, same hidden dim, same output dim — so weights round-trip.
+/// `INPUT_DIM` and `OUTPUT_DIM` are locked by the sim's state/decision
+/// schema. `HIDDEN_DIM` is the default — runtime override via
+/// `PpoConfig.hidden_dim` lets us ship wider nets (128, 256) without
+/// breaking deployment, since MlpBrain reads dimensions out of the
+/// weight matrices at load time.
 pub const INPUT_DIM: usize = 17;
 pub const HIDDEN_DIM: usize = 64;
 pub const OUTPUT_DIM: usize = 6;

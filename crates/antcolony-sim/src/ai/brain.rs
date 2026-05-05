@@ -1057,6 +1057,111 @@ impl AiBrain for AetherLmBrain {
 }
 
 // ============================================================
+// MixedBrain — stochastic per-tick archetype mixer.
+// ============================================================
+
+/// Per-decision random mix of archetype brains. On every `decide()`
+/// call, samples one component brain by weight and forwards the call.
+/// Each component keeps its own internal state across calls (so e.g.
+/// the chosen DefenderBrain's brood-buffer history persists between
+/// the ticks where it actually drives the decision).
+///
+/// Designed to widen the eval bench past the deterministic 7-archetype
+/// Nash plateau (~47.1%) — a mix-strategy opponent has no fixed
+/// best-response policy, so a learned policy can actually differentiate
+/// against it without hitting a single-point equilibrium.
+///
+/// Spec format used by `build_brain` / `make_brain`:
+/// ```text
+///   mix:defender,aggressor,economist
+///   mix:defender=2,aggressor=1     // explicit weights
+/// ```
+pub struct MixedBrain {
+    label: String,
+    components: Vec<(Box<dyn AiBrain>, f32)>,
+    cumulative: Vec<f32>,
+    total_weight: f32,
+    rng: rand_chacha::ChaCha8Rng,
+}
+
+impl MixedBrain {
+    /// Build from a list of (brain, weight) pairs. Weights need not
+    /// sum to 1 — the sampler normalizes. `label` surfaces in logs +
+    /// bench reports.
+    pub fn new(label: impl Into<String>, components: Vec<(Box<dyn AiBrain>, f32)>, seed: u64) -> Self {
+        use rand::SeedableRng;
+        assert!(!components.is_empty(), "MixedBrain: empty component list");
+        let total_weight: f32 = components.iter().map(|(_, w)| *w).sum();
+        assert!(total_weight > 0.0, "MixedBrain: all weights zero or negative");
+        let mut cumulative = Vec::with_capacity(components.len());
+        let mut acc = 0.0;
+        for (_, w) in &components {
+            acc += w;
+            cumulative.push(acc);
+        }
+        Self {
+            label: label.into(),
+            components,
+            cumulative,
+            total_weight,
+            rng: rand_chacha::ChaCha8Rng::seed_from_u64(seed),
+        }
+    }
+
+    /// Construct from a comma-separated archetype list:
+    /// `defender,aggressor` (equal weights) or
+    /// `defender=2,aggressor=1` (explicit weights).
+    /// Only takes the no-arg archetypes (the same 7 the league seeds with).
+    pub fn from_archetype_spec(spec: &str, seed: u64) -> Result<Self, String> {
+        let mut components: Vec<(Box<dyn AiBrain>, f32)> = Vec::new();
+        let mut label_parts: Vec<String> = Vec::new();
+        for part in spec.split(',') {
+            let part = part.trim();
+            if part.is_empty() { continue; }
+            let (name, weight) = match part.split_once('=') {
+                Some((n, w)) => {
+                    let w: f32 = w.trim().parse().map_err(|e| format!("bad weight `{w}`: {e}"))?;
+                    (n.trim(), w)
+                }
+                None => (part, 1.0),
+            };
+            let brain: Box<dyn AiBrain> = match name {
+                "heuristic" => Box::new(HeuristicBrain::new(5.0)),
+                "random" => Box::new(RandomBrain::new(seed.wrapping_add(label_parts.len() as u64))),
+                "defender" => Box::new(DefenderBrain::new()),
+                "aggressor" => Box::new(AggressorBrain::new()),
+                "economist" => Box::new(EconomistBrain::new()),
+                "breeder" => Box::new(BreederBrain::new()),
+                "forager" => Box::new(ForagerBrain::new()),
+                "conservative" => Box::new(ConservativeBuilderBrain::new()),
+                other => return Err(format!("MixedBrain: unknown archetype `{other}`")),
+            };
+            label_parts.push(if (weight - 1.0).abs() < 1e-6 { name.to_string() } else { format!("{name}={weight}") });
+            components.push((brain, weight));
+        }
+        if components.is_empty() {
+            return Err("MixedBrain: empty spec".into());
+        }
+        let label = format!("mix[{}]", label_parts.join(","));
+        Ok(Self::new(label, components, seed))
+    }
+}
+
+impl AiBrain for MixedBrain {
+    fn name(&self) -> &str { &self.label }
+
+    fn decide(&mut self, state: &ColonyAiState) -> AiDecision {
+        use rand::Rng;
+        let x: f32 = self.rng.r#gen::<f32>() * self.total_weight;
+        let mut idx = self.cumulative.len() - 1;
+        for (i, c) in self.cumulative.iter().enumerate() {
+            if x <= *c { idx = i; break; }
+        }
+        self.components[idx].0.decide(state)
+    }
+}
+
+// ============================================================
 // Match-end detection.
 // ============================================================
 

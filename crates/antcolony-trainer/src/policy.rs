@@ -11,14 +11,14 @@
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 
-use crate::{INPUT_DIM, HIDDEN_DIM, OUTPUT_DIM};
+use crate::{INPUT_DIM, OUTPUT_DIM};
 
 pub struct ActorCritic {
-    // Actor MLP (17 -> 64 -> 64 -> 6)
+    // Actor MLP (INPUT_DIM -> hidden -> hidden -> OUTPUT_DIM)
     pub actor_l1: Linear,
     pub actor_l2: Linear,
     pub actor_l3: Linear,
-    // Critic MLP (17 -> 64 -> 64 -> 1)
+    // Critic MLP (INPUT_DIM -> hidden -> hidden -> 1)
     pub critic_l1: Linear,
     pub critic_l2: Linear,
     pub critic_l3: Linear,
@@ -27,22 +27,24 @@ pub struct ActorCritic {
     // Z-score normalization (frozen post-fit, but we hold them as buffers)
     pub input_mean: Tensor,
     pub input_std: Tensor,
+    pub hidden_dim: usize,
 }
 
 impl ActorCritic {
-    pub fn new(vb: VarBuilder, device: &Device) -> Result<Self> {
+    pub fn new(vb: VarBuilder, hidden_dim: usize, device: &Device) -> Result<Self> {
         Ok(Self {
-            actor_l1: candle_nn::linear(INPUT_DIM, HIDDEN_DIM, vb.pp("actor_l1"))?,
-            actor_l2: candle_nn::linear(HIDDEN_DIM, HIDDEN_DIM, vb.pp("actor_l2"))?,
-            actor_l3: candle_nn::linear(HIDDEN_DIM, OUTPUT_DIM, vb.pp("actor_l3"))?,
-            critic_l1: candle_nn::linear(INPUT_DIM, HIDDEN_DIM, vb.pp("critic_l1"))?,
-            critic_l2: candle_nn::linear(HIDDEN_DIM, HIDDEN_DIM, vb.pp("critic_l2"))?,
-            critic_l3: candle_nn::linear(HIDDEN_DIM, 1, vb.pp("critic_l3"))?,
+            actor_l1: candle_nn::linear(INPUT_DIM, hidden_dim, vb.pp("actor_l1"))?,
+            actor_l2: candle_nn::linear(hidden_dim, hidden_dim, vb.pp("actor_l2"))?,
+            actor_l3: candle_nn::linear(hidden_dim, OUTPUT_DIM, vb.pp("actor_l3"))?,
+            critic_l1: candle_nn::linear(INPUT_DIM, hidden_dim, vb.pp("critic_l1"))?,
+            critic_l2: candle_nn::linear(hidden_dim, hidden_dim, vb.pp("critic_l2"))?,
+            critic_l3: candle_nn::linear(hidden_dim, 1, vb.pp("critic_l3"))?,
             log_std: vb.get(OUTPUT_DIM, "log_std").unwrap_or_else(|_| {
                 Tensor::full(-1.0_f32, OUTPUT_DIM, device).unwrap()
             }),
             input_mean: Tensor::zeros(INPUT_DIM, DType::F32, device)?,
             input_std: Tensor::ones(INPUT_DIM, DType::F32, device)?,
+            hidden_dim,
         })
     }
 

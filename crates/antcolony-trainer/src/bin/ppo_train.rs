@@ -40,6 +40,19 @@ fn main() -> anyhow::Result<()> {
     //   --noisy-pool bench/iterative-fsp/round_1/mlp_weights_v1.json:0.05,0.1,0.2
     // adds 3 stochastic variants of that MLP to the league as tier-2.
     let mut noisy_pool: Option<(PathBuf, Vec<f32>)> = None;
+    // --add-opp <name>:<spec>  e.g.
+    //   --add-opp mix_da:mix:defender,aggressor
+    //   --add-opp mix_eco:mix:economist=2,forager=1,heuristic=1
+    // Pushes arbitrary opponent specs into the league (tier 1). Use this
+    // to widen the bench past the deterministic 7-archetype Nash plateau.
+    let mut extra_opps: Vec<(String, String)> = Vec::new();
+    // --value-clip <f>  PPO value-loss clipping range. 0 disables.
+    let mut value_clip: f32 = 0.0;
+    // --hidden-dim <n>  Width of actor/critic MLP hidden layers. Default 64
+    // (matches mlp_weights_v1). 128 doubles capacity and is one path to
+    // break the 47% Nash plateau. Cold-start required when bumped — old
+    // 64-dim weight files can't warm-start a 128-dim net.
+    let mut hidden_dim: usize = antcolony_trainer::HIDDEN_DIM;
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < raw.len() {
@@ -51,6 +64,16 @@ fn main() -> anyhow::Result<()> {
             "--include-baseline" => { include_baselines.push(PathBuf::from(&raw[i+1])); i += 2; }
             "--snapshot-every" => { snapshot_every = raw[i+1].parse()?; i += 2; }
             "--curriculum" => { curriculum = true; i += 1; }
+            "--add-opp" => {
+                let arg = &raw[i+1];
+                // Split on FIRST colon: name:spec  (spec may itself contain colons)
+                let (name, spec) = arg.split_once(':')
+                    .unwrap_or_else(|| panic!("--add-opp expects `<name>:<spec>`, got `{arg}`"));
+                extra_opps.push((name.to_string(), spec.to_string()));
+                i += 2;
+            }
+            "--value-clip" => { value_clip = raw[i+1].parse()?; i += 2; }
+            "--hidden-dim" => { hidden_dim = raw[i+1].parse()?; i += 2; }
             "--noisy-pool" => {
                 let arg = &raw[i+1];
                 let mut parts = arg.rsplitn(2, ':');
@@ -73,6 +96,14 @@ fn main() -> anyhow::Result<()> {
     let mut config = PpoConfig::default();
     config.iterations = iterations;
     config.matches_per_iter = matches_per_iter;
+    config.value_clip = value_clip;
+    config.hidden_dim = hidden_dim;
+    if value_clip > 0.0 {
+        tracing::info!(value_clip, "PPO value-loss clipping enabled");
+    }
+    if hidden_dim != antcolony_trainer::HIDDEN_DIM {
+        tracing::info!(hidden_dim, default = antcolony_trainer::HIDDEN_DIM, "non-default hidden width");
+    }
 
     let mut trainer = PpoTrainer::new(backend.device().clone(), config.clone())?;
     if let Some(ws_path) = &warm_start {
@@ -87,6 +118,13 @@ fn main() -> anyhow::Result<()> {
         let name = format!("baseline_{idx}");
         trainer.league.add_mlp_snapshot(&name, path);
         tracing::info!(name = %name, path = %path.display(), "added league baseline");
+    }
+
+    for (name, spec) in &extra_opps {
+        // Tier 1 (mid-difficulty); curriculum sampler treats them as
+        // archetype-class opponents — appropriate for a stochastic mix.
+        trainer.league.add_spec(name, spec, 1);
+        tracing::info!(name = %name, spec = %spec, "added extra opponent");
     }
 
     if let Some((path, stds)) = &noisy_pool {
@@ -114,6 +152,7 @@ fn main() -> anyhow::Result<()> {
         let mut all_returns: Vec<f32> = Vec::new();
         let mut all_advantages: Vec<f32> = Vec::new();
         let mut all_log_probs: Vec<f32> = Vec::new();
+        let mut all_old_values: Vec<f32> = Vec::new();
         let mut total_reward = 0.0_f32;
         let mut opp_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
@@ -138,6 +177,7 @@ fn main() -> anyhow::Result<()> {
             all_states.extend(batch.states);
             all_actions.extend(batch.actions);
             all_log_probs.extend(batch.log_probs);
+            all_old_values.extend(batch.values);
             all_advantages.extend(adv);
             all_returns.extend(ret);
         }
@@ -151,7 +191,7 @@ fn main() -> anyhow::Result<()> {
         let loss = trainer.ppo_update(
             &mut optimizer,
             &all_states, &all_actions,
-            &all_returns, &all_advantages, &all_log_probs,
+            &all_returns, &all_advantages, &all_log_probs, &all_old_values,
         )?;
 
         let opp_dist: String = {
