@@ -45,6 +45,28 @@ This document contains everything needed to implement the ant colony simulation 
 - Handshake blocks the Bevy main thread (60s timeout) -- LAN/Tailscale latency is sub-frame so play feels normal; WAN play with high RTT will visibly hitch (worker-thread refactor deferred to N4).
 - Picker hint line added so H/J are discoverable: `ENTER = keeper · V = vs AI · H = host PvP · J = join PvP`.
 
+### Pre-flight: Windows firewall + reachability
+
+First time you bind a port, Windows pops a "Allow access" dialog. Click yes (Private + Public if friends are on Tailscale -- Tailscale shows up as Public on Win by default). Or pre-add the rule once so it stops asking:
+
+```powershell
+.\target\release\net_diag.exe firewall --port 17001   # prints the New-NetFirewallRule cmd to run
+```
+
+Then verify the network path before launching the full game:
+
+```powershell
+# host:
+.\target\release\net_diag.exe listen --port 17001
+
+# joiner:
+.\target\release\net_diag.exe dial 100.90.71.97:17001    # use host's Tailscale / LAN IP
+```
+
+If the banner exchange completes, the actual PvP will too (same TCP path). The listener auto-prints all reachable local addresses so you can pick the right one to send your friend.
+
+NOTE: there is **no NAT traversal** in our code -- raw TCP only. Reachable scenarios: same machine / same LAN / Tailscale-or-similar VPN / port-forwarded WAN. Random-ISP-to-random-ISP without one of those won't work; `net_diag dial` will report `TimedOut` with a hint pointing at port-forward or Tailscale.
+
 ### How to play tonight
 
 ```powershell
