@@ -103,4 +103,18 @@ impl SimulationState {
             environment: env.clone(),
         }
     }
+
+    /// PvP variant: same arena as `from_species_two_colony` but BOTH
+    /// colonies have `is_ai_controlled = false` so neither side gets
+    /// the sim's internal AI nudges. The PvP layer is responsible for
+    /// calling `apply_ai_decision` for both colonies on every decision
+    /// tick (one from local input, one from the lockstep peer).
+    pub fn from_species_pvp(species: &Species, env: &Environment) -> Self {
+        let mut state = Self::from_species_two_colony(species, env);
+        for c in state.sim.colonies.iter_mut() {
+            c.is_ai_controlled = false;
+        }
+        tracing::info!("SimulationState::from_species_pvp -- both colonies under external control");
+        state
+    }
 }

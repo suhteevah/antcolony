@@ -164,6 +164,7 @@ impl Plugin for RenderPlugin {
             .add_plugins(crate::inspector::InspectorPlugin)
             .add_plugins(crate::timeline::TimelinePlugin)
             .add_plugins(crate::player_input::PlayerInputPlugin)
+            .add_plugins(crate::pvp_client::PvpClientPlugin)
             .add_plugins(crate::atlas::SpriteAtlasPlugin)
             .init_state::<AppState>()
             .insert_resource(ClearColor(Color::srgb(0.09, 0.07, 0.05)))

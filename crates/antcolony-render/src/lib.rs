@@ -8,6 +8,7 @@ pub mod narrator;
 pub mod picker;
 pub mod player_input;
 pub mod plugin;
+pub mod pvp_client;
 pub mod save_ui;
 pub mod substrate;
 pub mod timeline;
@@ -22,6 +23,7 @@ pub use encyclopedia::EncyclopediaPlugin;
 pub use picker::PickerPlugin;
 pub use player_input::PlayerInputPlugin;
 pub use plugin::RenderPlugin;
+pub use pvp_client::PvpClientPlugin;
 pub use save_ui::SaveUiPlugin;
 pub use ui::UiPlugin;
 

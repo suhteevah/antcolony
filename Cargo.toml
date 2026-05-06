@@ -5,6 +5,7 @@ members = [
     "crates/antcolony-game",
     "crates/antcolony-render",
     "crates/antcolony-trainer",
+    "crates/antcolony-net",
 ]
 
 [workspace.package]
@@ -48,6 +49,7 @@ antcolony-sim = { path = "crates/antcolony-sim" }
 antcolony-game = { path = "crates/antcolony-game" }
 antcolony-render = { path = "crates/antcolony-render" }
 antcolony-trainer = { path = "crates/antcolony-trainer" }
+antcolony-net = { path = "crates/antcolony-net" }
 
 # Candle stack — pure-Rust ML/RL framework. Pulled from local fork at
 # J:\candle-src\ which has CUDA optimizations for the RTX 3070 Ti

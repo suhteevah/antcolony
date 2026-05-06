@@ -186,6 +186,20 @@ fn setup_picker_ui(
                 },
             ));
 
+            // Mode hint -- keeper / versus AI / PvP netcode.
+            root.spawn((
+                Text::new(
+                    "ENTER = keeper mode  ·  V = vs AI  ·  H = host PvP  ·  J = join PvP\n\
+                     PvP env: ANTCOLONY_PEER_ADDR (join), ANTCOLONY_PEER_PORT (host), ANTCOLONY_SEED (both)"
+                ),
+                TextFont { font_size: 13.0, ..default() },
+                TextColor(Color::srgb(0.75, 0.85, 1.0)),
+                Node {
+                    margin: UiRect::bottom(Val::Px(10.0)),
+                    ..default()
+                },
+            ));
+
             if let Some(err) = &catalog.load_error {
                 root.spawn((
                     Text::new(format!("ERROR: {err}\nPlace species TOMLs under assets/species/ and restart.")),

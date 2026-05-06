@@ -2,6 +2,20 @@ use bevy::prelude::*;
 
 use crate::resources::SimulationState;
 
+/// SystemSet labeling the sim tick. Other plugins (e.g. PvP netcode)
+/// can order their work against `SimSet::Tick` -- typically `.before()`
+/// to inject decisions before the sim advances.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SimSet {
+    Tick,
+}
+
+/// Public no-op marker function. Lets external plugins reference the
+/// sim tick by function pointer when SystemSet ordering is impractical.
+/// The actual sim tick lives in `tick_simulation_system` (private) but
+/// is members-of `SimSet::Tick` so `.before(SimSet::Tick)` works.
+pub fn tick_simulation_system_marker() {}
+
 /// Registers the FixedUpdate tick that advances the simulation.
 ///
 /// The `SimulationState` resource is NOT created here — the keeper-mode
@@ -22,7 +36,9 @@ impl Plugin for SimulationPlugin {
         app.insert_resource(Time::<Fixed>::from_hz(hz as f64))
             .add_systems(
                 FixedUpdate,
-                tick_simulation_system.run_if(resource_exists::<SimulationState>),
+                tick_simulation_system
+                    .in_set(SimSet::Tick)
+                    .run_if(resource_exists::<SimulationState>),
             );
     }
 }

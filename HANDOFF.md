@@ -4,6 +4,103 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-06 — netcode foundation: determinism gate GREEN, lockstep transport shipped
+
+🟢 PvP pivot. AI tuning shelved (v1 SOTA = `mlp_weights_v1.json` at 50.7% on the honest bench). Direction: direct-IP TCP lockstep PvP, Windows primary launch, Linux/Proton-GE scaffold (no Win-only deps). Three netcode phases planned (N1 determinism gate, N2 transport, N3 game integration); **N1 + N2 complete tonight**.
+
+### N1: Determinism gate -- GREEN, no fixes needed
+
+- New: `crates/antcolony-sim/examples/det_check.rs` -- fixed-seed AI-vs-AI runner, dumps normalized Snapshot JSONs every K ticks.
+- Verified byte-identical state across:
+  - Same process, two runs (500 ticks, 22 ants) ✓
+  - Different processes (5000 ticks, 50 ants, 64x64 arena) ✓
+  - Different `RAYON_NUM_THREADS` (1 vs 8 threads, 2000 ticks, 30 ants) ✓
+- The sim was built defensively -- `par_iter_mut` is per-element (no reductions), HashMaps don't leak iteration order into state, `Instant::now()` only in unit-test/persist code (outside sim hot path). No fixes required.
+- Implication: lockstep is the right netcode (vs rollback). Cheap state hashes can drive desync detection.
+
+### N2: Headless lockstep transport -- shipped, loopback green
+
+- New crate: `crates/antcolony-net/`. Workspace member, depends only on sim + serde + std::net (cross-platform, Linux/Proton-GE ready).
+- Modules:
+  - `hash.rs` -- FNV-1a over (tick, ant id/colony/caste/pos/health/module, colony food/pop). Process-stable, ~1 mu s per call.
+  - `protocol.rs` -- `NetMessage::{Hello, HelloAck, TickInput, Disconnect}`, `PeerRole::{Black, Red, Spider}`, length-prefixed JSON framing, `ProtocolError` with seed/version/config/desync variants.
+  - `transport.rs` -- `host(addr)` / `connect(addr)` / `LockstepPeer::handshake()` / `exchange_tick(ours) -> remote`. Sync I/O, no tokio. 30s default recv timeout.
+- Smoke test (`cargo run -p antcolony-net --bin lockstep_demo`):
+  - Two peers on loopback, 500 ticks AI-vs-AI, ~100 TickInput exchanges, no desync -> both report identical `final_tick=500, ants=20`.
+  - Mismatched-seed test: host correctly rejects with `seed mismatch: peer=999 ours=42`.
+
+### N3: Bevy integration -- shipped tonight
+
+- New: `crates/antcolony-render/src/pvp_client.rs` -- `PvpClientPlugin`. Picker keybinds:
+  - `H` -> host (binds to `ANTCOLONY_PEER_PORT`, default 17001)
+  - `J` -> join (`ANTCOLONY_PEER_ADDR`, default `127.0.0.1:17001`)
+  - `ANTCOLONY_SEED` env var sets match seed (must match on both sides; default 0)
+  - `ANTCOLONY_NAME` env var sets display name in handshake
+- `SimulationState::from_species_pvp` -- builds the two-colony arena with `is_ai_controlled = false` on both sides so the PvP layer is the only decider.
+- `pvp_exchange_system` runs in `FixedUpdate.before(SimSet::Tick)` -- on every `DECISION_CADENCE`-th tick, exchanges TickInput with peer (state hash + AiDecision), applies both decisions in deterministic order. Net error -> drops PvpClient resource (sim continues solo) so the player isn't kicked to a black screen.
+- New `SimSet::Tick` system set in `antcolony-game` -- public ordering hook for any future plugin that wants to inject pre-tick logic.
+- Crude V1 input: number row `1`/`2`/`3` nudges caste toward worker/soldier/breeder, `4`/`5`/`6` nudges behavior toward forage/dig/nurse. Held = ramp. Renormalized each press. The buffered triple becomes the next AiDecision sent over the wire.
+- HUD: top-left panel shows your role, tick, food, workers/soldiers, current strategy weights, key reminders.
+- Match-end overlay (VICTORY / DEFEAT / DRAW) auto-shows when `match_status() != InProgress`.
+- Handshake blocks the Bevy main thread (60s timeout) -- LAN/Tailscale latency is sub-frame so play feels normal; WAN play with high RTT will visibly hitch (worker-thread refactor deferred to N4).
+- Picker hint line added so H/J are discoverable: `ENTER = keeper · V = vs AI · H = host PvP · J = join PvP`.
+
+### How to play tonight
+
+```powershell
+# Host machine:
+cd J:\antcolony
+$env:ANTCOLONY_PEER_PORT = "17001"     # or omit, default 17001
+$env:ANTCOLONY_SEED = "12345"          # any u64 -- both peers must match
+.\target\release\antcolony.exe
+# In picker: pick a species (or just press H to use first)
+# Press H. Window will freeze until peer connects.
+
+# Joiner machine (after host has pressed H):
+$env:ANTCOLONY_PEER_ADDR = "192.168.1.42:17001"  # host's LAN/Tailscale IP
+$env:ANTCOLONY_SEED = "12345"
+.\target\release\antcolony.exe
+# In picker: press J.
+```
+
+Both peers transition to Running. Use 1-6 to drive your colony's strategy. First queen kill ends the match.
+
+### Known limitations / polish punchlist
+
+- Host blocks UI for up to 60s waiting for peer. If you mistime, restart.
+- Joiner needs host to be listening already (TCP connect fails immediately otherwise).
+- HelloAck drain on rejection is ugly: rejector closes socket immediately after writing the ack, joiner sees TCP abort instead of the `accepted=false` reason. Functional but the error message is opaque.
+- No NAT traversal. Use LAN, Tailscale, ZeroTier, Hamachi, or port-forward.
+- Determinism verified Win-only. Linux/Proton-GE *should* match (same SSE2 scalar f32) but unverified -- run det_check on a Linux host before mixed-OS play.
+- No reconnect on transient drop -- a single packet loss kills the match.
+- Spider role is in the protocol enum but unwired in the V1 game integration.
+
+### N4 work (later)
+
+- Worker-thread netcode + channel architecture for non-blocking I/O
+- Graceful HelloAck drain (rejector keeps reading briefly after write)
+- Connection-retry loop on the joiner side
+- Spider slot wiring (3rd peer)
+- Configurable arena/initial-ants (currently hardcoded in `from_species_two_colony`)
+- Steam P2P + matchmaking
+
+### Risks / known issues
+
+- `MAX_FRAME_BYTES=1MiB` is way bigger than current message sizes (~200B). Future state-dump-on-desync messages may approach this; bump if needed.
+- `recv_timeout=30s` is fine for LAN/Tailscale but tight for the open internet. Make configurable in N3.
+- No NAT traversal in v1. Players need direct IP access (LAN, Tailscale, ZeroTier, Hamachi, or port-forward). Steam P2P is a future N4 add.
+- Determinism is verified on Windows x86_64 only. Linux x86_64 *should* match (same SSE2 scalar f32, same chacha8) but needs an actual Proton-GE run to confirm.
+
+### Files touched / created
+
+- `crates/antcolony-sim/examples/det_check.rs` (NEW) -- determinism gate runner
+- `crates/antcolony-net/` (NEW crate) -- Cargo.toml, lib.rs, hash.rs, protocol.rs, transport.rs, bin/lockstep_demo.rs
+- `Cargo.toml` -- added antcolony-net to workspace members + workspace deps
+- `bench/det/`, `bench/det-stress/`, `bench/det-threads/` -- determinism check outputs
+- `bench/lockstep-host.log` -- loopback smoke test artifact
+
+---
+
 ## Session 2026-05-05 (cont) — r7: 3-path attack, cold-start regression, real number revealed
 
 🟡 Mixed result. All three "break the 47%" paths from the diagnosis shipped (stochastic-at-inference via existing `noisy_mlp:`, wider eval bench via `mix:`, architectural change via runtime `--hidden-dim`). Real r7 cold-started at hidden=128 underperformed v1 — 100 iter was not enough budget for a 4× wider param count. **But the eval matrix revealed the real number:** v1 was always 50.7% on the wider bench; the 47% was a property of the deterministic 7-archetype Nash point, not the policy.
@@ -262,7 +359,7 @@ The conclusion from the literature review (Ren et al., BC has provable ceiling) 
 ---
 
 ## Last Updated
-2026-05-05 (r7 + r7b — both regressed; v1 at 50.7% on wider bench is the ceiling, recommend ship+pivot)
+2026-05-06 (PvP pivot complete — N1+N2+N3 shipped; LAN/Tailscale PvP works, ready for tonight's playtest)
 
 ## Project Status
 🟢 **Game (Phases 1-3 + K1-K5 + P4-P7 full + biology economy) complete and shipping-quality.** 🟡 **AI training plateau diagnosed: ~47.1% mean win rate is the Nash equilibrium of the deterministic 7-archetype bench** (confirmed across vanilla PPO, pop+curriculum, +reward-shape+noisy variants). The current SOTA `bench/iterative-fsp/round_1/mlp_weights_v1.json` is at-or-near optimal vs the bench. Routes to break it: widen the bench with stochastic mix-strategy brains, or pivot to PvP P1 (the AI is shippable as is).
