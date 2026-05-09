@@ -4,6 +4,84 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-09 — 10yr smoke test exposed MLP brain saturation; outreach roadmap drafted; 2 new species added
+
+🟡 Project Status: solid plan + new substrate, mid-validation. Smoke test in progress.
+
+### What Was Done This Session
+
+**1. 10-year AI-controlled smoke test infrastructure built and run.**
+- New: `crates/antcolony-sim/examples/smoke_10yr_ai.rs` — runs each species through the bench-style starter-formicarium-with-feeder topology, attaches an external brain, calls `brain.decide()` every `DECISION_CADENCE=5` ticks, applies via `apply_ai_decision`, and writes per-decision CSV (full state inputs + decision outputs) plus daily snapshots. Flags: `--years`, `--species`, `--no-mlp` (HeuristicBrain), `--weights <path>`, `--out <dir>`, `--seed`.
+- New: `scripts/smoke_10yr_launch.ps1` — `Start-Process -WindowStyle Hidden` wrapper that detaches 8 species runs from the harness shell so they survive past the 10-min Bash-tool timeout. Writes `_logs/pids.json`.
+
+**2. The 10yr MLP run found a critical brain bug. Archived as evidence.**
+- The SOTA `bench/iterative-fsp/round_1/mlp_weights_v1.json` brain is **out-of-distribution on solitaire bench**. It was trained on PvP scenarios (always an enemy in sight); in solitaire, `enemy_distance_min = 1e6`, `enemy_w/s = 0`, `combat_losses = 0` are way outside training distribution. After z-score normalization the ReLU layers saturate, sigmoid outputs lock at the rails.
+- Empirical evidence (preserved at `bench/smoke-10yr-ai-mlp-saturation/`): every species' brain output settles by tick ~10,800 (in-game day 6) to constant `caste = (1.0, 0.0, 0.0)` (100% worker) and `behavior_weights` saturated to (0,1,1) or (1,1,1) — after renormalization that gives 0/50/50 or 33/33/33 forage/dig/nurse splits, neither of which is correct during a starvation crisis.
+- Lasius and Pogonomyrmex went extinct at year-1 hibernation (doy 290-293, ~11°C) under the saturated brain. The thriving species survived only because pheromone trails + ant FSM forage on their own; behavior_weights are soft nudges.
+- Diagnosis: **the year-1 hibernation extinctions are a brain artifact, not a species-balance bug.** Need to retest with HeuristicBrain to confirm.
+
+**3. Relaunched smoke at `--years 2 --no-mlp` (HeuristicBrain).**
+- 8 detached processes running, currently ~12% through 31.5M-tick targets. All 8 species alive (workers 74-349, food 2.7-2291). Heuristic brain is reactive (forage_weight bumps when food < egg_cost*4) and cannot saturate.
+- Progress monitored via `bench/smoke-10yr-ai/_logs/<species>.log.err` and PIDs in `_logs/pids.json`.
+- Estimated finish: a few more hours of wall-clock.
+
+**4. Outreach roadmap drafted: 4 paper reproductions across 3 researchers.**
+- **Robert J. Warren II (Buffalo State, mid-career, accessible) — A. rudis x2:**
+  - Paper 1: Warren & Chick 2013, *Glob. Change Biol.* — cold-tolerance foraging, plot forager-activity-vs-temperature curve
+  - Paper 2: Rodriguez-Cabal 2012 / Warren et al. 2018 *Ecosphere* — *B. chinensis* displacement, two-colony scenario
+- **Cole & Wiernasz (Houston, definitive Pogonomyrmex demographers) — P. occidentalis:**
+  - Paper 3: Cole & Wiernasz, *Insectes Sociaux*, "Colony size and reproduction" — 7-year growth curve to 6,000-12,000 workers
+- **Anna Dornhaus (U Arizona, mid-career) — Temnothorax:**
+  - Paper 4 (priority): Charbonneau, Sasaki & Dornhaus 2017 *PLoS ONE* — "Who needs 'lazy' workers?" inactive-worker bimodality + reserve-labor mobilization on worker removal
+  - Paper 5 (deferred): Pratt 2005 *Behav. Ecol.* — quorum-sensing emigration
+
+**5. Two new species added (additive, doesn't affect running smoke):**
+- `assets/species/brachyponera_chinensis.toml` — Asian Needle Ant. The displacement counterpart for *A. rudis*. Ponerinae, individual scout (`recruitment = "individual"`), polydomous (`budding_reproduction = true`), `predates_ants = true` flag (TOML field added; sim hookup pending). VALIDATES.
+- `assets/species/temnothorax_curvinodis.toml` — Eastern Acorn Ant. Dornhaus model species. Tiny (2.5mm), single-cavity, tandem-running recruiter, low aggression, very high `relocation_tendency = 0.85`. VALIDATES.
+- `docs/species/brachyponera_chinensis.md` and `docs/species/temnothorax_curvinodis.md` — full biology docs with citations and per-paper reproduction targets.
+- `crates/antcolony-sim/src/bench/expected.rs` — added `brachyponera_chinensis()` and `temnothorax_curvinodis()` `SpeciesExpectations` stubs (worker count, queen survival, food-economy ranges, all citation-tagged), wired into `for_species_id`, and added both to test allowlists. **All 4 expected.rs unit tests pass.**
+
+### Current State
+
+- **Working:** Smoke harness `smoke_10yr_ai`, detach launcher, all 10 species TOMLs validate, expected.rs stubs for 9/10 species (formica_fusca was missing pre-session, still missing).
+- **Running:** 8 detached `smoke_10yr_ai.exe` processes for the heuristic 2yr smoke. PIDs in `bench/smoke-10yr-ai/_logs/pids.json`.
+- **Stubbed (not yet implemented):**
+  - `predates_ants` is a TOML field on B. chinensis but the species_extended.rs schema does not yet have a corresponding Rust field, and the sim does not yet implement ant-vs-ant predation behavior.
+  - Per-ant activity-fraction tracking (needed for the Charbonneau-Dornhaus 2017 reproduction) is not yet implemented.
+  - Soft cold-foraging-vs-temperature curve (needed for the Warren 2013 reproduction) is not yet in the species schema or the forager system; today's sim only has a binary `hibernation_cold_threshold_c` cutoff.
+
+### Blocking Issues
+
+None blocking. The MLP saturation finding *is* a non-blocking-but-important issue: the SOTA brain is unsuitable for any solitaire bench work, and the existing memory entry `project_ai_ceiling.md` (47.1% Nash plateau on PvP bench) is unaffected — it only matters for the bench harness used here.
+
+### What's Next
+
+In priority order, after the heuristic smoke finishes:
+
+1. **Read the 2yr heuristic results.** Confirm all 8 species survive year-2 hibernation under HeuristicBrain. If rudis or pogonomyrmex still die, that's a real species-balance bug to investigate — TOML calibration needed before any researcher outreach.
+2. **Sim code additions for the 4 reproductions** (these touch sim hot path — defer until smoke finishes):
+   - Add `predates_ants: bool` to `species_extended::DietExtended`; hook into combat resolution so flagged species engage and consume foreign-colony ants on contact.
+   - Add per-ant activity-fraction tracking (counter of ticks spent in non-Idle states, exposed via a new bench-export API).
+   - Add `cold_foraging_threshold_c: Option<f32>` per-species override; replace the binary diapause gate with a soft activity curve in the forager system.
+3. **Build 4 reproduction harnesses (one per paper)** that produce `repro/<paper-slug>.md` with the figure, our number, the published number, and the deviation:
+   - `cold_foraging_curve_bench` (Warren & Chick 2013)
+   - `invasion_displacement_bench` (Rodriguez-Cabal 2012, two-colony rudis vs B. chinensis)
+   - `pogonomyrmex_growth_curve_bench` (Cole & Wiernasz colony-size paper)
+   - `lazy_worker_bimodality_bench` (Charbonneau-Dornhaus 2017, Temnothorax)
+4. **Write `docs/methodology.md`** — one-pager: what's modeled vs abstracted, with citations.
+5. **Then and only then: send the emails.**
+
+### Notes for Next Session
+
+- **The smoke test takes far longer than originally estimated.** The MLP 10yr run was projecting ~7 days for the slowest thriving species. A 2yr horizon is the realistic upper bound for an overnight smoke run on this hardware (8C/16T i9). The 10yr target is feasible only if the run is left for a week+.
+- **Brain saturation diagnosis matters for the trainer too.** If anyone trains a new MlpBrain in the future, training data MUST include solitaire / single-colony scenarios — currently the trainer corpus is PvP-only and produces brains that fail catastrophically without an enemy. This is the cause of the year-1 hibernation extinction ghost story above.
+- **`predates_ants = true` is a placeholder** in `brachyponera_chinensis.toml`. Since `deny_unknown_fields` is not set on `DietExtended`, serde silently ignores it during loading. It loads cleanly today but does nothing — wire it up before claiming the displacement reproduction.
+- **`formica_fusca` has no `SpeciesExpectations` entry** — pre-existing gap, not introduced this session. Worth fixing when you next touch `expected.rs`.
+- **Smoke processes**: PIDs stored in `bench/smoke-10yr-ai/_logs/pids.json`. To kill cleanly: `powershell.exe -Command "Stop-Process -Id (Get-Content bench/smoke-10yr-ai/_logs/pids.json | ConvertFrom-Json).pid -Force"`. To check progress: `tail -2 bench/smoke-10yr-ai/_logs/<species>.log.err`.
+- **MLP saturation evidence is preserved** at `bench/smoke-10yr-ai-mlp-saturation/` (3.2GB across 8 species). Don't delete — the decision CSVs there are the single best diagnostic dataset for this problem. The lasius_niger decisions.csv is canonical: tick 0 has sensible outputs, tick 10,800 onward is fully saturated.
+
+---
+
 ## Session 2026-05-08 — cross-OS smoke test: TCP path GREEN, cross-OS sim determinism RED
 
 🟡 Pixie VPS smoke test executed. The good news: **the network protocol works end-to-end across the real internet.** The bad news: **Windows-to-Linux sim determinism is broken** — desync triggered at the very first cross-OS state hash exchange.

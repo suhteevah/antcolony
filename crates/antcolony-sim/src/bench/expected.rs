@@ -167,6 +167,8 @@ pub fn for_species_id(id: &str) -> Option<SpeciesExpectations> {
         "tetramorium_immigrans" => Some(tetramorium_immigrans()),
         "tapinoma_sessile" => Some(tapinoma_sessile()),
         "aphaenogaster_rudis" => Some(aphaenogaster_rudis()),
+        "brachyponera_chinensis" => Some(brachyponera_chinensis()),
+        "temnothorax_curvinodis" => Some(temnothorax_curvinodis()),
         _ => None,
     }
 }
@@ -567,12 +569,132 @@ fn aphaenogaster_rudis() -> SpeciesExpectations {
     }
 }
 
+fn brachyponera_chinensis() -> SpeciesExpectations {
+    SpeciesExpectations {
+        species_id: "brachyponera_chinensis",
+        doc_path: "docs/species/brachyponera_chinensis.md",
+        key_sources: &[
+            "Bednar & Silverman 2011 J. Insect Sci. (NC field demography)",
+            "Guénard & Dunn 2010 Insectes Sociaux (introduction history, polydomy)",
+            "Rodriguez-Cabal et al. 2012 (96% rudis abundance reduction)",
+            "Spicer Rice et al. 2015 Biol. Invasions (forest invader replaces predation, not dispersal)",
+            "Warren et al. 2018 Ecosphere (range refugia and impacts)",
+            "AntWiki Brachyponera chinensis",
+        ],
+        year_5_workers: ExpectedRange {
+            human_name: "Workers alive at end of year 5",
+            human_why: "Field nests are typically 100-1000 workers; budding networks aggregate \
+                       higher across satellite nests but a single colony stays small. \
+                       500 is the modal census.",
+            centroid: 500.0,
+            tolerance: Tolerance::Loose,
+            citation: Citation::PeerReviewed(
+                "Bednar & Silverman 2011 J. Insect Sci. (per-nest worker counts)",
+            ),
+        },
+        year_5_brood_present: ExpectedRange {
+            human_name: "Brood items present at end of year 5",
+            human_why: "Healthy ponerine queen produces eggs continuously outside diapause; \
+                       slower brood pipeline than Myrmicinae but always non-zero in spring.",
+            centroid: 50.0,
+            tolerance: Tolerance::OrderOfMagnitude,
+            citation: Citation::GamePacing(
+                "no published per-stage census; expect non-zero across all 3 stages",
+            ),
+        },
+        year_5_food_returned_per_year: ExpectedRange {
+            human_name: "Food units returned per year (year 5)",
+            human_why: "Smaller colony than Lasius/Formica; lower absolute food economy. \
+                       Order-of-magnitude check only.",
+            centroid: 1500.0,
+            tolerance: Tolerance::OrderOfMagnitude,
+            citation: Citation::GamePacing("abstract sim food units"),
+        },
+        queen_alive_at_year_5: ExpectedRange {
+            human_name: "Queen still alive at end of year 5",
+            human_why: "Ponerine queens 2-8y typical; year 5 is borderline but most queens persist. \
+                       Loose tolerance because lifespan field data are sparse.",
+            centroid: 1.0,
+            tolerance: Tolerance::Loose,
+            citation: Citation::ReferenceWork(
+                "Peeters & Ito 2001 Annu. Rev. Entomol. (ponerine queen lifespan)",
+            ),
+        },
+        days_to_first_egg: ExpectedRange {
+            human_name: "In-game days from start to first egg laid",
+            human_why: "Claustral founding; ponerine queens lay shortly after warm-up.",
+            centroid: 7.0,
+            tolerance: Tolerance::Loose,
+            citation: Citation::GamePacing("sim starts post-nanitic"),
+        },
+    }
+}
+
+fn temnothorax_curvinodis() -> SpeciesExpectations {
+    SpeciesExpectations {
+        species_id: "temnothorax_curvinodis",
+        doc_path: "docs/species/temnothorax_curvinodis.md",
+        key_sources: &[
+            "Pratt 2005 Behav. Ecol. (quorum-sensing emigration)",
+            "Pratt et al. 2002 Anim. Behav. (emigration cascades)",
+            "Möglich, Maschwitz & Hölldobler 1974 Science (tandem running)",
+            "Charbonneau, Sasaki & Dornhaus 2017 PLoS ONE (lazy-worker reserve labor)",
+            "Charbonneau & Dornhaus 2015 Behav. Ecol. Sociobiol. (inactive-worker consistency)",
+            "Dornhaus et al. 2008 Behav. Ecol. (specialization vs efficiency)",
+            "Heinze & Lipski 1990 Insectes Sociaux (Temnothorax demography)",
+            "Kramer, Schaible & Scheuerlein 2016 Exp. Gerontology (ant lifespan demography)",
+        ],
+        year_5_workers: ExpectedRange {
+            human_name: "Workers alive at end of year 5",
+            human_why: "Mature Temnothorax curvispinosus-complex colonies hold 50-500 workers; \
+                       200 is the modal census across multiple field studies.",
+            centroid: 200.0,
+            tolerance: Tolerance::Loose,
+            citation: Citation::PeerReviewed(
+                "Pratt 2005 Behav. Ecol. (single-cavity colony demography)",
+            ),
+        },
+        year_5_brood_present: ExpectedRange {
+            human_name: "Brood items present at end of year 5",
+            human_why: "Tiny colonies have proportionally tiny brood; non-zero across stages \
+                       in spring. Order-of-magnitude check.",
+            centroid: 30.0,
+            tolerance: Tolerance::OrderOfMagnitude,
+            citation: Citation::GamePacing("scaled from worker count"),
+        },
+        year_5_food_returned_per_year: ExpectedRange {
+            human_name: "Food units returned per year (year 5)",
+            human_why: "Very small colony, very low absolute food throughput. \
+                       Order-of-magnitude check only.",
+            centroid: 300.0,
+            tolerance: Tolerance::OrderOfMagnitude,
+            citation: Citation::GamePacing("abstract sim food units"),
+        },
+        queen_alive_at_year_5: ExpectedRange {
+            human_name: "Queen still alive at end of year 5",
+            human_why: "Temnothorax queens 5-10y typical; year 5 should still have a queen.",
+            centroid: 1.0,
+            tolerance: Tolerance::Strict,
+            citation: Citation::PeerReviewed(
+                "Plateaux 1986 / Kramer et al. 2016 (Temnothorax queen lifespan)",
+            ),
+        },
+        days_to_first_egg: ExpectedRange {
+            human_name: "In-game days from start to first egg laid",
+            human_why: "Claustral founding; very small queens, sparse early lay.",
+            centroid: 7.0,
+            tolerance: Tolerance::Loose,
+            citation: Citation::GamePacing("sim starts post-nanitic"),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn all_seven_species_have_expectations() {
+    fn all_shipped_species_have_expectations() {
         for id in [
             "lasius_niger",
             "camponotus_pennsylvanicus",
@@ -581,6 +703,8 @@ mod tests {
             "tetramorium_immigrans",
             "tapinoma_sessile",
             "aphaenogaster_rudis",
+            "brachyponera_chinensis",
+            "temnothorax_curvinodis",
         ] {
             assert!(
                 for_species_id(id).is_some(),
@@ -604,6 +728,8 @@ mod tests {
             "tetramorium_immigrans",
             "tapinoma_sessile",
             "aphaenogaster_rudis",
+            "brachyponera_chinensis",
+            "temnothorax_curvinodis",
         ] {
             let exp = for_species_id(id).unwrap();
             for er in [

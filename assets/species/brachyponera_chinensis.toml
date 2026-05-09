@@ -1,0 +1,103 @@
+id = "brachyponera_chinensis"
+common_name = "Asian Needle Ant"
+genus = "Brachyponera"
+species_epithet = "chinensis"
+difficulty = "intermediate"
+schema_version = 1
+
+[biology]
+queen_lifespan_years = 5.0  # field-data-poor; congeneric Ponerinae range 2-8y; AntWiki/Bednar & Silverman 2011 J. Insect Sci.
+worker_lifespan_months = 12.0  # game-pacing — temperate Ponerinae workers ~6-12 mo (general Ponerinae lit; Peeters & Ito 2001 Annu. Rev. Entomol.)
+founding = "claustral"  # primary founding is claustral via single mated queen; secondary budding well documented (Bednar & Silverman 2011; Guénard & Dunn 2010)
+polymorphic = false  # monomorphic worker pool, no soldier subcaste (AntWiki Brachyponera chinensis)
+hibernation_required = true  # temperate populations enter quiescent winter aggregations; not strict diapause (Bednar & Silverman 2011)
+min_diapause_days = 45  # game-pacing — winter aggregation typical Dec-Feb in NC field sites (Bednar & Silverman 2011)
+
+[growth]
+egg_maturation_seconds = 1209600  # ~14 days at 25°C — congeneric Ponerinae (Peeters 1991 sociogenesis review)
+larva_maturation_seconds = 2419200  # ~28 days — Ponerinae larvae develop slower than Myrmicinae/Formicinae
+pupa_maturation_seconds = 1814400  # ~21 days
+queen_eggs_per_day = 12.0  # game-pacing — Ponerinae queens have far lower lay rates than Myrmicinae/Formicinae (Peeters & Ito 2001)
+initial_workers = 15  # game-pacing — small founding cohort
+target_population = 1500  # documented small-to-moderate colonies; Bednar & Silverman 2011 reports nest sizes ~100-1000 typical; budding networks aggregate higher (Guénard & Dunn 2010)
+egg_cost_food = 4.0
+food_per_adult_per_day = 0.35
+
+[diet]
+prefers = ["protein", "termites", "insects"]  # specialized termite predator + generalist scavenger; Bednar et al. 2013 Ecol. Entomol. — gut-content analysis dominated by Reticulitermes
+forages_on = ["ground", "logs", "leaf_litter"]  # forest-floor and decaying-wood specialist; Guénard & Dunn 2010 Insectes Sociaux
+
+[combat]
+worker_attack = 1.4  # functional sting + active hunting; pain-index 1.0 (Schmidt) but ecological aggression high
+soldier_attack = 0.0  # monomorphic
+worker_health = 7.0  # game-pacing — small slender body ~4-5mm
+soldier_health = 0.0
+aggression = 0.7  # high — actively displaces native ants from foraging arenas (Spicer Rice et al. 2015 Biol. Invasions; Rodriguez-Cabal et al. 2012)
+
+[appearance]
+color_hex = "#3a2515"  # dark brown to nearly black, with yellow-orange mandibles and antennae tips (AntWiki)
+size_mm = 4.5  # workers 4-5mm slender (AntWiki)
+speed_multiplier = 0.95  # slightly slower than Lasius baseline; deliberate tunnel walker
+
+[default_caste_ratio]
+worker = 0.95
+soldier = 0.0
+breeder = 0.05
+
+[behavior]
+recruitment = "individual"  # NO mass recruitment — individual scouts + short tandem runs only (Guénard & Silverman 2013 Anim. Behav. — colony-spreading behavior)
+diel_activity = "diurnal"  # primarily daytime in temperate range
+trail_half_life_seconds = 300  # very short — minimal trail laying compared to Lasius/Linepithema
+
+[colony_structure]
+queen_count = "monogyne"  # primary mode; some polygyne reports under heavy budding (Bednar & Silverman 2011)
+polydomous = true  # well-documented polydomy via budding; satellite nests in adjacent logs/litter common (Guénard & Dunn 2010)
+relocation_tendency = 0.7  # frequent relocator — colonies move several times per season (Smith 1934; Bednar & Silverman 2011)
+supercolony_capable = false  # not a Linepithema-style unicolonial supercolony, but extensive budding networks
+budding_reproduction = true  # dispersal via colony fragmentation is THE primary spread mechanism in introduced range (Guénard & Dunn 2010)
+
+[substrate]
+preferred = ["leaf_litter", "wood", "loam"]  # forest-floor and saproxylic; not soil mound builders
+incompatible = ["sand"]
+dig_speed_multiplier = 0.6  # weak excavator — exploits existing cavities in logs/litter
+mound_construction = "none"  # cryptic ground-level nests, no surface mound
+
+[combat_extended]
+weapon = "sting"  # functional sting; pain-index 1.0 (Schmidt) but causes anaphylaxis in sensitive humans (Nelder et al. 2006)
+sting_potency = 1.5  # painful, allergenic; not as potent as Pogonomyrmex but real
+ranged_attack = false
+soldier_size_categories = []
+major_attack_multiplier = 1.0
+context_aggression = false  # uniformly aggressive in introduced range
+
+[diet_extended]
+seed_dispersal = false  # NOT a seed disperser — this is the keystone of the displacement story (Spicer Rice et al. 2015; Warren et al. 2018 Ecosphere)
+honeydew_dependent = false
+host_species_required = []  # not parasitic
+predates_ants = true  # actively hunts and eats native ants in invaded range (Bednar & Silverman 2011 — gut content includes native ant fragments)
+
+[ecological_role]
+keystone = false  # destroyer-of-keystones rather than keystone itself
+invasive_status = "invasive_pest"  # IUCN-listed, widespread in eastern US, established in Europe (Italy, Switzerland)
+displaces = ["aphaenogaster_rudis", "aphaenogaster_picea", "aphaenogaster_carolinensis"]  # Rodriguez-Cabal et al. 2012; Spicer Rice et al. 2015
+displaced_by = []  # no documented natural predator/competitor in introduced range
+
+[encyclopedia]
+tagline = "Asian invasive that's quietly dismantling eastern North American forest seed-dispersal networks."
+real_world_range = "Native to Japan, Korea, and parts of China. Introduced to the southeastern United States (first detected ~1932 in Decatur, GA) and now established from Florida north to Connecticut and west to Oklahoma. Established populations in Italy and Switzerland."
+description = '''Brachyponera chinensis, the Asian Needle Ant, is a small (4-5mm) dark brown to black ponerine ant introduced to North America by the early 20th century and now one of the most ecologically consequential invasive ants in the eastern deciduous biome.
+
+Unlike most introduced ants — which displace native ants by sheer competitive numbers — B. chinensis is an active hunter. Workers prey heavily on subterranean termites (Reticulitermes spp.) and on native ants, and the species displaces resident ant communities through direct predation and aggressive interference. Where it establishes, the most measurable casualty is the genus Aphaenogaster.
+
+Crucially, B. chinensis does NOT replace Aphaenogaster as a seed disperser. Native trillium, bloodroot, hepatica, and dozens of other ant-dispersed wildflowers depend on Aphaenogaster's gentle elaiosome-handling behavior to reach safe germination sites. The Asian Needle Ant ignores elaiosomes — so its arrival simultaneously eliminates the disperser AND fails to fill the ecological niche, decoupling the wildflower–ant mutualism that has structured these forests since the Pleistocene.
+
+Foraging is individual, not mass-recruitment — scouts work alone or in short tandem runs from cryptic ground-level nests in leaf litter, decaying logs, or under stones. Colonies are typically small (100-1000 workers) but spread aggressively via budding, producing satellite-nest networks across forest floors. The species also stings, and unlike most ant stings the venom is allergenic in a meaningful fraction of humans — the species is responsible for a documented increase in ant-sting anaphylaxis cases in the southeastern US.'''
+fun_facts = [
+    "Asian Needle Ant presence is correlated with a 96% reduction in Aphaenogaster rudis abundance and a 70% drop in seed removal from native wildflowers (Rodriguez-Cabal et al. 2012).",
+    "It's one of the very few ant species that causes documented anaphylactic reactions in humans — the venom contains allergens distinct from honey bee or fire ant venom.",
+    "Spread in North America is almost entirely by colony budding, not nuptial flights — a single founding event can produce a slowly expanding network of satellite nests over years.",
+    "It hunts subterranean termites by entering the termite gallery system, killing the workers, and carrying them back to brood — a rare ant-vs-termite predation pattern."
+]
+keeper_notes = '''A research-focused species rather than a beginner pet. Sting is medically significant — keepers with known insect-sting allergies should not handle this species. In the simulation, B. chinensis is modeled primarily as the displacement counterpart to Aphaenogaster rudis, with active ant-predation behavior and minimal trail-laying.
+
+Hibernation is winter quiescence, not strict diapause — keep above freezing but cool (5-10 C) for 6-8 weeks to maintain queen reproductive cycle.'''

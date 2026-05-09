@@ -1,0 +1,104 @@
+id = "temnothorax_curvinodis"
+common_name = "Curvature-Knot Acorn Ant"
+genus = "Temnothorax"
+species_epithet = "curvinodis"
+difficulty = "intermediate"
+schema_version = 1
+
+[biology]
+queen_lifespan_years = 5.0  # Temnothorax queens 5-10y typical (Plateaux 1986; Kramer et al. 2016 Exp. Gerontology Temnothorax demography)
+worker_lifespan_months = 12.0  # ~6-12 mo in field; lab cohorts up to 18 mo (Kramer et al. 2016)
+founding = "claustral"  # mated queens found new colonies independently in single small cavities; Temnothorax curvispinosus complex (Pratt 2005 Behav. Ecol.)
+polymorphic = false  # strictly monomorphic — the absence of polymorphism is part of why this genus is the model for collective decision-making research
+hibernation_required = true  # temperate; cold-induced quiescence required (Heinze & Lipski 1990 Insectes Sociaux)
+min_diapause_days = 60  # winter typical Nov-Mar in eastern North American forests
+
+[growth]
+egg_maturation_seconds = 1209600  # ~14 days at 25°C
+larva_maturation_seconds = 1814400  # ~21 days
+pupa_maturation_seconds = 1209600  # ~14 days
+queen_eggs_per_day = 3.0  # very low — Temnothorax colonies are tiny and queens lay sparingly (Charbonneau & Dornhaus 2015 BES — colony demography)
+initial_workers = 8  # small founding cohorts
+target_population = 200  # mature colonies typically 50-500 workers; 200 is the modal target for the curvispinosus complex (Pratt 2005; Dornhaus et al. 2008 Behav. Ecol.)
+egg_cost_food = 3.0
+food_per_adult_per_day = 0.25  # small bodies, low individual demand
+
+[diet]
+prefers = ["protein", "insects", "sugar"]  # generalist scavenger; primarily takes small dead arthropods + extrafloral nectar
+forages_on = ["ground", "leaf_litter"]  # forest-floor specialist; foragers do not climb significantly
+
+[combat]
+worker_attack = 0.5  # tiny — combat is not the species' strategy
+soldier_attack = 0.0
+worker_health = 4.0  # 2-3mm bodies have minimal HP
+soldier_health = 0.0
+aggression = 0.15  # very low; species responds to threats by emigrating, not fighting (Pratt et al. 2002 Anim. Behav.)
+
+[appearance]
+color_hex = "#7a4520"  # yellow-brown to medium brown, with darker gaster (AntWiki Temnothorax)
+size_mm = 2.5  # 2-3 mm — among the smallest ants in eastern North America
+speed_multiplier = 1.1  # quick relative to body size; needs to be to compensate for tiny stride
+
+[default_caste_ratio]
+worker = 0.97
+soldier = 0.0
+breeder = 0.03
+
+[behavior]
+recruitment = "tandem_run"  # canonical tandem-running recruiter — Möglich, Maschwitz & Hölldobler 1974 Science was on Temnothorax (then Leptothorax); foundational paper for ant tandem-running mechanism
+diel_activity = "diurnal"  # daytime forager
+trail_half_life_seconds = 600  # short trail life; tandem running is more important than trail-laying
+
+[colony_structure]
+queen_count = "monogyne"  # mature monogyne is the rule; some early polygyny in pleometrotic founding
+polydomous = false  # single-cavity nesters — almost the defining trait of the genus
+relocation_tendency = 0.85  # VERY high — the species is famous for emigrating to better cavities, decision-making during emigration is THE Dornhaus/Pratt research arc (Pratt et al. 2002 Anim. Behav.; Franks et al. 2003 Proc. Royal Soc.)
+supercolony_capable = false
+budding_reproduction = false  # nuptial flights are the reproductive route
+
+[substrate]
+preferred = ["wood", "leaf_litter", "rock_crevice"]  # single small pre-existing cavity (acorns/twigs/rotting wood/crevices); rarely if ever excavates fresh substrate (Pratt 2005)
+incompatible = []
+dig_speed_multiplier = 0.2  # nearly non-excavator
+mound_construction = "none"  # cryptic cavity nesters
+
+[combat_extended]
+weapon = "sting"  # functional small sting; rarely used defensively
+sting_potency = 0.3
+ranged_attack = false
+soldier_size_categories = []
+major_attack_multiplier = 1.0
+context_aggression = false
+
+[diet_extended]
+seed_dispersal = false  # not significantly involved in myrmecochory
+honeydew_dependent = false
+host_species_required = []  # not parasitic founder
+
+[ecological_role]
+keystone = false  # too small to be community-keystone, but is a research keystone — perhaps the most-studied genus in ant collective-behavior research
+invasive_status = "native"  # native eastern North American forest understory
+displaces = []
+displaced_by = ["brachyponera_chinensis", "solenopsis_invicta"]  # generally vulnerable to invasive ants
+
+[encyclopedia]
+tagline = "The lab rat of myrmecology — tiny acorn-dwelling ants that taught us how colonies make collective decisions."
+real_world_range = "Eastern North American deciduous forests, common in the Appalachians and southeastern Piedmont. Colonies inhabit single small cavities — hollow acorns, twigs, rock crevices, or rotting branches — on the forest floor."
+description = '''Temnothorax curvinodis is a tiny (2-3mm) yellow-brown myrmicine ant that is functionally invisible in the field but disproportionately important to ant science. Members of the Temnothorax curvispinosus species complex have been the model organism of choice for studying collective decision-making in ants for over forty years.
+
+Each colony occupies a single small cavity — most often a hollow acorn, but also rotting twigs, rock crevices, or abandoned beetle galleries. Colonies are small (50 to 500 workers, modally around 200) and consist of a single queen, brood, and workers all crammed into one chamber.
+
+The species' research-relevant trait is its emigration behavior. When the nest cavity is damaged or a better one is offered, scouts evaluate alternatives and the colony moves via tandem running — one ant leads another, single-file, to the new site. The Dornhaus, Franks, and Pratt labs have used Temnothorax to demonstrate that ant colonies make quorum-sensing decisions equivalent in sophistication to neural decision-making in vertebrates: scouts independently assess options, recruit weakly when undecided, and recruit strongly only when a quorum is reached.
+
+The species also exhibits the famous "lazy worker" phenomenon: roughly half of workers in any colony are persistently inactive across observation windows of weeks, while a smaller subset performs the bulk of the work. The inactive workers are not loafers — they form a reserve labor pool that mobilizes when active workers are removed (Charbonneau, Sasaki & Dornhaus 2017 PLoS ONE).'''
+fun_facts = [
+    "An entire Temnothorax colony fits inside a single hollow acorn.",
+    "When the nest is damaged scouts evaluate replacements using quorum sensing — they only commit to a new cavity once enough other scouts independently agree it's good.",
+    "Roughly half of the workers in any Temnothorax colony are persistently inactive — they're not lazy, they're a reserve labor force that activates when the busy workers get removed.",
+    "The genus is a research keystone: more is known about how Temnothorax colonies make decisions than about the human prefrontal cortex's analogous process."
+]
+keeper_notes = '''An advanced-keeper species due to small colony size (a small foraging mishap can cripple a colony) and very specific cavity preferences. Best housed in a small acrylic chamber barely larger than the brood cluster, with a separate foraging area accessed by a thin tube.
+
+Hibernation is required — 8-12 weeks at 5-10 C in autumn. Without diapause, queen oviposition collapses within a year.
+
+Recommended for the simulation specifically because of the genus's uniquely well-documented behavioral ecology — every metric we can plot (forager activity, recruitment latency, inactive-worker fraction, emigration latency) has decades of laboratory benchmarks to compare against.'''
