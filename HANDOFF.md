@@ -4,6 +4,59 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-08 — cross-OS smoke test: TCP path GREEN, cross-OS sim determinism RED
+
+🟡 Pixie VPS smoke test executed. The good news: **the network protocol works end-to-end across the real internet.** The bad news: **Windows-to-Linux sim determinism is broken** — desync triggered at the very first cross-OS state hash exchange.
+
+### Setup
+
+- Source pushed via `tar | scp` to `pixie:~/antcolony/` (rsync unavailable in Git Bash).
+- Patched workspace `Cargo.toml` on pixie to `members = [crates/antcolony-sim, crates/antcolony-net]` only — drops Bevy/render and Candle/trainer so we don't need X11 or MSVC-equivalents on the VPS.
+- Installed Rust 1.95.0 via rustup (minimal profile).
+- `cargo build --release -p antcolony-net --bin lockstep_demo` -- 28s clean build, no errors, no warnings.
+- `sudo ufw allow 17001/tcp` to open inbound.
+- Started headless host: `lockstep_demo host --port 17001 --role black --seed 42 --ticks 2000 --initial-ants 20 --arena 48`.
+
+### Results
+
+- **TCP path: GREEN.** Connect from kokonoe → pixie (`207.244.232.227:17001`) over real internet: ~90ms TCP handshake + ~150ms protocol Hello/Ack exchange. Both sides confirmed `handshake complete`.
+- **Cross-OS sim determinism: RED.** First decision-tick exchange (decision_tick=1, sim.tick=5, after one DECISION_CADENCE worth of sim ticks) produced different state hashes:
+  - kokonoe (Windows, `target/release/lockstep_demo.exe`): `0x14494faf24a1499`
+  - pixie (Linux, `target/release/lockstep_demo`):       `0x3e46e1e70b8a5ef0`
+- Same source, same Cargo.lock, same seed (42), same arena (48), same initial_ants (20). x86_64 on both. Diverged within 5 sim ticks.
+
+### Root cause (suspected)
+
+Transcendental f32 ops (`sin`/`cos`/`sqrt`/`powf`/`atan2`) use platform libm: glibc's on Linux, Microsoft's CRT on Windows. These are known to differ by 1-2 ulps. Likely culprits in the sim hot path:
+- Heading rotations (`f32::sin`, `f32::cos`) in movement
+- `f32::powf` in ACO trail-following (`pheromone^alpha * desirability^beta`)
+- `f32::sqrt` in distance calculations
+
+### Implications for tonight's playtest
+
+- ✅ **Win-to-Win PvP over LAN/Tailscale** is fine. Same-OS determinism was already verified (cross-process + cross-thread-count det_check). Nothing changes.
+- ❌ **Win-to-Linux/Proton-GE PvP is broken** until cross-OS determinism is fixed. Friends on Linux will desync within seconds.
+- ❌ **Mixed-OS lobbies cannot ship until this is fixed.**
+
+### Fix plan (next session)
+
+The cross-OS bug is real engineering, not a one-liner. Options ranked by effort:
+
+1. **`libm` crate.** Pure-Rust libm port -- bit-identical results across OSes. Replace `f32::sin/cos/sqrt/powf/etc.` in sim hot path with `libm::sinf`/`libm::cosf`/etc. Couple-hour audit + replacement. Slight perf cost (~1.2× transcendentals).
+2. **Fixed-point math.** Bigger refactor, larger perf cost, but bit-deterministic by construction. Overkill for our scale.
+3. **WASM sandbox.** Compile sim to wasm, run inside wasmtime on both peers. Wasm is bit-deterministic by spec. Heaviest refactor.
+4. **Ship Win-only for v1.** Document mixed-OS desync, remove the Linux-scaffold claims from the README, revisit later.
+
+I'd start with option 1: write a `det_check_libm` example that swaps in `libm::*f` in a copy of the sim, runs the same workload, and confirms bit-identity on Win then on Linux. If it passes both, we know the audit will work. ~3 hours.
+
+### Files / artifacts
+
+- pixie:`~/antcolony/` -- patched Cargo.toml + sim+net source + built binary at `target/release/lockstep_demo`. Left intact for the next debugging session; clean up with `ssh pixie 'rm -rf ~/antcolony'` when done.
+- pixie:`~/antcolony/host.log` -- captured the desync from host's perspective.
+- `bench/` directory locally has no new artifacts -- this was a non-recording smoke test.
+
+---
+
 ## Session 2026-05-06 — netcode foundation: determinism gate GREEN, lockstep transport shipped
 
 🟢 PvP pivot. AI tuning shelved (v1 SOTA = `mlp_weights_v1.json` at 50.7% on the honest bench). Direction: direct-IP TCP lockstep PvP, Windows primary launch, Linux/Proton-GE scaffold (no Win-only deps). Three netcode phases planned (N1 determinism gate, N2 transport, N3 game integration); **N1 + N2 complete tonight**.
@@ -381,7 +434,7 @@ The conclusion from the literature review (Ren et al., BC has provable ceiling) 
 ---
 
 ## Last Updated
-2026-05-06 (PvP pivot complete — N1+N2+N3 shipped; LAN/Tailscale PvP works, ready for tonight's playtest)
+2026-05-08 (pixie cross-internet smoke -- TCP path green, cross-OS sim determinism red; Win-only PvP ships, mixed-OS needs libm-crate audit)
 
 ## Project Status
 🟢 **Game (Phases 1-3 + K1-K5 + P4-P7 full + biology economy) complete and shipping-quality.** 🟡 **AI training plateau diagnosed: ~47.1% mean win rate is the Nash equilibrium of the deterministic 7-archetype bench** (confirmed across vanilla PPO, pop+curriculum, +reward-shape+noisy variants). The current SOTA `bench/iterative-fsp/round_1/mlp_weights_v1.json` is at-or-near optimal vs the bench. Routes to break it: widen the bench with stochastic mix-strategy brains, or pivot to PvP P1 (the AI is shippable as is).
