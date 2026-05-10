@@ -1150,6 +1150,7 @@ impl Simulation {
         self.beacon_tick();
         self.movement();
         self.combat_tick();
+        self.age_mortality_tick();
         self.deposit_and_interact();
         self.territory_deposit_tick();
         self.feeding_dish_tick();
@@ -1778,6 +1779,85 @@ impl Simulation {
         // Remove dead ants. Indices collected ascending; iterate descending
         // for swap_remove so later indices stay valid.
         let mut idxs: Vec<usize> = deaths.iter().map(|d| d.idx).collect();
+        idxs.sort_unstable();
+        for i in idxs.into_iter().rev() {
+            self.ants.swap_remove(i);
+        }
+    }
+
+    /// Stochastic worker mortality (postmortem fix #5). Each adult
+    /// worker/soldier/breeder dies on this tick with probability
+    /// `1 / colony.config.worker_lifespan_ticks`. Pre-fix the species
+    /// TOML `worker_lifespan_months` field was unread; workers only
+    /// died from combat or hazards, never of age. That left cohort
+    /// dynamics unbounded and contributed to the food-overaccumulation
+    /// in long-lived species (rudis at 22.7 food/worker after year 1).
+    ///
+    /// Determinism: uses a fresh tick-derived ChaCha8Rng so we never
+    /// perturb `self.rng`'s sequence (keeping decision-pass and caste-
+    /// sampling outcomes byte-identical to pre-Phase-1).
+    ///
+    /// Queens are excluded — they die only from explicit colony events.
+    pub fn age_mortality_tick(&mut self) {
+        if self.ants.is_empty() {
+            return;
+        }
+        let lifespan_ticks = self.config.colony.worker_lifespan_ticks.max(1) as f32;
+        let p_die = 1.0 / lifespan_ticks;
+
+        let mut age_rng = ChaCha8Rng::seed_from_u64(self.tick.wrapping_mul(0x9E3779B97F4A7C15));
+
+        let mut deaths: Vec<usize> = Vec::new();
+        for (i, ant) in self.ants.iter().enumerate() {
+            if !matches!(
+                ant.caste,
+                AntCaste::Worker | AntCaste::Soldier | AntCaste::Breeder
+            ) {
+                continue;
+            }
+            if ant.is_in_transit() {
+                // Don't reap ants mid-tube; they'll be reaped on a later
+                // tick after they emerge. Avoids dangling transit state.
+                continue;
+            }
+            if age_rng.r#gen::<f32>() < p_die {
+                deaths.push(i);
+            }
+        }
+
+        if deaths.is_empty() {
+            return;
+        }
+
+        for &i in &deaths {
+            let ant = &self.ants[i];
+            for c in self.colonies.iter_mut() {
+                if c.id == ant.colony_id {
+                    match ant.caste {
+                        AntCaste::Worker => {
+                            c.population.workers = c.population.workers.saturating_sub(1)
+                        }
+                        AntCaste::Soldier => {
+                            c.population.soldiers = c.population.soldiers.saturating_sub(1)
+                        }
+                        AntCaste::Breeder => {
+                            c.population.breeders = c.population.breeders.saturating_sub(1)
+                        }
+                        AntCaste::Queen => {} // queens excluded above
+                    }
+                    break;
+                }
+            }
+        }
+
+        tracing::debug!(
+            tick = self.tick,
+            deaths = deaths.len(),
+            "age-based mortality"
+        );
+
+        // Remove dead ants. Iterate descending for swap_remove safety.
+        let mut idxs = deaths;
         idxs.sort_unstable();
         for i in idxs.into_iter().rev() {
             self.ants.swap_remove(i);
@@ -5189,6 +5269,57 @@ mod tests {
             "diapausing adults must survive food shortage on body reserves \
              (had {}, kept {})",
             initial_count, surviving,
+        );
+    }
+
+    #[test]
+    fn workers_die_stochastically_at_lifespan_rate() {
+        // Pre-fix: worker_lifespan_months was a TOML field that the sim
+        // never read; workers only died from combat or hazards. Post-fix:
+        // each adult has p_die = 1/worker_lifespan_ticks per outer tick,
+        // rolled from a tick-derived RNG (independent of self.rng so the
+        // existing decision-pass sequence is unaffected). Postmortem #5.
+        //
+        // Use a very-short lifespan (~129,600 ticks ≈ 3 in-game days at
+        // Seasonal) so a 1000-worker pop sees ~7-8 expected deaths over
+        // 1000 outer ticks. P(0 deaths | mortality wired correctly) is
+        // ~5e-4, so a single seed-determined run that hits 0 means the
+        // wiring is broken. Assertion is wide (1..=50) to avoid flaking
+        // on RNG-sequence shifts from unrelated future changes.
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        cfg.colony.worker_lifespan_ticks = 129_600; // ~3 days at Seasonal
+        let mut sim = Simulation::new(cfg, 42);
+
+        // Spawn 1000 adult workers in colony 0.
+        for i in 0..1000u32 {
+            let a = Ant::new_worker(50_000 + i, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
+            sim.ants.push(a);
+            sim.colonies[0].population.workers += 1;
+        }
+        sim.colonies[0].food_stored = 1_000_000.0; // can't starve
+
+        let initial = sim.colonies[0].population.workers;
+        for _ in 0..1000 {
+            sim.tick();
+        }
+        let after = sim.colonies[0].population.workers;
+        let died = initial - after;
+
+        assert!(
+            died >= 1 && died <= 50,
+            "expected ~7-8 stochastic age-deaths over 1000 ticks at 3-day lifespan; got {} (initial {}, after {})",
+            died, initial, after
+        );
+
+        // Population counter must match remaining ants — no orphans.
+        let live_workers = sim.ants.iter().filter(|a| matches!(a.caste, AntCaste::Worker)).count() as u32;
+        assert_eq!(
+            after, live_workers,
+            "colony.population.workers ({}) must equal live worker ant count ({})",
+            after, live_workers
         );
     }
 

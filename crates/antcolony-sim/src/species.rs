@@ -347,6 +347,13 @@ impl Species {
         let queen_egg_rate = self.growth.queen_eggs_per_day * honeydew_penalty * polygyne_factor / ticks_per_day;
         let adult_food_consumption =
             self.growth.food_per_adult_per_day / ticks_per_day;
+        // Postmortem fix #5: stochastic worker mortality. Convert
+        // species TOML `worker_lifespan_months` to ticks at this
+        // env's time scale. Pre-fix the field was unread; workers
+        // never died of age. Floor at 1.0 month equivalent to avoid
+        // unstoppable die-off if a TOML accidentally sets 0.
+        let worker_lifespan_ticks =
+            (self.biology.worker_lifespan_months.max(0.1) * 30.0 * ticks_per_day) as u32;
 
         // Maturation: each stage runs from egg→larva→pupa→adult.
         let egg_ticks = env.in_game_seconds_to_ticks(self.growth.egg_maturation_seconds);
@@ -369,6 +376,7 @@ impl Species {
             soldier_food_multiplier: 1.5,
             queen_egg_rate,
             target_population: self.growth.target_population,
+            worker_lifespan_ticks,
             ..ColonyConfig::default()
         };
 

@@ -191,6 +191,11 @@ fn default_target_population() -> u32 {
     5_000
 }
 
+fn default_worker_lifespan_ticks() -> u32 {
+    // 3 months at Seasonal scale: 3 * 30 days * 43200 ticks/day.
+    3_888_000
+}
+
 fn default_worker_size_mm() -> f32 {
     4.0
 }
@@ -237,6 +242,18 @@ pub struct ColonyConfig {
     /// foraging support, then dies the first winter.
     #[serde(default = "default_target_population")]
     pub target_population: u32,
+    /// Stochastic worker mortality: per-tick death probability for an
+    /// adult worker/soldier/breeder is `1 / worker_lifespan_ticks`.
+    /// Pre-fix, `worker_lifespan_months` was a TOML field on `Species`
+    /// that the sim never read — workers only died from combat or
+    /// hazards, never of age. That left cohort dynamics unbounded
+    /// and contributed to the 2yr-smoke food-overaccumulation in
+    /// long-lived species. Postmortem fix #5; see
+    /// docs/postmortems/2026-05-09-seasonal-transition-cliffs.md.
+    /// Default: 3 months at Seasonal scale (3 * 30 * 43200 = 3,888,000).
+    /// `Species::apply()` overrides from `biology.worker_lifespan_months`.
+    #[serde(default = "default_worker_lifespan_ticks")]
+    pub worker_lifespan_ticks: u32,
     /// K5 nuptial flight: breeders needed before a launch is triggered.
     pub nuptial_breeder_min: u32,
     /// Breeder must be at least this many ticks old to participate.
@@ -347,6 +364,7 @@ impl Default for ColonyConfig {
             soldier_food_multiplier: 1.2,  // bumped down from 1.5 (combat balance pass 2026-05-03) — soldiers no longer choke colony economy
             queen_egg_rate: 0.05,
             target_population: 5_000,
+            worker_lifespan_ticks: 3_888_000, // 3 months @ Seasonal
             nuptial_breeder_min: 3,
             nuptial_breeder_min_age: 600,
             nuptial_flight_ticks: 180,
