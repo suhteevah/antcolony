@@ -169,6 +169,7 @@ pub fn for_species_id(id: &str) -> Option<SpeciesExpectations> {
         "aphaenogaster_rudis" => Some(aphaenogaster_rudis()),
         "brachyponera_chinensis" => Some(brachyponera_chinensis()),
         "temnothorax_curvinodis" => Some(temnothorax_curvinodis()),
+        "formica_fusca" => Some(formica_fusca()),
         _ => None,
     }
 }
@@ -630,6 +631,66 @@ fn brachyponera_chinensis() -> SpeciesExpectations {
     }
 }
 
+fn formica_fusca() -> SpeciesExpectations {
+    SpeciesExpectations {
+        species_id: "formica_fusca",
+        doc_path: "docs/species/formica_fusca.md",
+        key_sources: &[
+            "AntWiki Formica fusca (range, morphology, lifespan)",
+            "Czechowski, Radchenko & Czechowska 2002 Ants of Poland (subordinate behavior, mature colony size)",
+            "Stockan & Robinson 2016 Wood Ant Ecology and Management chs. 2-3 (life-history, diapause)",
+            "Hölldobler & Wilson 1990 The Ants (recruitment classification)",
+            "Borowiec et al. 2021 PNAS (parasitic Formica radiation phylogeny)",
+        ],
+        year_5_workers: ExpectedRange {
+            human_name: "Workers alive at end of year 5",
+            human_why: "Mature monogyne F. fusca nests hold 1,000-10,000 workers \
+                       (Czechowski et al. 2002). Year 5 should be approaching \
+                       mature size on the lower end of the range under sim food economy.",
+            centroid: 2000.0,
+            tolerance: Tolerance::Loose,
+            citation: Citation::PeerReviewed(
+                "Czechowski et al. 2002 Ants of Poland (1k-10k mature)",
+            ),
+        },
+        year_5_brood_present: ExpectedRange {
+            human_name: "Brood items present at end of year 5",
+            human_why: "Healthy monogyne queen produces eggs continuously outside diapause; \
+                       brood pool is non-zero across stages in spring.",
+            centroid: 100.0,
+            tolerance: Tolerance::OrderOfMagnitude,
+            citation: Citation::GamePacing("scaled from worker count"),
+        },
+        year_5_food_returned_per_year: ExpectedRange {
+            human_name: "Food units returned per year (year 5)",
+            human_why: "Mid-size monogyne Formica colony — modest absolute food economy \
+                       between Lasius (mass-recruiter) and Temnothorax (tiny). \
+                       Order-of-magnitude check only.",
+            centroid: 4000.0,
+            tolerance: Tolerance::OrderOfMagnitude,
+            citation: Citation::GamePacing("abstract sim food units"),
+        },
+        queen_alive_at_year_5: ExpectedRange {
+            human_name: "Queen still alive at end of year 5",
+            human_why: "F. fusca queens documented at 10-15 years; year 5 mortality \
+                       would indicate a balance bug.",
+            centroid: 1.0,
+            tolerance: Tolerance::Strict,
+            citation: Citation::InternalDoc(
+                "docs/species/formica_fusca.md §3 (queen lifespan 10-15y)",
+            ),
+        },
+        days_to_first_egg: ExpectedRange {
+            human_name: "In-game days from start to first egg laid",
+            human_why: "Strict claustral founding; sim starts post-nanitic so egg flow \
+                       begins shortly after the first warm spell.",
+            centroid: 5.0,
+            tolerance: Tolerance::Loose,
+            citation: Citation::GamePacing("sim starts post-nanitic"),
+        },
+    }
+}
+
 fn temnothorax_curvinodis() -> SpeciesExpectations {
     SpeciesExpectations {
         species_id: "temnothorax_curvinodis",
@@ -705,6 +766,7 @@ mod tests {
             "aphaenogaster_rudis",
             "brachyponera_chinensis",
             "temnothorax_curvinodis",
+            "formica_fusca",
         ] {
             assert!(
                 for_species_id(id).is_some(),
@@ -730,6 +792,7 @@ mod tests {
             "aphaenogaster_rudis",
             "brachyponera_chinensis",
             "temnothorax_curvinodis",
+            "formica_fusca",
         ] {
             let exp = for_species_id(id).unwrap();
             for er in [

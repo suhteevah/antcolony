@@ -4,6 +4,92 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-09 (evening) — 2yr HeuristicBrain smoke catastrophic: 6/8 extinct at seasonal transitions, 2/8 surviving via food-overaccumulation bug
+
+🔴 Project Status: **BLOCKED on outreach.** The 2yr heuristic smoke result is a 0/8 in defensible-biology terms. Three sim bugs identified, none yet fixed. Outreach roadmap fully gated.
+
+### What Was Done This Session
+
+**1. The 2yr HeuristicBrain smoke (started prior session) finished. Result: catastrophic.**
+- 6 of 8 species extinct under HeuristicBrain — falsifies the prior session's hypothesis that the year-1 hibernation extinctions in the MLP run were a brain artifact.
+- **Two distinct extinction modes** at opposite seasonal boundaries:
+  - **Autumn pre-diapause cliff**: lasius_niger (yr 0 DOY 257), pogonomyrmex_occidentalis (yr 0 DOY 275). Both above hibernation threshold (~19°C, ~14°C).
+  - **Spring diapause-exit cliff**: formica_rufa (yr 1 DOY 76), camponotus_pennsylvanicus (yr 1 DOY 80), tapinoma_sessile (yr 1 DOY 80, **2,231 workers** — rules out small-pop hypothesis), tetramorium_immigrans (yr 1 DOY 75). All at the warm-threshold boundary (~10-12°C).
+- The two "survivors" (aphaenogaster_rudis, formica_fusca) survived only via a **third bug**: food-overaccumulation. rudis hit **44,535 food** with 960 workers (food/worker ratio 46×, 1-2 orders of magnitude above realistic). fusca hit 12,237 food / 2,069 workers.
+- All three bugs are sim-model-level, **not** species-TOML-level. tapinoma collapsing with 1,020 soldiers proves it.
+- Killed all 3 still-running processes (PIDs 149232/155932/154760) since they were producing no new diagnostic value.
+
+**2. Root-caused both seasonal cliffs to the same code path.** Mechanism (verified against `simulation.rs:3000-3208` + the 8 daily.csv timeseries):
+1. food_stored chops near zero. Egg-lay gate at `simulation.rs:3208` is `food_stored >= egg_cost (~5.0)` — a **hard binary check** that the food-inflow throttle's ENDOGENOUS_FLOOR=0.2 (line 3157) **never gets to apply to** because the binary gate slams shut first.
+2. Eggs go to zero. Brood pipeline drains. Cannibalism at line 3043+ consumes pupae (eggs first, then larvae, then pupae) to keep adults fed.
+3. Pupae depleted. food_stored<0 fires the adult-starvation cap at line 3118: 5%/tick capped wipe. With 75-tick log interval, an entire colony of 500-800 adults dies in a single log line.
+4. At spring exit specifically: `food_inflow_recent` decayed from `*= 0.993` per tick across 90+ days of winter, leaving the queen-throttle at floor when adults wake up — they can't ramp foraging fast enough.
+
+**3. Wrote postmortem `docs/postmortems/2026-05-09-seasonal-transition-cliffs.md`** — full diagnostic with per-species death timeseries, code references, and 6 ranked fixes. Originally written to `bench/` but moved to `docs/postmortems/` since `bench/` is gitignored.
+
+**4. Non-interfering work also completed this session (separate from the smoke diagnosis):**
+- `docs/species/formica_fusca.md` — full encyclopedia entry (was missing). Mirrors the brachyponera_chinensis template, citations from AntWiki, Czechowski et al. 2002, Stockan & Robinson 2016.
+- `crates/antcolony-sim/src/bench/expected.rs` — added `formica_fusca()` SpeciesExpectations function. Wired into `for_species_id` and both test allowlists. Closes the pre-existing gap. **Not yet test-run** (CPU was busy with smoke); expect compile clean.
+- `docs/methodology.md` — handoff item 4 from prior session. One-pager covering engine/architecture, ACO math, pheromone grid, colony economy, climate gates, combat, brain layer, what the sim is and is not. **Will need a frank update** after the seasonal-cliff fixes land — currently it doesn't disclose the autumn/spring cliff fragility.
+- `outreach/` — drafts for all 3 researchers (Warren consolidated, Wiernasz/Cole, Dornhaus/Charbonneau) plus master `README.md` with gating sequence. **All marked DO NOT SEND.** Outreach was already gated on TOML calibration; now it's also gated on three sim-model bug fixes.
+
+### Current State
+
+- **Working:** No species reaches year 2 in defensible-biology state. Sim core, lockstep netcode, render layer, MLP+heuristic brains, bench framework, expected.rs all compile and have unit tests passing (where prior tests existed).
+- **Broken (sim-model bugs):**
+  - **Autumn pre-diapause cliff** at `simulation.rs:3208` egg-lay food-gate.
+  - **Spring diapause-exit cliff** — same code path; `food_inflow_recent` decay during diapause (line 3012) is the proximate cause for the spring boundary specifically.
+  - **Food-overaccumulation** — no per-colony food cap. Surviving species hit 1-2 orders of magnitude above realistic. Source unidentified; suspect missing cap on food_stored deposits or per-tile food limits.
+- **Stubbed (carried from prior session):**
+  - `predates_ants` TOML field on B. chinensis silently ignored — schema field not yet added to Rust DietExtended.
+  - Per-ant activity-fraction tracking (Charbonneau-Dornhaus 2017 reproduction) not implemented.
+  - Soft cold-foraging-vs-temperature curve (Warren & Chick 2013 reproduction) not implemented.
+- **Forensic data preserved:** All 8 daily.csv + decisions.csv at `bench/smoke-10yr-ai/<species>/`. The MLP saturation evidence at `bench/smoke-10yr-ai-mlp-saturation/` from the prior session also still preserved — that bug is separate and orthogonal to the seasonal-cliff bug.
+
+### Blocking Issues
+
+**ALL FOUR planned researcher reproductions are blocked.** Not just one. Until the seasonal-cliff fixes ship and a clean 2yr smoke is 8/8 alive at defensible food/worker ratios, outreach cannot start. Specifically:
+
+- Cole/Wiernasz Pogonomyrmex 7yr — pogonomyrmex extincts at yr 0 day 125. Cannot run 7yr horizon.
+- Warren cold foraging — rudis is "alive" but on bug-state food reserves; forager-vs-temperature curve untrustable.
+- Warren displacement — needs both rudis and B. chinensis stable for 5 years.
+- Charbonneau-Dornhaus lazy worker — needs T. curvinodis stable; not even smoke-tested yet.
+
+### What's Next
+
+**In priority order:**
+
+1. **Fix the egg-lay food gate (postmortem fix #1).** Change `simulation.rs:3208` from binary `food_stored >= egg_cost` to allow `effective_egg_rate * throttle * food_stored_factor` lay-rate scaling. Preserve ENDOGENOUS_FLOOR=0.2 semantics. Single-file change. Low risk if existing unit tests pass.
+
+2. **Fix `food_inflow_recent` decay during diapause (postmortem fix #2).** Either skip the `*= 0.993` decay at `simulation.rs:3012` when `in_diapause`, or pre-load the throttle to a sane value on the diapause-exit transition. Targets the spring boundary directly.
+
+3. **Run a fast 2yr re-smoke** with same 8 species. Acceptance: 8/8 alive at year 2 with food/worker ratio < 5 across all daily samples. If pass, ship fixes #1 + #2 as a single commit.
+
+4. **Investigate food-overaccumulation (postmortem fix #4).** Even with cliff fix, rudis's 44,535-food anomaly indicates a missing cap somewhere. Search for where deposits accumulate to food_stored without bound. May require adding a per-colony or per-nest-tile food cap based on volume / population / TOML field.
+
+5. **Smooth the 5%/tick adult-starvation cap (postmortem fix #3).** Reduce to ~1%/day so deaths smear instead of cliff. Hardening for any future cohort-cliff scenario.
+
+6. **Stochastic worker mortality (postmortem fix #5).** Replace deterministic age-out with `1/lifespan_ticks` per-tick death probability. Smooths cohort dynamics.
+
+7. **Soft cold-foraging-vs-temperature curve (postmortem fix #6).** Doubles as the Warren & Chick 2013 reproduction support. Most ambitious; defer until 1-5 land.
+
+8. **Then and only then:** the deferred handoff items from the prior session (predates_ants schema + combat hookup, per-ant activity-fraction, reproduction harnesses).
+
+9. **Ship outreach drafts only after a 7yr Pogonomyrmex run reaches mature 6,000-12,000 workers without bug-state food.**
+
+### Notes for Next Session
+
+- **Read `docs/postmortems/2026-05-09-seasonal-transition-cliffs.md` before touching any sim code.** The full mechanism, daily.csv tables, and code-reference line numbers are there. Updating CLAUDE.md or methodology.md without reading the postmortem will produce wrong claims.
+- **The egg-lay food gate fix (#1) is small and targeted** — single file, `simulation.rs:3208`. Don't over-engineer it. Match the throttle pattern that's already in the code at line 3156-3162. There are existing unit tests for queen-lay throttling at `simulation.rs:4602+` (`queen_lay_rate_throttled_by_food_inflow`); the fix should keep these passing.
+- **There IS a regression test at line 5085** (`diapausing_adults_dont_starve_when_reserves_run_out`) that verifies adults survive food=0 during diapause. That test is **not** the spring-cliff regression — it tests within-diapause, not at diapause exit. Add a new test specifically for the diapause-exit transition.
+- **Do not delete the bench/ smoke output** even though it's gitignored. The 8 daily.csv files are the canonical evidence for this whole investigation.
+- **Outreach drafts in `outreach/` are tracked in git** (not gitignored). They're marked DO NOT SEND in the README and each individual draft. Don't accidentally `gh email` them.
+- **CPU is now free.** Smoke processes were killed at end of session. Cargo builds, parallel tests, etc. all unconstrained.
+- **The `formica_fusca` expected.rs entry is added but not test-run.** First action of next session should be `cargo test -p antcolony-sim --lib bench::expected` to verify the 4 unit tests still pass with the new species. Should be clean — entry follows the pattern of the 8 prior species exactly.
+- **MLP saturation finding (prior session) remains valid.** Don't conflate this session's seasonal-cliff bug with the MLP-OOD bug. They're separate. The MLP brain still saturates on solitaire even after the seasonal-cliff fixes ship; that's a brain-training problem, not a sim problem.
+
+---
+
 ## Session 2026-05-09 — 10yr smoke test exposed MLP brain saturation; outreach roadmap drafted; 2 new species added
 
 🟡 Project Status: solid plan + new substrate, mid-validation. Smoke test in progress.
