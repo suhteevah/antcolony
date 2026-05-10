@@ -3006,10 +3006,16 @@ impl Simulation {
                 * metabolic_factor;
             colony.food_stored -= consumption;
             // Decay the food-inflow running average toward zero — half
-            // life ~100 ticks. A colony that stopped delivering food
-            // sees its running average fade, which in turn throttles
-            // the queen (see biology.md → food-inflow throttle).
-            colony.food_inflow_recent *= 0.993;
+            // life ~100 ticks. ONLY decay while colony is active; during
+            // diapause, foragers are not bringing in food but workers
+            // also aren't consuming, so the throttle baseline carries
+            // over to spring. Pre-fix, 90+ days of decay left the
+            // throttle pinned at ENDOGENOUS_FLOOR for weeks post-thaw,
+            // killing 4 species at year-1 DOY 75-80 in the 2yr smoke.
+            // Postmortem fix #2; see docs/postmortems/2026-05-09-seasonal-transition-cliffs.md.
+            if !in_diapause {
+                colony.food_inflow_recent *= 0.993;
+            }
 
             let mut starve_count: u32 = 0;
             // Diapause biology: skip the entire starvation block when
@@ -5174,6 +5180,54 @@ mod tests {
             "diapausing adults must survive food shortage on body reserves \
              (had {}, kept {})",
             initial_count, surviving,
+        );
+    }
+
+    #[test]
+    fn food_inflow_recent_preserved_through_diapause() {
+        // Pre-fix: a 90-day winter decays food_inflow_recent from any
+        // value to ~0 via *= 0.993/tick — leaving the queen-lay throttle
+        // pinned at ENDOGENOUS_FLOOR=0.2 for weeks after spring wakeup
+        // while adults try to ramp foraging back up. Result: 4 species
+        // died at year-1 DOY 75-80 in the 2yr smoke (camponotus,
+        // formica_rufa, tapinoma, tetramorium).
+        // Post-fix: the *= 0.993 decay is skipped while in_diapause, so
+        // the throttle baseline carries over to spring at last-active
+        // value. Postmortem fix #2.
+        let mut cfg = small_config();
+        cfg.ant.hibernation_required = true;
+        cfg.ant.hibernation_cold_threshold_c = 10.0;
+        cfg.ant.hibernation_warm_threshold_c = 12.0;
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        let mut sim = Simulation::new(cfg, 1);
+
+        // Force always-cold climate so colony enters diapause.
+        sim.climate.seasonal_mid_c = 5.0;
+        sim.climate.seasonal_amplitude_c = 0.0;
+        sim.climate.starting_day_of_year = 0;
+        let winter_amb = sim.ambient_temp_c();
+        let m = sim.topology.module_mut(0);
+        for v in m.temperature.iter_mut() {
+            *v = winter_amb;
+        }
+
+        // Pre-load food_inflow_recent at a healthy active-season value.
+        sim.colonies[0].food_inflow_recent = 50.0;
+
+        // Run 1000 ticks of "winter". Pre-fix this would decay to
+        // 50 * 0.993^1000 ≈ 0.045. Post-fix it should stay at ~50.
+        for _ in 0..1000 {
+            sim.colony_economy_tick();
+        }
+
+        let preserved = sim.colonies[0].food_inflow_recent;
+        assert!(
+            preserved > 25.0,
+            "food_inflow_recent should not decay during diapause \
+             (was 50.0, now {})",
+            preserved
         );
     }
 
