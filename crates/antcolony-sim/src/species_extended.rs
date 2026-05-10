@@ -265,6 +265,13 @@ pub struct DietExtended {
     /// queen takes over (Formica rufa requires Formica fusca).
     #[serde(default)]
     pub host_species_required: Vec<String>,
+    /// Maximum food units this species' colonies can store. None = use
+    /// the runtime default (`target_population * egg_cost * 10`). Caps
+    /// realistic per-colony reserves; pre-cap, A. rudis colonies grew
+    /// 21,000+ food storage in the 2yr smoke (1-2 OOM above field-
+    /// realistic). See docs/postmortems/2026-05-09-seasonal-transition-cliffs.md.
+    #[serde(default)]
+    pub food_storage_cap: Option<f32>,
 }
 
 // ============================================================
@@ -397,5 +404,18 @@ mound_construction = "none"
         assert_eq!(s.incompatible, vec![SubstrateType::Sand]);
         assert!((s.dig_speed_multiplier - 0.7).abs() < f32::EPSILON);
         assert_eq!(s.mound_construction, MoundConstruction::None);
+    }
+
+    #[test]
+    fn diet_extended_food_storage_cap_optional() {
+        // Loading a TOML without food_storage_cap should succeed and yield None.
+        let toml_no_cap = r#""#;
+        let d: DietExtended = toml::from_str(toml_no_cap).expect("parse");
+        assert_eq!(d.food_storage_cap, None);
+
+        // Loading with an explicit cap should round-trip the value.
+        let toml_with_cap = r#"food_storage_cap = 2500.0"#;
+        let d: DietExtended = toml::from_str(toml_with_cap).expect("parse");
+        assert_eq!(d.food_storage_cap, Some(2500.0));
     }
 }
