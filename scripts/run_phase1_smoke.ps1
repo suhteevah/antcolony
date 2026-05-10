@@ -42,19 +42,15 @@ Write-Host "    Seed: $Seed; Years: $Years; Brain: HeuristicBrain (--no-mlp)"
 
 # ---- KOKONOE SIDE ----
 Write-Host ""
-Write-Host "==> Kokonoe: ensuring release smoke binary exists..."
+Write-Host "==> Kokonoe: building release smoke binary (cargo is incremental — recompiles only if changed)..."
 $KokonoeBinary = "$LocalRoot\target\release\examples\smoke_10yr_ai.exe"
-if (-not (Test-Path $KokonoeBinary)) {
-    Write-Host "    Binary missing. Building (~5-10 min)..."
-    Push-Location $LocalRoot
-    try {
-        cargo build --release -p antcolony-sim --example smoke_10yr_ai 2>&1 | Select-Object -Last 5
-        if ($LASTEXITCODE -ne 0) { throw "Kokonoe build failed" }
-    } finally {
-        Pop-Location
-    }
-} else {
-    Write-Host "    Binary exists at $KokonoeBinary"
+Push-Location $LocalRoot
+try {
+    cargo build --release -p antcolony-sim --example smoke_10yr_ai 2>&1 | Select-Object -Last 5
+    if ($LASTEXITCODE -ne 0) { throw "Kokonoe build failed" }
+    if (-not (Test-Path $KokonoeBinary)) { throw "Binary missing after build at $KokonoeBinary" }
+} finally {
+    Pop-Location
 }
 
 Write-Host ""
