@@ -152,6 +152,13 @@ pub struct ColonyState {
     /// K5: cumulative breeders lost to predation mid-flight.
     #[serde(default)]
     pub nuptial_predation_deaths: u32,
+    /// Per-colony storage cap override. Populated from species
+    /// TOML's `diet.food_storage_cap` at colony creation. None =
+    /// use the runtime default in `effective_food_cap()`.
+    ///
+    /// TODO: wire from species TOML → Colony at colony creation time.
+    #[serde(default)]
+    pub food_storage_cap_override: Option<f32>,
     /// K5: tick of the most recent nuptial launch (0 = never).
     #[serde(default)]
     pub last_nuptial_flight_tick: u64,
@@ -229,7 +236,20 @@ impl ColonyState {
             combat_losses_this_tick: 0,
             food_inflow_recent: 0.0,
             tech_unlocks: TechUnlock::all_defaults(),
+            food_storage_cap_override: None,
         }
+    }
+
+    /// Returns the effective food-storage cap for this colony.
+    ///
+    /// Uses the per-species override if set, otherwise falls back to
+    /// `target_population * egg_cost * 10` — a biologically-grounded
+    /// ceiling that scales with colony size. See postmortem
+    /// 2026-05-09: rudis hit 44k food / 960 workers (1-2 OOM above
+    /// field-realistic) via food-overaccumulation bug.
+    pub fn effective_food_cap(&self, target_population: u32, egg_cost: f32) -> f32 {
+        self.food_storage_cap_override
+            .unwrap_or((target_population.max(1) as f32) * egg_cost * 10.0)
     }
 
     /// P7+: is this mechanic unlocked for this colony?

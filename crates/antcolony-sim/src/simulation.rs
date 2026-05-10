@@ -3303,6 +3303,23 @@ impl Simulation {
                 }
             }
 
+            // Clamp food_stored to the per-colony cap. Prevents the
+            // food-overaccumulation pathology observed in the 2yr
+            // smoke (rudis hit 44k food / 960 workers, 1-2 OOM above
+            // field-realistic). Cap = species TOML override OR
+            // target_population * egg_cost * 10 by default.
+            // Postmortem fix #4. See docs/postmortems/2026-05-09-*.md.
+            let cap = colony.effective_food_cap(ccfg.target_population, ccfg.egg_cost);
+            if colony.food_stored > cap {
+                tracing::debug!(
+                    colony_id = colony.id,
+                    food_stored = colony.food_stored,
+                    cap,
+                    "food_stored clamped to cap"
+                );
+                colony.food_stored = cap;
+            }
+
             tracing::debug!(
                 colony_id = colony.id,
                 food = colony.food_stored,
@@ -5641,6 +5658,47 @@ mod tests {
         assert_eq!(
             sim.colonies[0].combat_losses, before_losses,
             "friendly fire must not happen"
+        );
+    }
+
+    #[test]
+    fn food_storage_cap_clamps_deposits() {
+        // Default cap = target_population * egg_cost * 10.
+        // small_config defaults: target_population=5000, egg_cost=5.0
+        // → default cap = 5000 * 5.0 * 10 = 250_000.
+        // Stuffing 10_000_000 into food_stored should clamp to 250_000.
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        let mut sim = Simulation::new(cfg, 1);
+        let expected_cap =
+            (sim.config.colony.target_population.max(1) as f32) * sim.config.colony.egg_cost * 10.0;
+
+        sim.colonies[0].food_stored = 10_000_000.0;
+        sim.colony_economy_tick();
+        assert!(
+            sim.colonies[0].food_stored <= expected_cap + 1e-3,
+            "food_stored should clamp to default cap ({:.0}), got {}",
+            expected_cap,
+            sim.colonies[0].food_stored
+        );
+    }
+
+    #[test]
+    fn food_storage_cap_respects_species_override() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        let mut sim = Simulation::new(cfg, 1);
+        sim.colonies[0].food_storage_cap_override = Some(500.0);
+        sim.colonies[0].food_stored = 10_000_000.0;
+        sim.colony_economy_tick();
+        assert!(
+            sim.colonies[0].food_stored <= 500.0 + 1e-3,
+            "food_stored should respect species override cap (500), got {}",
+            sim.colonies[0].food_stored
         );
     }
 }
