@@ -26,13 +26,13 @@ The Warren papers consolidate into one email (`outreach/warren_consolidated.md`)
 
 ## Non-goals
 
-These are explicitly **out of scope** for this roadmap. They may be valuable, but blocking outreach on them is wrong-priority.
+These are explicitly **out of scope** for the rigor work in Phases 1-5. Some return as scope in Phase 6 (charm package). They may be individually valuable, but blocking the rigor critical path on them is wrong-priority.
 
-- **AI/MLP/PPO work.** No new training, no MLP saturation fixes, no AI-ceiling work. `bench/iterative-fsp/round_1/mlp_weights_v1.json` (50.7% on the wider bench) is the shipped SOTA. HeuristicBrain is the only brain used for repro work — `mlp_weights_v1.json` is OOD on solitaire (saturated outputs by sim-day 6, evidence at `bench/smoke-10yr-ai-mlp-saturation/`).
-- **PvP / netcode / cross-OS determinism.** Win-to-Win PvP works; mixed-OS does not (Windows↔Linux libm divergence, RED in handoff). Reproductions all run single-OS (Linux on cnc-server), so cross-OS determinism does not gate them.
-- **Bevy renderer features.** No camera follow, no UI improvements, no underground nest layer, no player interaction, no Game mode (CLAUDE.md Phases 4-8). Headless reproductions only.
-- **Long-run substep collapse bug** from 2026-04-25. Only fires at Hyperlapse (1440×); reproductions run at Seasonal (60×). Not a blocker.
-- **Pratt 2005 quorum-sensing emigration.** The deferred 5th paper. Sim's relocation mechanics are coarse and don't yet reproduce decision-quorum dynamics.
+- **AI/MLP/PPO work.** No new training, no MLP saturation fixes, no AI-ceiling work. `bench/iterative-fsp/round_1/mlp_weights_v1.json` (50.7% on the wider bench) is the shipped SOTA. HeuristicBrain is the only brain used for repro work — `mlp_weights_v1.json` is OOD on solitaire (saturated outputs by sim-day 6, evidence at `bench/smoke-10yr-ai-mlp-saturation/`). **Permanently out of scope for this roadmap.**
+- **PvP / netcode / cross-OS determinism.** Win-to-Win PvP works; mixed-OS does not (Windows↔Linux libm divergence, RED in handoff). Reproductions all run single-OS (Linux on cnc-server), so cross-OS determinism does not gate them. **Permanently out of scope for this roadmap.**
+- **Bevy renderer features and gameplay polish.** Out of scope for the rigor critical path (Phases 1-5). **Returns in Phase 6** as part of the keeper-mode charm package — researchers genuinely love ants, and a polished desktop artifact strengthens the outreach package even though it doesn't change a single number.
+- **Long-run substep collapse bug** from 2026-04-25. Only fires at Hyperlapse (1440×); reproductions run at Seasonal (60×). Not a blocker. Permanently out of scope.
+- **Pratt 2005 quorum-sensing emigration.** The deferred 5th paper. Sim's relocation mechanics are coarse and don't yet reproduce decision-quorum dynamics. Permanently out of scope for this roadmap.
 
 ---
 
@@ -191,7 +191,45 @@ Triage each finding:
 
 **Phase 5 exit:** zero open Critical findings AND every Major finding is explicitly disclosed in the writeup it affects.
 
-**Only then** do we revisit outreach timing and verify researcher institutional contacts (per `outreach/README.md`).
+**After Phase 5 clears**, two parallel decisions: (a) outreach timing (deferred per Matt's brainstorming-session call), (b) whether to add Phase 6 before sending or send first and add Phase 6 as a follow-up artifact.
+
+---
+
+## Phase 6 — Charm + ecological richness package (post-red-team, optional-but-recommended)
+
+The rigor work in Phases 1-5 is sufficient for outreach. Phase 6 turns the outreach package from "here are our numbers, please review" into "here are our numbers, please review, and here's a polished desktop simulator you can run while reading this." The reasoning: these researchers chose to study ants for a living. A charming, immediately-runnable artifact lands differently than a CSV link.
+
+This phase is **optional but recommended.** If skipped, outreach proceeds with Phases 1-5 alone. If included, ships before the first email.
+
+### 6.1 Seed dispersal expansion (dual-purpose: ecological + charming)
+
+- **Where:** `crates/antcolony-sim/src/colony.rs`, `crates/antcolony-sim/src/ant.rs`, species TOMLs for *A. rudis* and *P. occidentalis*
+- **Why:** Aphaenogaster rudis is the eastern-US forest seed-disperser ant (Lubertazzi 2012, Ness 2004). Warren's literature on rudis has direct ecological context for seed handling. Pogonomyrmex are seed harvesters by design — their entire colony economy is seed-based. Building this out strengthens both the rudis writeups and the Pogonomyrmex writeup with ecological realism, AND makes the keeper-mode visuals immediately recognizable to an ant ecologist (ants carrying seeds along trails).
+- **What:** Build out from the existing `seed_dispersal` #11-lite hook (per project memory, already 10/14 Phase B hooks). Add per-species seed-pickup, transport-along-trail, deposition-near-nest behaviors. New TOML fields on relevant species: `seed_handling_mode` (`disperser` | `harvester` | `none`), `seed_carry_distance_cells`, `seed_cache_radius_cells`. Visible in keeper mode as ants carrying seed sprites along food trails.
+- **Exit:** Aphaenogaster solitaire run shows seed-dispersal pattern (seeds picked up, carried, deposited at varying distances from nest). Pogonomyrmex run shows seed-harvesting pattern (seeds picked up, brought to centralized nest cache). Visuals confirmed in keeper mode.
+
+### 6.2 Keeper-mode polish (close out the noted next-up items)
+
+- **Where:** `crates/antcolony-render/`, `crates/antcolony-game/`
+- **What:** Land the next-up items already noted in project memory:
+  - Camera follow (P7 next-up per memory)
+  - Underground layer traversal (P5 next-up per memory)
+  - Researcher demo mode: a one-key launcher that picks a species, loads it, and shows the colony with biology stats overlay (population, food, behavioral state, current pheromone field). Aimed at a researcher who's never used the app before — should be self-explanatory in 30 seconds.
+- **Exit:** Loading any species runs smoothly at ≥60fps for ≥5 minutes on Matt's hardware. Camera follow works on a hovered ant. Demo mode loads a species in <3 keypresses from cold start.
+
+### 6.3 Distribution
+
+- **What:** Build release artifacts (Win + Linux x86_64 binaries) that a researcher can download and run with no rust toolchain required. Single-file or single-zip per platform. Include the `assets/` directory bundled.
+- **Where:** `scripts/release_build.ps1` (Windows native build), `scripts/release_build_linux.sh` (cross-build via cargo-zigbuild or run on cnc).
+- **Exit:** Both binaries run on a clean machine without rust installed. Total artifact size <100MB per platform.
+
+### 6.4 Researcher-facing one-pager
+
+- **Where:** `docs/keeper-mode-quickstart.md` linked from each outreach email
+- **What:** Single page: "If you'd like to play with this on your desktop while reading our reproduction writeups, here's how. Pick *A. rudis* (Warren) / *P. occidentalis* (Cole-Wiernasz) / *T. curvinodis* (Dornhaus) / etc. Watch the trails form, the colony grow." Include 2-3 screenshots. <500 words.
+- **Exit:** A reader who hasn't seen the project can install + launch + watch a colony in <2 minutes.
+
+**Phase 6 gate:** All four sub-items complete AND a non-Matt person (or red-team agent) successfully launches the keeper-mode demo without project-specific guidance.
 
 ---
 
@@ -204,8 +242,9 @@ Triage each finding:
 | 3 (harnesses, parallel) | 4-8 | ~50 hours (4 runs) |
 | 4 (docs refresh) | 1 | none |
 | 5 (red-team) | 1-2 + fix iterations | none |
+| 6 (charm package, optional) | 3-5 | none |
 
-Realistic calendar: 2-3 weeks of focused work, longer if interleaved with other projects. cnc runs in the background throughout — does not block kokonoe dev.
+Realistic calendar: 2-3 weeks of focused work for Phases 1-5, plus another ~1 week for Phase 6 if included. cnc runs in the background throughout — does not block kokonoe dev.
 
 ---
 
@@ -215,7 +254,6 @@ Items deliberately not addressed here, with reasons:
 
 - **Outreach timing decisions** (single email vs phased, which order). Deferred until Phase 5 clears, per Matt's brainstorming-session decision.
 - **Pratt 2005 5th paper.** Out per non-goals — sim's relocation mechanics insufficient.
-- **Production gameplay features.** Out per non-goals — repros are headless.
 - **Researcher institutional address verification.** Per `outreach/README.md`, verified within 7 days of sending; sending is post-Phase-5.
 
 ---
