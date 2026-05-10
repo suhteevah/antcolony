@@ -611,7 +611,7 @@ keeper_notes = "Docile, hardy, forgiving."
     }
 
     #[test]
-    fn shipped_species_dir_loads_seven_valid_species() {
+    fn shipped_species_dir_loads_all_valid_species() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -621,8 +621,8 @@ keeper_notes = "Docile, hardy, forgiving."
             .unwrap_or_else(|e| panic!("load_species_dir failed: {e}"));
         assert_eq!(
             species.len(),
-            8,
-            "expected exactly 8 shipped species (7 player-controllable + Formica fusca host species), got {}: {:?}",
+            10,
+            "expected exactly 10 shipped species (7 player-controllable + Formica fusca host + Brachyponera chinensis + Temnothorax curvinodis), got {}: {:?}",
             species.len(),
             species.iter().map(|s| &s.id).collect::<Vec<_>>()
         );
