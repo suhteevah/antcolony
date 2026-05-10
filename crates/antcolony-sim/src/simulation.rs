@@ -3205,15 +3205,29 @@ impl Simulation {
                 }
             }
 
-            if queen_alive && !colony.fertility_suppressed && colony.food_stored >= ccfg.egg_cost {
-                colony.egg_accumulator += effective_egg_rate;
+            if queen_alive && !colony.fertility_suppressed && colony.food_stored > 0.0 {
+                // Soft food-gate: when reserves are below egg_cost, scale
+                // the lay rate by what fraction of an egg we can afford.
+                // This decouples from the binary slam-shut that caused
+                // the autumn pre-diapause cliff (postmortem fix #1).
+                let food_factor = (colony.food_stored / ccfg.egg_cost).min(1.0);
+                colony.egg_accumulator += effective_egg_rate * food_factor;
                 let mut laid_this_tick: u32 = 0;
                 while colony.egg_accumulator >= 1.0
-                    && colony.food_stored >= ccfg.egg_cost
+                    && colony.food_stored > 0.0
                     && laid_this_tick < MAX_EGGS_PER_TICK
                 {
+                    // Pay what we have — partial-cost eggs are biologically
+                    // a poorly-nourished cohort but better than zero. Real
+                    // queens reduce egg size under stress (Bourke & Franks
+                    // 1995). Floor cost at 10% of egg_cost to avoid free
+                    // eggs at food = epsilon.
+                    let actual_cost = ccfg.egg_cost.min(colony.food_stored).max(ccfg.egg_cost * 0.1);
+                    if colony.food_stored < actual_cost {
+                        break;
+                    }
                     colony.egg_accumulator -= 1.0;
-                    colony.food_stored -= ccfg.egg_cost;
+                    colony.food_stored -= actual_cost;
                     let caste = sample_caste(&mut self.rng, colony.caste_ratio);
                     colony.brood.push(Brood::new_egg(caste));
                     colony.eggs += 1;
@@ -5699,6 +5713,39 @@ mod tests {
             sim.colonies[0].food_stored <= 500.0 + 1e-3,
             "food_stored should respect species override cap (500), got {}",
             sim.colonies[0].food_stored
+        );
+    }
+
+    #[test]
+    fn queen_lays_at_throttled_rate_when_food_below_egg_cost() {
+        // Pre-fix: queen stops laying entirely when food_stored < egg_cost (5.0).
+        // Post-fix: queen lays at a reduced rate proportional to food
+        // availability, respecting the existing throttle's ENDOGENOUS_FLOOR.
+        // This prevents the autumn pre-diapause cliff where colonies
+        // chopped between food=2 and food=8 and never recovered.
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 1.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        cfg.colony.egg_cost = 5.0;
+        let mut sim = Simulation::new(cfg, 1);
+
+        // Set sustained low-food state: small reserve, no inflow.
+        sim.colonies[0].food_stored = 2.0;        // BELOW egg_cost
+        sim.colonies[0].food_inflow_recent = 0.0; // throttle to floor
+
+        let eggs_before = sim.colonies[0].eggs;
+        for _ in 0..50 {
+            sim.colony_economy_tick();
+            // Re-top food each tick to maintain "low but non-zero"
+            // sustenance — models a colony bringing in trickle food.
+            sim.colonies[0].food_stored = 2.0;
+        }
+        let laid = sim.colonies[0].eggs - eggs_before;
+        assert!(
+            laid > 0,
+            "queen must lay SOME eggs even when food < egg_cost \
+             (post-fix throttle should yield trickle laying)"
         );
     }
 }
