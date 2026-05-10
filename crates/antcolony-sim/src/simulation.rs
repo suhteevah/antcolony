@@ -3121,7 +3121,16 @@ impl Simulation {
                     let deficit = -colony.food_stored;
                     let cost = ccfg.adult_food_consumption.max(1e-6);
                     let raw = (deficit / cost).ceil() as u32;
-                    let cap = ((adult_total as f32 * 0.05).ceil() as u32).max(1);
+                    // Smooth starvation: per-tick cap at ~1%/day equivalent
+                    // (1% per 43200 Seasonal ticks/day = ~2.31e-5/tick).
+                    // ceil(...).max(1) preserves the floor so a tiny
+                    // colony still loses one ant per few ticks when starving.
+                    // Pre-fix, 5%/tick wiped a 500-adult cohort in ~75 ticks
+                    // (one log interval), making the seasonal cliff
+                    // invisible until it had already happened.
+                    // Postmortem fix #3; see docs/postmortems/2026-05-09-seasonal-transition-cliffs.md.
+                    const STARVATION_PER_TICK: f32 = 1.0 / 43_200.0 / 100.0; // 1%/day
+                    let cap = ((adult_total as f32 * STARVATION_PER_TICK).ceil() as u32).max(1);
                     let mut deaths = raw.min(cap);
                     if deaths > adult_total {
                         deaths = adult_total;
@@ -5180,6 +5189,47 @@ mod tests {
             "diapausing adults must survive food shortage on body reserves \
              (had {}, kept {})",
             initial_count, surviving,
+        );
+    }
+
+    #[test]
+    fn starvation_deaths_smooth_not_cliff() {
+        // Pre-fix: 5%/tick of adults die when food_stored < 0 — wipes
+        // a 500-adult cohort in ~75 ticks (one log interval), making
+        // the cliff invisible until it has already happened. Post-fix:
+        // ~1%/day = ~2.31e-5/tick, with a floor of 1 death/tick. So a
+        // 500-adult colony in sustained deficit loses at most 1/tick =
+        // 20% over 100 ticks (vs 100% pre-fix).
+        // Assert <30% to give buffer for the floor.
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 1.0;
+        let mut sim = Simulation::new(cfg, 1);
+
+        // Spawn 500 adult workers (active colony, not diapause).
+        for i in 0..500u32 {
+            let a = Ant::new_worker(20_000 + i, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
+            sim.ants.push(a);
+            sim.colonies[0].population.workers += 1;
+        }
+        sim.colonies[0].food_stored = 0.0;
+        sim.colonies[0].brood.clear();
+        sim.colonies[0].eggs = 0;
+        sim.colonies[0].larvae = 0;
+        sim.colonies[0].pupae = 0;
+
+        let initial = sim.colonies[0].population.workers;
+        for _ in 0..100 {
+            sim.colony_economy_tick();
+        }
+        let after = sim.colonies[0].population.workers;
+        let lost = initial - after;
+        let lost_frac = lost as f32 / initial as f32;
+        assert!(
+            lost_frac < 0.30,
+            "starvation cap should smooth deaths (lost {}/{} = {:.1}% in 100 ticks; pre-fix would be ~100%)",
+            lost, initial, lost_frac * 100.0
         );
     }
 
