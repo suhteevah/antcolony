@@ -1,125 +1,78 @@
-# Launches the Phase 1 2yr 10-species smoke split across kokonoe (7) + cnc (3).
-# Returns immediately after dispatch.
-# Use scripts/check_phase1_smoke.ps1 to poll status.
+# Launches the Phase 1 2yr 10-species smoke on cnc-server only.
+# Strict 2-at-a-time queue managed by /opt/antcolony/scripts/queue_smoke.sh
+# running under nohup on cnc — survives ssh disconnect.
+#
+# Kokonoe is intentionally not used by this launcher.
 
 $ErrorActionPreference = 'Stop'
-$LocalRoot = 'J:\antcolony'
-$LocalOutDir = "$LocalRoot\bench\smoke-phase1-2yr"
-$RemoteRoot = '/opt/antcolony'
+$LocalRoot     = 'J:\antcolony'
+$LocalOutDir   = "$LocalRoot\bench\smoke-phase1-2yr"
+$RemoteRoot    = '/opt/antcolony'
 $RemoteOutRoot = "$RemoteRoot/runs/phase1-2yr"
-$RemoteHost = 'cnc-server'
+$RemoteScripts = "$RemoteRoot/scripts"
+$RemoteHost    = 'cnc-server'
 
-$KokonoeSpecies = @(
-    'lasius_niger',
-    'pogonomyrmex_occidentalis',
-    'formica_rufa',
-    'camponotus_pennsylvanicus',
-    'tapinoma_sessile',
-    'aphaenogaster_rudis',
-    'formica_fusca'
-)
-$CncSpecies = @(
-    'tetramorium_immigrans',
-    'brachyponera_chinensis',
-    'temnothorax_curvinodis'
-)
+Write-Host "==> Phase 1 2yr smoke launcher (cnc-only, 2-at-a-time queue)"
 
-$Seed = 42
-$Years = 2
-
-Write-Host "==> Phase 1 2yr smoke launcher"
-Write-Host ("    Kokonoe species ({0}): {1}" -f $KokonoeSpecies.Count, ($KokonoeSpecies -join ', '))
-Write-Host ("    Cnc species ({0}): {1}" -f $CncSpecies.Count, ($CncSpecies -join ', '))
-Write-Host ("    Seed: {0}; Years: {1}; Brain: HeuristicBrain (--no-mlp)" -f $Seed, $Years)
-
-# ---- KOKONOE SIDE ----
-Write-Host ""
-Write-Host "==> Kokonoe: building release smoke binary (cargo incremental)..."
-$KokonoeBinary = "$LocalRoot\target\release\examples\smoke_10yr_ai.exe"
-Push-Location $LocalRoot
-try {
-    # Save+restore ErrorActionPreference because cargo writes progress
-    # to stderr and Stop would treat that as a script error.
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    $buildLog = "$env:TEMP\smoke_build.log"
-    cmd /c "cargo build --release -p antcolony-sim --example smoke_10yr_ai > `"$buildLog`" 2>&1"
-    $buildExit = $LASTEXITCODE
-    $ErrorActionPreference = $prevEAP
-    Get-Content $buildLog -Tail 5
-    if ($buildExit -ne 0) { throw "Kokonoe build failed (see $buildLog)" }
-    if (-not (Test-Path $KokonoeBinary)) { throw "Binary missing after build" }
-    Remove-Item $buildLog -ErrorAction SilentlyContinue
-} finally {
-    Pop-Location
+# ---- Safety: refuse to launch if cnc already has a queue or smoke running ----
+$existing = ssh $RemoteHost "ps aux | grep -E 'smoke_10yr_ai|queue_smoke.sh' | grep -v grep || true"
+if ($existing) {
+    Write-Host "==> ABORT: cnc already has smoke/queue processes:" -ForegroundColor Red
+    Write-Host $existing
+    Write-Host "Kill them first (ssh cnc-server 'pkill -f smoke_10yr_ai; pkill -f queue_smoke.sh')."
+    exit 1
 }
 
+# ---- Build (incremental; no-op if binary is current) ----
+# -j 2 to leave fleet headroom on cnc (i5-4690K, 4 cores).
 Write-Host ""
-Write-Host "==> Kokonoe: ensuring output dir + clearing prior run..."
-if (Test-Path $LocalOutDir) {
-    Remove-Item -Recurse -Force $LocalOutDir
-}
-New-Item -ItemType Directory -Force -Path $LocalOutDir | Out-Null
+Write-Host "==> cnc: ensuring smoke binary is current (-j 2)..."
+$buildCmd = 'cd ' + $RemoteRoot +
+            ' ; RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=' +
+            ' cargo build --release -p antcolony-sim --example smoke_10yr_ai -j 2 2>&1 | tail -10'
+ssh $RemoteHost $buildCmd
+if ($LASTEXITCODE -ne 0) { throw "cnc build failed" }
+
+# ---- Prep output root and ship queue script ----
+Write-Host ""
+Write-Host "==> cnc: preparing $RemoteOutRoot and shipping queue script..."
+$prep = 'mkdir -p ' + $RemoteOutRoot + '/_logs ' + $RemoteScripts +
+        ' ; rm -rf ' + $RemoteOutRoot + '/[a-z]*' +
+        ' ; rm -f ' + $RemoteOutRoot + '/_logs/*.log* ' + $RemoteOutRoot + '/_logs/queue.*'
+ssh $RemoteHost $prep
+if ($LASTEXITCODE -ne 0) { throw "cnc prep failed" }
+
+scp "$LocalRoot\scripts\queue_smoke.sh" "${RemoteHost}:$RemoteScripts/queue_smoke.sh"
+if ($LASTEXITCODE -ne 0) { throw "scp queue_smoke.sh failed" }
+ssh $RemoteHost "chmod +x $RemoteScripts/queue_smoke.sh ; dos2unix $RemoteScripts/queue_smoke.sh 2>/dev/null ; sed -i 's/\r$//' $RemoteScripts/queue_smoke.sh"
+
+# ---- Local output dir (for pulled csvs later) ----
+if (Test-Path $LocalOutDir) { Remove-Item -Recurse -Force $LocalOutDir }
 New-Item -ItemType Directory -Force -Path "$LocalOutDir\_logs" | Out-Null
 
+# ---- Launch queue under nohup (survives ssh drop) ----
 Write-Host ""
-Write-Host ("==> Kokonoe: launching {0} detached smoke processes..." -f $KokonoeSpecies.Count)
-$KokonoePids = @{}
-foreach ($sp in $KokonoeSpecies) {
-    $speciesOutDir = "$LocalOutDir\$sp"
-    $logOut = "$LocalOutDir\_logs\$sp.log.out"
-    $logErr = "$LocalOutDir\_logs\$sp.log.err"
-    $cmdArgs = @(
-        '--years', $Years,
-        '--no-mlp',
-        '--species', $sp,
-        '--seed', $Seed,
-        '--out', $speciesOutDir
-    )
-    $proc = Start-Process -FilePath $KokonoeBinary -ArgumentList $cmdArgs `
-        -RedirectStandardOutput $logOut -RedirectStandardError $logErr `
-        -WindowStyle Hidden -PassThru
-    $KokonoePids[$sp] = $proc.Id
-    Write-Host ("    {0} -> PID {1}" -f $sp, $proc.Id)
-}
-$KokonoePids | ConvertTo-Json | Set-Content -Path "$LocalOutDir\_logs\kokonoe_pids.json" -Encoding utf8
+Write-Host "==> cnc: launching queue_smoke.sh under nohup..."
+$launchCmd = 'cd ' + $RemoteRoot +
+             ' ; nohup ' + $RemoteScripts + '/queue_smoke.sh' +
+             ' > ' + $RemoteOutRoot + '/_logs/queue.stdout' +
+             ' 2> ' + $RemoteOutRoot + '/_logs/queue.stderr' +
+             ' < /dev/null & echo $!'
+$queuePid = (ssh $RemoteHost $launchCmd) -as [int]
+if (-not $queuePid) { throw "Failed to launch queue_smoke.sh" }
+@{ queue_pid = $queuePid; host = $RemoteHost; launched_at = (Get-Date).ToString('o') } |
+    ConvertTo-Json | Set-Content -Path "$LocalOutDir\_logs\cnc_queue.json" -Encoding utf8
 
-# ---- CNC SIDE ----
-# All ssh-target shell strings are SINGLE-QUOTED in PowerShell so that
-# embedded shell `&` and `&&` are not eaten by the PS parser. We
-# interpolate variables before passing to ssh by string concatenation.
+Start-Sleep -Seconds 3
+$alive = ssh $RemoteHost "kill -0 $queuePid 2>/dev/null && echo ALIVE || echo DEAD"
+Write-Host ("    queue PID {0}: {1}" -f $queuePid, $alive.Trim())
 
 Write-Host ""
-Write-Host "==> cnc: setting up remote output directory..."
-$cncSetup = 'mkdir -p ' + $RemoteOutRoot + '/_logs ; rm -rf ' + $RemoteOutRoot + '/[a-z]*'
-ssh $RemoteHost $cncSetup
-if ($LASTEXITCODE -ne 0) { throw "cnc remote dir setup failed" }
-
+Write-Host "==> Queue launched on cnc ($queuePid)."
+Write-Host "    10 species, 2 concurrent at a time, ~3-4 days wall-clock total."
+Write-Host "    Outputs:   ${RemoteHost}:$RemoteOutRoot/<species>/daily.csv"
+Write-Host "    Logs:      ${RemoteHost}:$RemoteOutRoot/_logs/{queue.log,<species>.log.*}"
 Write-Host ""
-Write-Host ("==> cnc: launching {0} detached smoke processes..." -f $CncSpecies.Count)
-$CncPids = @{}
-foreach ($sp in $CncSpecies) {
-    $speciesOutDir = $RemoteOutRoot + '/' + $sp
-    $logOut = $RemoteOutRoot + '/_logs/' + $sp + '.log.out'
-    $logErr = $RemoteOutRoot + '/_logs/' + $sp + '.log.err'
-    # Build the bash command via concat to avoid PS string-parsing issues.
-    $bashCmd = 'cd ' + $RemoteRoot + ' ; mkdir -p ' + $speciesOutDir +
-               ' ; nohup ./target/release/examples/smoke_10yr_ai' +
-               ' --years ' + $Years + ' --no-mlp --species ' + $sp +
-               ' --seed ' + $Seed + ' --out ' + $speciesOutDir +
-               ' > ' + $logOut + ' 2> ' + $logErr +
-               ' < /dev/null >/dev/null 2>&1 & echo $!'
-    $remotePid = (ssh $RemoteHost $bashCmd) -as [int]
-    $CncPids[$sp] = $remotePid
-    Write-Host ("    {0} -> remote PID {1}" -f $sp, $remotePid)
-}
-$CncPids | ConvertTo-Json | Set-Content -Path "$LocalOutDir\_logs\cnc_pids.json" -Encoding utf8
-
-Write-Host ""
-Write-Host "==> All 10 smokes launched."
-Write-Host ("    Kokonoe outputs: {0}" -f $LocalOutDir)
-Write-Host ("    Cnc outputs: {0}:{1}" -f $RemoteHost, $RemoteOutRoot)
-Write-Host ""
-Write-Host "    Estimated wall-clock: ~18-24 hours."
-Write-Host "    Check status: .\scripts\check_phase1_smoke.ps1"
-Write-Host "    Pull cnc results: .\scripts\pull_cnc_smoke.ps1"
+Write-Host "    Check status:  .\scripts\check_phase1_smoke.ps1"
+Write-Host "    Pull results:  .\scripts\pull_cnc_smoke.ps1   (after queue.done appears)"
+Write-Host "    Tail queue:    ssh cnc-server 'tail -f $RemoteOutRoot/_logs/queue.log'"
