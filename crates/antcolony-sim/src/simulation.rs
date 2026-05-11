@@ -3194,27 +3194,32 @@ impl Simulation {
                     }
                 }
                 // Any remaining deficit falls through to worker
-                // starvation (capped per tick to avoid a single-tick
-                // colony wipe). Diapause is handled at the outer guard
-                // above, so this branch only fires for ACTIVE colonies.
+                // starvation, smoothed at 1%/day via a per-colony
+                // fractional accumulator. Diapause is handled at the
+                // outer guard above, so this branch only fires for
+                // ACTIVE colonies.
+                //
+                // Postmortem fix #3 v2 (see attempt1 daily.csv data):
+                // The earlier `cap.max(1)` form floored the per-tick
+                // cap at 1 death, which at 43200 ticks/day permitted
+                // up to 43200 deaths/day regardless of intended 1%/day.
+                // A 500-adult colony wiped in ~500 ticks once food went
+                // negative. The accumulator approach below preserves
+                // integer mortality (you can't kill 0.0001 ants) while
+                // truly capping the daily rate to ~1% of `adult_total`.
                 if colony.food_stored < 0.0 {
                     let deficit = -colony.food_stored;
                     let cost = ccfg.adult_food_consumption.max(1e-6);
                     let raw = (deficit / cost).ceil() as u32;
-                    // Smooth starvation: per-tick cap at ~1%/day equivalent
-                    // (1% per 43200 Seasonal ticks/day = ~2.31e-5/tick).
-                    // ceil(...).max(1) preserves the floor so a tiny
-                    // colony still loses one ant per few ticks when starving.
-                    // Pre-fix, 5%/tick wiped a 500-adult cohort in ~75 ticks
-                    // (one log interval), making the seasonal cliff
-                    // invisible until it had already happened.
-                    // Postmortem fix #3; see docs/postmortems/2026-05-09-seasonal-transition-cliffs.md.
                     const STARVATION_PER_TICK: f32 = 1.0 / 43_200.0 / 100.0; // 1%/day
-                    let cap = ((adult_total as f32 * STARVATION_PER_TICK).ceil() as u32).max(1);
-                    let mut deaths = raw.min(cap);
+                    colony.starvation_accumulator +=
+                        adult_total as f32 * STARVATION_PER_TICK;
+                    let smooth_cap = colony.starvation_accumulator.floor() as u32;
+                    let mut deaths = raw.min(smooth_cap);
                     if deaths > adult_total {
                         deaths = adult_total;
                     }
+                    colony.starvation_accumulator -= deaths as f32;
                     starve_count = deaths;
                     colony.food_stored = 0.0;
                     if deaths > 0 {
@@ -3223,11 +3228,21 @@ impl Simulation {
                             deaths,
                             adult_total,
                             raw,
-                            "starvation deaths (capped per tick; brood exhausted)"
+                            accumulator = colony.starvation_accumulator,
+                            "starvation deaths (smoothed; brood exhausted)"
                         );
                     }
+                } else {
+                    // Fed again mid-tick (brood cannibalism saved us).
+                    // Clear pressure so future starvation events don't
+                    // fire an instant kill from old debt.
+                    colony.starvation_accumulator = 0.0;
                 }
                 starve.push((colony.id, starve_count));
+            } else {
+                // Active and fed at tick start — same reset.
+                colony.starvation_accumulator = 0.0;
+                starve.push((colony.id, 0));
             }
 
             let queen_alive = colony.queen_health > 0.0;
@@ -3867,9 +3882,13 @@ mod tests {
         cfg.colony.initial_food = 0.0;
         cfg.colony.queen_egg_rate = 0.0;
         cfg.colony.adult_food_consumption = 0.5;
+        // Smooth-starvation cap is 1%/day = ~2.31e-7 per ant per tick.
+        // 30 ants in 200 ticks accumulate ~0.0014 deaths — far below 1.
+        // Bump to 500 ants × 50_000 ticks → ~5.8 expected deaths.
+        cfg.ant.initial_count = 500;
         let mut sim = Simulation::new(cfg, 11);
         let initial = sim.ants.len();
-        sim.run(200);
+        sim.run(50_000);
         assert!(
             sim.ants.len() < initial,
             "ants did not die of starvation: initial={}, final={}",
@@ -5324,21 +5343,27 @@ mod tests {
     }
 
     #[test]
-    fn starvation_deaths_smooth_not_cliff() {
-        // Pre-fix: 5%/tick of adults die when food_stored < 0 — wipes
-        // a 500-adult cohort in ~75 ticks (one log interval), making
-        // the cliff invisible until it has already happened. Post-fix:
-        // ~1%/day = ~2.31e-5/tick, with a floor of 1 death/tick. So a
-        // 500-adult colony in sustained deficit loses at most 1/tick =
-        // 20% over 100 ticks (vs 100% pre-fix).
-        // Assert <30% to give buffer for the floor.
+    fn starvation_deaths_smoothed_at_one_percent_per_day() {
+        // Postmortem fix #3 v2: a 500-adult colony in sustained deficit
+        // should lose ~5 adults per game-day (1% of adult_total).
+        //
+        // History of this assertion:
+        //   - Original 5%/tick implementation: wiped 500 in ~20 ticks.
+        //   - Fix v1 (cap.max(1)): allowed 1 death/tick = 43200 deaths/day
+        //     for any colony size. Live data (attempt1, 2026-05-11) showed
+        //     500 adults dying in <1 game-day at the seasonal cliff.
+        //   - Fix v2 (fractional accumulator): per-tick cap really IS
+        //     `adult_total * STARVATION_PER_TICK`, no .max(1) floor.
+        //     Integer mortality preserved via colony.starvation_accumulator.
+        //
+        // 500 adults × 2.31e-7/tick × 43200 ticks/day = ~5.0 deaths/day.
+        // Run 43200 ticks → expect 4..=7 deaths.
         let mut cfg = small_config();
         cfg.ant.initial_count = 0;
         cfg.colony.queen_egg_rate = 0.0;
         cfg.colony.adult_food_consumption = 1.0;
         let mut sim = Simulation::new(cfg, 1);
 
-        // Spawn 500 adult workers (active colony, not diapause).
         for i in 0..500u32 {
             let a = Ant::new_worker(20_000 + i, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
             sim.ants.push(a);
@@ -5351,16 +5376,57 @@ mod tests {
         sim.colonies[0].pupae = 0;
 
         let initial = sim.colonies[0].population.workers;
-        for _ in 0..100 {
+        for _ in 0..43_200 {
             sim.colony_economy_tick();
         }
         let after = sim.colonies[0].population.workers;
         let lost = initial - after;
-        let lost_frac = lost as f32 / initial as f32;
         assert!(
-            lost_frac < 0.30,
-            "starvation cap should smooth deaths (lost {}/{} = {:.1}% in 100 ticks; pre-fix would be ~100%)",
-            lost, initial, lost_frac * 100.0
+            (4..=7).contains(&lost),
+            "expected ~5 deaths/day (1% of 500) under smooth-starvation cap; got {} in 43200 ticks (initial {}, after {})",
+            lost, initial, after
+        );
+    }
+
+    #[test]
+    fn starvation_accumulator_clears_when_fed() {
+        // After a transient food deficit, refilling food should zero
+        // the accumulator so a later starvation event doesn't instantly
+        // fire a free kill from accumulated pressure during the gap.
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 1.0;
+        let mut sim = Simulation::new(cfg, 7);
+
+        for i in 0..1000u32 {
+            let a = Ant::new_worker(30_000 + i, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
+            sim.ants.push(a);
+            sim.colonies[0].population.workers += 1;
+        }
+        sim.colonies[0].brood.clear();
+        sim.colonies[0].eggs = 0;
+        sim.colonies[0].larvae = 0;
+        sim.colonies[0].pupae = 0;
+
+        // Phase 1: starve for half a day — accumulator grows toward
+        // 1000 * 2.31e-5 * 21600 ≈ 5 fractional pending deaths.
+        sim.colonies[0].food_stored = 0.0;
+        for _ in 0..21_600 {
+            sim.colony_economy_tick();
+        }
+        assert!(
+            sim.colonies[0].starvation_accumulator > 0.0,
+            "accumulator should be non-zero after half a starving day; got {}",
+            sim.colonies[0].starvation_accumulator
+        );
+
+        // Phase 2: feed for a tick.
+        sim.colonies[0].food_stored = 10_000.0;
+        sim.colony_economy_tick();
+        assert_eq!(
+            sim.colonies[0].starvation_accumulator, 0.0,
+            "feeding should clear the accumulator"
         );
     }
 

@@ -192,6 +192,15 @@ pub struct ColonyState {
     /// many eggs as the protein pipeline supports.
     #[serde(default)]
     pub food_inflow_recent: f32,
+    /// Fractional-deaths accumulator for the smooth-starvation cap.
+    /// Each starving tick adds `adult_total * STARVATION_PER_TICK`;
+    /// `floor()` of this value is the max deaths permitted that tick,
+    /// and is debited on death. Resets to 0 when food_stored >= 0.
+    /// Replaces the `cap.max(1)` floor that bottomed out at 1/tick
+    /// (43200 deaths/day for any colony size, not the intended 1%/day).
+    /// See postmortem `2026-05-09-seasonal-transition-cliffs.md` fix #3.
+    #[serde(default)]
+    pub starvation_accumulator: f32,
     /// P7+: unlocked biology mechanics. Defaults to "everything on"
     /// (Keeper mode). In a PvP sim, construct the colony with a subset
     /// (e.g. via a research tree). See `docs/biology.md`.
@@ -237,6 +246,7 @@ impl ColonyState {
             food_inflow_recent: 0.0,
             tech_unlocks: TechUnlock::all_defaults(),
             food_storage_cap_override: None,
+            starvation_accumulator: 0.0,
         }
     }
 
