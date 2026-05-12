@@ -981,6 +981,35 @@ impl Simulation {
         self.topology.module_mut(module).world.place_food_cluster(cx, cy, radius, units)
     }
 
+    /// Test/bench helper — clears every `Terrain::Food` cell on a module
+    /// back to `Terrain::Empty`. Used to set up food-spawn-tick assertions.
+    pub fn clear_food_on_module(&mut self, mid: ModuleId) {
+        let m = self.topology.module_mut(mid);
+        let (w, h) = (m.width(), m.height());
+        for y in 0..h {
+            for x in 0..w {
+                if matches!(m.world.get(x, y), crate::world::Terrain::Food(_)) {
+                    m.world.set(x, y, crate::world::Terrain::Empty);
+                }
+            }
+        }
+    }
+
+    /// Test/bench helper — counts `Terrain::Food` cells on a given module.
+    pub fn count_food_cells_on(&self, mid: ModuleId) -> u32 {
+        let m = self.topology.module(mid);
+        let (w, h) = (m.width(), m.height());
+        let mut n = 0u32;
+        for y in 0..h {
+            for x in 0..w {
+                if matches!(m.world.get(x, y), crate::world::Terrain::Food(_)) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
     // ---- K2.3 live topology mutation helpers ----
 
     /// Add a new module to the live topology. Auto-seeds four edge-center
@@ -4113,6 +4142,51 @@ mod tests {
             after_cd > 0,
             "FeedingDish did not refill after cooldown: {}",
             after_cd
+        );
+    }
+
+    #[test]
+    fn food_spawn_tick_repopulates_outworld_in_peak_season() {
+        use crate::module::ModuleKind;
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.world.food_spawn_rate = 100.0; // 100 clusters/day at peak
+        cfg.world.food_cluster_size = 2;
+        cfg.world.forage_peak_doy_start = 120;
+        cfg.world.forage_peak_doy_end = 240;
+        let mut sim = Simulation::new(cfg, 1);
+
+        // Force "peak summer" climate at DOY 180.
+        sim.climate.starting_day_of_year = 180;
+        sim.climate.seasonal_mid_c = 25.0;
+        sim.climate.seasonal_amplitude_c = 0.0;
+
+        // Clear any food the bench seeded.
+        let outworld_id = sim
+            .topology
+            .modules
+            .iter()
+            .find(|m| matches!(m.kind, ModuleKind::Outworld))
+            .expect("test setup: expected an Outworld module")
+            .id;
+        sim.clear_food_on_module(outworld_id);
+        assert_eq!(
+            sim.count_food_cells_on(outworld_id),
+            0,
+            "test setup: outworld should be food-free before spawning"
+        );
+
+        // Run 5000 outer-ticks (~0.11 game-day at Seasonal).
+        // With 100 clusters/day peak, expect at least 8-15 clusters.
+        for _ in 0..5_000 {
+            sim.tick();
+        }
+        let food_after = sim.count_food_cells_on(outworld_id);
+        assert!(
+            food_after >= 8,
+            "expected food respawn during peak season; got {} cells",
+            food_after
         );
     }
 
