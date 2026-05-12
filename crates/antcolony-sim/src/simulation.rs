@@ -4315,6 +4315,99 @@ mod tests {
     }
 
     #[test]
+    fn food_spawn_tick_quiet_in_dearth_season() {
+        let mut cfg = small_config();
+        cfg.world.food_spawn_rate = 100.0;
+        cfg.world.forage_dearth_multiplier = 0.0; // total winter shutdown
+        cfg.world.forage_peak_doy_start = 120;
+        cfg.world.forage_peak_doy_end = 240;
+        let mut sim = Simulation::new(cfg, 1);
+        sim.climate.starting_day_of_year = 15; // mid-January
+        let outworld = sim
+            .topology
+            .modules
+            .iter()
+            .find(|m| matches!(m.kind, crate::module::ModuleKind::Outworld))
+            .unwrap()
+            .id;
+        sim.clear_food_on_module(outworld);
+        for _ in 0..5_000 {
+            sim.tick();
+        }
+        assert_eq!(
+            sim.count_food_cells_on(outworld),
+            0,
+            "no food should spawn at dearth_multiplier=0 in winter"
+        );
+    }
+
+    #[test]
+    fn food_spawn_tick_never_touches_nests_or_chambers() {
+        use crate::world::Terrain;
+        let mut cfg = small_config();
+        cfg.world.food_spawn_rate = 1000.0; // very aggressive
+        cfg.world.forage_dearth_multiplier = 1.0;
+        // Need a topology with a non-Outworld module to exercise
+        // the spawn tick's "Outworld-only" filter. The default
+        // `Simulation::new` creates a single Outworld module, so
+        // build a starter formicarium (TestTubeNest + Outworld).
+        let topology = Topology::starter_formicarium((32, 24), (64, 64));
+        let mut sim = Simulation::new_with_topology(cfg, topology, 7);
+        sim.climate.starting_day_of_year = 180;
+        // Pick any non-Outworld module — the spawn tick should skip
+        // every nest/chamber kind, not just one specific variant.
+        let nest_id = sim
+            .topology
+            .modules
+            .iter()
+            .find(|m| !matches!(m.kind, crate::module::ModuleKind::Outworld))
+            .unwrap()
+            .id;
+
+        // Snapshot all NestEntrance cells before spawn ticks.
+        let entrances_before: Vec<(usize, usize)> = {
+            let m = sim.topology.module(nest_id);
+            let mut out = Vec::new();
+            for y in 0..m.height() {
+                for x in 0..m.width() {
+                    if matches!(m.world.get(x, y), Terrain::NestEntrance(_)) {
+                        out.push((x, y));
+                    }
+                }
+            }
+            out
+        };
+
+        for _ in 0..10_000 {
+            sim.tick();
+        }
+
+        // All entrances still in place; none overwritten.
+        let m = sim.topology.module(nest_id);
+        for (x, y) in &entrances_before {
+            assert!(
+                matches!(m.world.get(*x, *y), Terrain::NestEntrance(_)),
+                "nest entrance at ({},{}) was overwritten",
+                x,
+                y
+            );
+        }
+        // No Food cells on nest module.
+        let mut food_on_nest = 0;
+        for y in 0..m.height() {
+            for x in 0..m.width() {
+                if matches!(m.world.get(x, y), Terrain::Food(_)) {
+                    food_on_nest += 1;
+                }
+            }
+        }
+        assert_eq!(
+            food_on_nest, 0,
+            "food spawned on nest module — should be Outworld only"
+        );
+    }
+
+    #[test]
     fn pheromone_bleeds_across_tube() {
         // Deposit a strong food trail right at the nest-side port. After
         // a few ticks of port-bleed, the matched port on the outworld
