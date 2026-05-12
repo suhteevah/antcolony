@@ -158,6 +158,47 @@ pub struct Encyclopedia {
     pub keeper_notes: String,
 }
 
+/// Per-species forage calibration. Flows through `Species::apply` into the
+/// `WorldConfig` forage seasonality fields, which `food_spawn_tick` consumes
+/// to spawn food clusters at the right rate and seasonal window for the
+/// species's ecological niche.
+///
+/// Defaults to a no-respawn profile (`peak_food_per_day = 0.0`) so species
+/// TOMLs that omit the `[forage]` block continue to load with legacy behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForageProfile {
+    /// Ecological niche label — informational only, used for analytics.
+    #[serde(default)]
+    pub niche: String,
+    /// Mean food clusters spawned per in-game day at peak season.
+    /// Calibrated to support a quarter-mature colony in optimal weather.
+    pub peak_food_per_day: f32,
+    /// Multiplier on `peak_food_per_day` during winter / dearth.
+    /// 0.0 for obligate-diapause species with caching (Pogonomyrmex);
+    /// 0.1-0.5 for species with facultative diapause / indoor access.
+    pub dearth_food_multiplier: f32,
+    /// Day-of-year window where forage is at peak.
+    pub peak_doy_start: u32,
+    pub peak_doy_end: u32,
+    /// Mean cluster size (food units per spawn event). Granivores get
+    /// large caches (20-30); predators get small clusters (2-8); solo
+    /// scouts get singletons (1).
+    pub cluster_size: usize,
+}
+
+impl Default for ForageProfile {
+    fn default() -> Self {
+        Self {
+            niche: "generalist".into(),
+            peak_food_per_day: 0.0,
+            dearth_food_multiplier: 0.1,
+            peak_doy_start: 105,
+            peak_doy_end: 274,
+            cluster_size: 5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Species {
     pub id: String,
@@ -168,6 +209,11 @@ pub struct Species {
     pub biology: Biology,
     pub growth: Growth,
     pub diet: Diet,
+    /// Per-species forage calibration: spawn rate, seasonal window,
+    /// cluster size. Defaults to no-respawn (legacy behavior) when the
+    /// `[forage]` block is absent from the species TOML.
+    #[serde(default)]
+    pub forage: ForageProfile,
     pub combat: CombatProfile,
     pub appearance: Appearance,
     pub encyclopedia: Encyclopedia,
@@ -247,11 +293,16 @@ impl Species {
         let world = WorldConfig {
             width: env.world_width,
             height: env.world_height,
-            food_spawn_rate: 0.0,
-            food_cluster_size: 5,
-            forage_dearth_multiplier: 0.1,
-            forage_peak_doy_start: 105,
-            forage_peak_doy_end: 274,
+            // Per-species forage calibration (Task B1). The
+            // `ForageProfile::default()` provides legacy no-respawn
+            // (peak_food_per_day = 0.0) for species TOMLs that don't
+            // yet ship a `[forage]` block; once B2 adds the blocks,
+            // these values come from the species file.
+            food_spawn_rate: self.forage.peak_food_per_day,
+            food_cluster_size: self.forage.cluster_size,
+            forage_dearth_multiplier: self.forage.dearth_food_multiplier,
+            forage_peak_doy_start: self.forage.peak_doy_start,
+            forage_peak_doy_end: self.forage.peak_doy_end,
         };
 
         // Pheromone defaults stay calibrated to a single sim-substep
@@ -649,6 +700,56 @@ keeper_notes = "Docile, hardy, forgiving."
                 s.id
             );
         }
+    }
+
+    #[test]
+    fn species_loads_without_forage_block_uses_defaults() {
+        // Sample TOML omits `[forage]` — Species should still load,
+        // and the forage profile should be the legacy no-respawn default.
+        let s = Species::load_from_str(sample_toml()).expect("parse");
+        assert_eq!(s.forage.peak_food_per_day, 0.0);
+        assert_eq!(s.forage.cluster_size, 5);
+        assert_eq!(s.forage.peak_doy_start, 105);
+        assert_eq!(s.forage.peak_doy_end, 274);
+    }
+
+    #[test]
+    fn forage_profile_round_trips_through_toml() {
+        let toml_str = r#"
+            niche = "granivore"
+            peak_food_per_day = 100.0
+            dearth_food_multiplier = 0.0
+            peak_doy_start = 121
+            peak_doy_end = 288
+            cluster_size = 25
+        "#;
+        let f: ForageProfile = toml::from_str(toml_str).expect("parse forage block");
+        assert_eq!(f.niche, "granivore");
+        assert_eq!(f.peak_food_per_day, 100.0);
+        assert_eq!(f.dearth_food_multiplier, 0.0);
+        assert_eq!(f.peak_doy_start, 121);
+        assert_eq!(f.peak_doy_end, 288);
+        assert_eq!(f.cluster_size, 25);
+    }
+
+    #[test]
+    fn apply_maps_forage_profile_to_world_config() {
+        use crate::environment::Environment;
+        let mut s = Species::load_from_str(sample_toml()).expect("parse");
+        s.forage = ForageProfile {
+            niche: "granivore".into(),
+            peak_food_per_day: 75.0,
+            dearth_food_multiplier: 0.0,
+            peak_doy_start: 121,
+            peak_doy_end: 288,
+            cluster_size: 25,
+        };
+        let cfg = s.apply(&Environment::default());
+        assert_eq!(cfg.world.food_spawn_rate, 75.0);
+        assert_eq!(cfg.world.food_cluster_size, 25);
+        assert_eq!(cfg.world.forage_dearth_multiplier, 0.0);
+        assert_eq!(cfg.world.forage_peak_doy_start, 121);
+        assert_eq!(cfg.world.forage_peak_doy_end, 288);
     }
 
     #[test]
