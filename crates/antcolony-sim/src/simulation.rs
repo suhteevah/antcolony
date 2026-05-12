@@ -983,7 +983,7 @@ impl Simulation {
 
     /// Test/bench helper — clears every `Terrain::Food` cell on a module
     /// back to `Terrain::Empty`. Used to set up food-spawn-tick assertions.
-    pub fn clear_food_on_module(&mut self, mid: ModuleId) {
+    pub(crate) fn clear_food_on_module(&mut self, mid: ModuleId) {
         let m = self.topology.module_mut(mid);
         let (w, h) = (m.width(), m.height());
         for y in 0..h {
@@ -996,7 +996,7 @@ impl Simulation {
     }
 
     /// Test/bench helper — counts `Terrain::Food` cells on a given module.
-    pub fn count_food_cells_on(&self, mid: ModuleId) -> u32 {
+    pub(crate) fn count_food_cells_on(&self, mid: ModuleId) -> u32 {
         let m = self.topology.module(mid);
         let (w, h) = (m.width(), m.height());
         let mut n = 0u32;
