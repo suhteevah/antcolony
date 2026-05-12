@@ -431,6 +431,10 @@ impl Species {
             queen_egg_rate,
             target_population: self.growth.target_population,
             worker_lifespan_ticks,
+            // Task C3: wire species TOML `diet_extended.food_storage_cap`
+            // into the per-colony override that `ColonyState::new` reads.
+            // `None` falls back to the runtime default.
+            food_storage_cap: self.diet_extended.food_storage_cap,
             ..ColonyConfig::default()
         };
 
@@ -772,5 +776,61 @@ keeper_notes = "Docile, hardy, forgiving."
         assert_eq!(cfg.colony.larva_stage_ticks, 54_432_000);
         // 14d * 86400s * 30Hz = 36_288_000 ticks
         assert_eq!(cfg.colony.pupa_stage_ticks, 36_288_000);
+    }
+
+    /// C3: species TOML `diet_extended.food_storage_cap` must flow through
+    /// `Species::apply` into `ColonyConfig.food_storage_cap`, and then be
+    /// installed on `ColonyState.food_storage_cap_override` when the
+    /// Simulation builds its initial colony. This is the wiring that
+    /// previously had a TODO in `colony.rs`.
+    #[test]
+    fn species_food_storage_cap_wires_to_colony_override() {
+        use crate::environment::Environment;
+
+        // 1) The real on-disk TOML for P. occidentalis declares
+        //    food_storage_cap = 300000.0 inside [diet_extended].
+        let toml_str =
+            include_str!("../../../assets/species/pogonomyrmex_occidentalis.toml");
+        let species: Species =
+            Species::load_from_str(toml_str).expect("parse pogonomyrmex_occidentalis.toml");
+        assert_eq!(
+            species.diet_extended.food_storage_cap,
+            Some(300_000.0),
+            "pogonomyrmex_occidentalis.toml should declare food_storage_cap = 300000.0"
+        );
+
+        // 2) Species::apply must copy that value into ColonyConfig.
+        let env = Environment::default();
+        let cfg = species.apply(&env);
+        assert_eq!(
+            cfg.colony.food_storage_cap,
+            Some(300_000.0),
+            "Species::apply must forward diet_extended.food_storage_cap into ColonyConfig"
+        );
+
+        // 3) Simulation::new must propagate it onto the live ColonyState.
+        let sim = crate::simulation::Simulation::new(cfg, 42);
+        assert_eq!(
+            sim.colonies[0].food_storage_cap_override,
+            Some(300_000.0),
+            "Colony override should match species cap (TODO from colony.rs:159 must be wired)"
+        );
+    }
+
+    /// C3: a species TOML without `diet_extended.food_storage_cap` should
+    /// produce a colony with `None` override (runtime default applies).
+    /// This pins the additive-schema behavior.
+    #[test]
+    fn species_without_food_storage_cap_leaves_override_none() {
+        use crate::environment::Environment;
+        let species = Species::load_from_str(sample_toml()).expect("parse sample");
+        assert!(
+            species.diet_extended.food_storage_cap.is_none(),
+            "sample_toml has no [diet_extended] block — cap should default to None"
+        );
+        let cfg = species.apply(&Environment::default());
+        assert_eq!(cfg.colony.food_storage_cap, None);
+        let sim = crate::simulation::Simulation::new(cfg, 7);
+        assert_eq!(sim.colonies[0].food_storage_cap_override, None);
     }
 }

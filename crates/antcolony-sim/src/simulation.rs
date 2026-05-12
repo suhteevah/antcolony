@@ -113,6 +113,9 @@ impl Simulation {
 
         let nest_pos = Vec2::new(pw as f32 * 0.5, ph as f32 * 0.5);
         let mut colony = ColonyState::new(0, config.colony.initial_food, nest_pos);
+        // C3: wire species food_storage_cap (set by Species::apply from
+        // diet_extended.food_storage_cap) into the per-colony override.
+        colony.food_storage_cap_override = config.colony.food_storage_cap;
 
         let initial_dist = CasteRatio {
             worker: 1.0,
@@ -189,6 +192,8 @@ impl Simulation {
         let (bw, bh) = (black_mod.width(), black_mod.height());
         let black_nest = Vec2::new(bw as f32 * 0.5, bh as f32 * 0.5);
         let mut c_black = ColonyState::new(0, config.colony.initial_food, black_nest);
+        // C3: per-species food storage cap.
+        c_black.food_storage_cap_override = config.colony.food_storage_cap;
 
         let dist = CasteRatio { worker: 1.0, soldier: 0.0, breeder: 0.0 };
         let mut black_ants = spawn_initial_ants(&config, &mut rng, black_nest, 0, dist, 0);
@@ -199,6 +204,8 @@ impl Simulation {
         let (rw, rh) = (red_mod.width(), red_mod.height());
         let red_nest = Vec2::new(rw as f32 * 0.5, rh as f32 * 0.5);
         let mut c_red = ColonyState::new(1, config.colony.initial_food, red_nest);
+        // C3: per-species food storage cap.
+        c_red.food_storage_cap_override = config.colony.food_storage_cap;
         c_red.is_ai_controlled = true;
         // Red colonies lean defensive — more soldiers by default.
         c_red.caste_ratio = CasteRatio { worker: 0.65, soldier: 0.3, breeder: 0.05 };

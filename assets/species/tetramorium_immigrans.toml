@@ -79,6 +79,7 @@ context_aggression = true  # Hoover et al. 2016 monoamine clock (5-HT/octopamine
 seed_dispersal = false  # opportunistic seed consumer but not a myrmecochore disperser (doc §5)
 honeydew_dependent = false  # actively tends aphids/mealybugs but diet is broadly omnivorous, not honeydew-obligate (doc §5)
 host_species_required = []  # not a parasitic founder — independent semi-claustral founding (doc §3)
+food_storage_cap = 80000.0  # C3: 4.0 food/worker × 20000 target_population (App C calibration — sidewalk-ant urban supercolony)
 
 [ecological_role]
 keystone = false  # widespread synanthrope but not formally keystone-classified

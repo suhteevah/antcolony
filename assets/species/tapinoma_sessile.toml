@@ -79,6 +79,7 @@ context_aggression = false  # subordinate competitor strategy — withdraw/reloc
 seed_dispersal = false  # not a seed disperser
 honeydew_dependent = false  # heavy honeydew user but not obligate; thrives indoors with no aphid access (doc §5)
 host_species_required = []  # not a parasitic founder
+food_storage_cap = 40000.0  # C3: 4.0 food/worker × 10000 target_population (App C calibration — polygyne household nuisance)
 
 [ecological_role]
 keystone = false  # widespread generalist; not formally keystone-classified

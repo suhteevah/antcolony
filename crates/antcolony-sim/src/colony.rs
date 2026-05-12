@@ -152,11 +152,13 @@ pub struct ColonyState {
     /// K5: cumulative breeders lost to predation mid-flight.
     #[serde(default)]
     pub nuptial_predation_deaths: u32,
-    /// Per-colony storage cap override. Populated from species
-    /// TOML's `diet.food_storage_cap` at colony creation. None =
-    /// use the runtime default in `effective_food_cap()`.
-    ///
-    /// TODO: wire from species TOML → Colony at colony creation time.
+    /// Per-colony storage cap override. Populated from the species
+    /// TOML's `diet_extended.food_storage_cap` at colony creation —
+    /// `Species::apply` writes the value into `ColonyConfig.food_storage_cap`,
+    /// and every `Simulation::new_*` constructor copies it into this
+    /// field right after `ColonyState::new` (C3). `None` = fall back to
+    /// the runtime default in `effective_food_cap()`
+    /// (`target_population * egg_cost * 10`).
     #[serde(default)]
     pub food_storage_cap_override: Option<f32>,
     /// K5: tick of the most recent nuptial launch (0 = never).

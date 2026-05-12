@@ -74,6 +74,7 @@ context_aggression = false
 seed_dispersal = false  # not significantly involved in myrmecochory
 honeydew_dependent = false
 host_species_required = []  # not parasitic founder
+food_storage_cap = 400.0  # C3: 2.0 food/worker × 200 target_population (App C calibration — acorn-dwelling micro-colony)
 
 [ecological_role]
 keystone = false  # too small to be community-keystone, but is a research keystone — perhaps the most-studied genus in ant collective-behavior research

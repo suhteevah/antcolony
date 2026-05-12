@@ -1,7 +1,11 @@
-//! Verify the 7 shipped TOMLs round-trip through the Phase A schema:
+//! Verify the shipped TOMLs round-trip through the Phase A schema:
 //! - parse cleanly
 //! - load with `schema_version = 1` at top level (NOT nested under another section)
 //! - Phase A extension sections are present and not all-defaults
+//!
+//! Species count was historically pinned to 7 (Phase A snapshot). The
+//! pool has since grown — assert a floor instead of an exact match so
+//! adding new TOMLs doesn't break this test.
 
 use antcolony_sim::{
     DielActivity, MoundConstruction, QueenCount, RecruitmentStyle, Weapon, load_species_dir,
@@ -16,9 +20,13 @@ fn species_dir() -> std::path::PathBuf {
 }
 
 #[test]
-fn all_seven_shipped_species_load() {
+fn all_shipped_species_load() {
     let species = load_species_dir(&species_dir()).unwrap();
-    assert_eq!(species.len(), 7, "expected 7 shipped species");
+    assert!(
+        species.len() >= 7,
+        "expected at least 7 shipped species, got {}",
+        species.len()
+    );
     for s in &species {
         assert_eq!(
             s.schema_version, 1,

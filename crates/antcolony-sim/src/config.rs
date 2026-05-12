@@ -283,6 +283,16 @@ pub struct ColonyConfig {
     pub nuptial_predation_per_tick: f32,
     /// Chance that a surviving breeder successfully founds a daughter colony.
     pub nuptial_founding_chance: f32,
+    /// Per-species food storage cap override (C3). When `Some`, every
+    /// colony constructed from this config writes the value into
+    /// `ColonyState.food_storage_cap_override`. `None` means: fall back
+    /// to the runtime default (`target_population * egg_cost * 10`)
+    /// inside `ColonyState::effective_food_cap()`. Populated by
+    /// `Species::apply` from the species TOML's
+    /// `diet_extended.food_storage_cap`. See Task C3 in
+    /// `docs/superpowers/plans/2026-05-12-proper-food-spawn-calibration.md`.
+    #[serde(default)]
+    pub food_storage_cap: Option<f32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -392,6 +402,7 @@ impl Default for ColonyConfig {
             nuptial_flight_ticks: 180,
             nuptial_predation_per_tick: 0.02,
             nuptial_founding_chance: 0.5,
+            food_storage_cap: None,
         }
     }
 }
