@@ -206,6 +206,15 @@ pub struct ColonyState {
     /// (e.g. via a research tree). See `docs/biology.md`.
     #[serde(default)]
     pub tech_unlocks: Vec<TechUnlock>,
+    /// Cached effective food cap, refreshed at the START of every
+    /// `colony_economy_tick`. Read by `accept_food` so forager deposits
+    /// during physics substeps respect the cap (the end-of-tick clamp
+    /// alone is insufficient — many deposits can land between ticks).
+    /// `None` means: no cached cap yet; `accept_food` will fall back to
+    /// `food_storage_cap_override` if set, otherwise no clamp.
+    /// See postmortem fix #4 + Task C2.
+    #[serde(default)]
+    pub effective_food_cap_cached: Option<f32>,
 }
 
 impl ColonyState {
@@ -247,6 +256,7 @@ impl ColonyState {
             tech_unlocks: TechUnlock::all_defaults(),
             food_storage_cap_override: None,
             starvation_accumulator: 0.0,
+            effective_food_cap_cached: None,
         }
     }
 
@@ -273,7 +283,22 @@ impl ColonyState {
     }
 
     pub fn accept_food(&mut self, amount: f32) {
-        self.food_stored += amount;
+        // Cap-respecting deposit. Consult the per-tick cache first
+        // (populated at the top of `colony_economy_tick`). If the cache
+        // is empty (e.g. tests that deposit before any economy tick
+        // has run), fall back to the species override if set — that
+        // value is self-contained, no target_population/egg_cost needed.
+        // Otherwise no clamp (legacy permissive default).
+        // Postmortem fix #4 + Task C2: forager deposits during physics
+        // substeps must not bypass the cap.
+        let new_total = self.food_stored + amount;
+        let cap = self
+            .effective_food_cap_cached
+            .or(self.food_storage_cap_override);
+        self.food_stored = match cap {
+            Some(c) => new_total.min(c),
+            None => new_total,
+        };
         self.food_returned += amount as u32;
         // Food-inflow pulse: instantaneous bump. The exponential decay
         // is applied per-tick in colony_economy_tick so a steady

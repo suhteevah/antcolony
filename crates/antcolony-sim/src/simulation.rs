@@ -3077,6 +3077,16 @@ impl Simulation {
         let current_year = self.in_game_year();
         const MAX_EGGS_PER_TICK: u32 = 10;
 
+        // Task C2: refresh the per-colony food-cap cache BEFORE any
+        // per-colony work. `accept_food` (called from physics substeps
+        // between economy ticks AND from in-tick inflow paths below)
+        // reads this cache to clamp every inflow, not just the
+        // end-of-tick value. Cheap: one f32 mul per colony per tick.
+        for colony in self.colonies.iter_mut() {
+            colony.effective_food_cap_cached =
+                Some(colony.effective_food_cap(ccfg.target_population, ccfg.egg_cost));
+        }
+
         // Determine diapause status per colony — nest entrance 0 on module 0.
         // Simplest authoritative check: temp at that cell < cold threshold.
         let mut colony_diapause: Vec<(u8, bool)> = Vec::with_capacity(self.colonies.len());
@@ -3314,7 +3324,20 @@ impl Simulation {
                         colony.brood.swap_remove(*i);
                     }
                     if recovered > 0.0 {
-                        colony.food_stored += recovered;
+                        // Cap-respecting deposit (Task C2). Does NOT
+                        // count as forager inflow — cannibalism is an
+                        // internal salvage, not new food arriving from
+                        // the field, so we don't want to spoof the
+                        // queen-laying throttle. Reads the per-tick
+                        // cap cache populated above.
+                        let new_total = colony.food_stored + recovered;
+                        let cap = colony
+                            .effective_food_cap_cached
+                            .or(colony.food_storage_cap_override);
+                        colony.food_stored = match cap {
+                            Some(c) => new_total.min(c),
+                            None => new_total,
+                        };
                         tracing::info!(
                             colony_id = colony.id,
                             recovered,
@@ -3441,7 +3464,18 @@ impl Simulation {
                 // per tick: +0.1 * 0.05 * (0.4 - 0.2) = ~0.001 food/tick
                 // at default rates — a small but real background income.
                 if colony.food_stored >= TROPHIC_COST {
-                    colony.food_stored += trophic_attempt * (TROPHIC_YIELD - TROPHIC_COST);
+                    // Cap-respecting deposit (Task C2). Internal queen
+                    // recycling, NOT forager inflow — don't spoof the
+                    // queen-laying throttle.
+                    let amount = trophic_attempt * (TROPHIC_YIELD - TROPHIC_COST);
+                    let new_total = colony.food_stored + amount;
+                    let cap = colony
+                        .effective_food_cap_cached
+                        .or(colony.food_storage_cap_override);
+                    colony.food_stored = match cap {
+                        Some(c) => new_total.min(c),
+                        None => new_total,
+                    };
                 }
             }
 
