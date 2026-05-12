@@ -6309,6 +6309,46 @@ mod tests {
     }
 
     #[test]
+    fn food_storage_cap_bounds_inflow_paths() {
+        // Reproduces the food-overaccumulation bug observed in the
+        // attempt2 smoke (aphaenogaster_rudis hit ~35k food on 571
+        // workers, 60× food/worker ratio). The cap field exists per
+        // postmortem fix #4, but inflow paths (forager delivery via
+        // Colony::accept_food, brood cannibalism recovery, trophic
+        // eggs) currently bypass it: the clamp at the end of
+        // colony_economy_tick fires only once per outer tick, while
+        // foragers deposit during physics substeps. This test pins
+        // the bug so the C2 fix has something to turn green.
+        //
+        // Test strategy: drive food in through `accept_food` (the
+        // real forager-delivery path) and assert the cap holds. The
+        // cap is documented as a hard ceiling on `food_stored`; if
+        // any inflow path can push past it, this assert fires.
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 0;
+        cfg.colony.queen_egg_rate = 0.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        cfg.colony.initial_food = 0.0;
+        let mut sim = Simulation::new(cfg, 1);
+        sim.colonies[0].food_storage_cap_override = Some(500.0);
+        sim.colonies[0].food_stored = 0.0;
+
+        // Simulate 1000 forager-style deposit events of 100 each via
+        // the actual inflow API. No economy tick between deposits —
+        // foragers deposit during physics substeps, and many can
+        // arrive between consecutive economy ticks.
+        for _ in 0..1000 {
+            sim.colonies[0].accept_food(100.0);
+        }
+        let stored = sim.colonies[0].food_stored;
+        assert!(
+            stored <= 500.0,
+            "food_storage_cap should clamp inflow paths; got {} > 500",
+            stored
+        );
+    }
+
+    #[test]
     fn queen_lays_at_throttled_rate_when_food_below_egg_cost() {
         // Pre-fix: queen stops laying entirely when food_stored < egg_cost (5.0).
         // Post-fix: queen lays at a reduced rate proportional to food
