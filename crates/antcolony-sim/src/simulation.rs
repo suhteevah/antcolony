@@ -3330,14 +3330,7 @@ impl Simulation {
                         // the field, so we don't want to spoof the
                         // queen-laying throttle. Reads the per-tick
                         // cap cache populated above.
-                        let new_total = colony.food_stored + recovered;
-                        let cap = colony
-                            .effective_food_cap_cached
-                            .or(colony.food_storage_cap_override);
-                        colony.food_stored = match cap {
-                            Some(c) => new_total.min(c),
-                            None => new_total,
-                        };
+                        colony.apply_food_cap_inline(recovered);
                         tracing::info!(
                             colony_id = colony.id,
                             recovered,
@@ -3468,14 +3461,7 @@ impl Simulation {
                     // recycling, NOT forager inflow — don't spoof the
                     // queen-laying throttle.
                     let amount = trophic_attempt * (TROPHIC_YIELD - TROPHIC_COST);
-                    let new_total = colony.food_stored + amount;
-                    let cap = colony
-                        .effective_food_cap_cached
-                        .or(colony.food_storage_cap_override);
-                    colony.food_stored = match cap {
-                        Some(c) => new_total.min(c),
-                        None => new_total,
-                    };
+                    colony.apply_food_cap_inline(amount);
                 }
             }
 

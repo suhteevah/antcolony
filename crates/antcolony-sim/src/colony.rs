@@ -212,6 +212,9 @@ pub struct ColonyState {
     /// alone is insufficient — many deposits can land between ticks).
     /// `None` means: no cached cap yet; `accept_food` will fall back to
     /// `food_storage_cap_override` if set, otherwise no clamp.
+    /// Refreshed at the top of `colony_economy_tick`. Production code
+    /// never mutates `food_storage_cap_override`, `target_population`,
+    /// or `egg_cost` mid-tick, so cache staleness is bounded by one tick.
     /// See postmortem fix #4 + Task C2.
     #[serde(default)]
     pub effective_food_cap_cached: Option<f32>,
@@ -282,7 +285,13 @@ impl ColonyState {
         self.milestones.iter().any(|m| m.kind == kind)
     }
 
-    pub fn accept_food(&mut self, amount: f32) {
+    /// Adds `amount` to `food_stored`, clamped to the effective cap if one
+    /// is set. Use this for INTERNAL inflows (brood cannibalism recovery,
+    /// trophic egg consumption) that should NOT spoof the forager-throttle
+    /// counters (food_returned, food_inflow_recent). Forager-delivery paths
+    /// should still use `accept_food`, which calls this method then bumps
+    /// the throttle counters.
+    pub fn apply_food_cap_inline(&mut self, amount: f32) {
         // Cap-respecting deposit. Consult the per-tick cache first
         // (populated at the top of `colony_economy_tick`). If the cache
         // is empty (e.g. tests that deposit before any economy tick
@@ -291,14 +300,17 @@ impl ColonyState {
         // Otherwise no clamp (legacy permissive default).
         // Postmortem fix #4 + Task C2: forager deposits during physics
         // substeps must not bypass the cap.
-        let new_total = self.food_stored + amount;
         let cap = self
             .effective_food_cap_cached
             .or(self.food_storage_cap_override);
         self.food_stored = match cap {
-            Some(c) => new_total.min(c),
-            None => new_total,
+            Some(c) => (self.food_stored + amount).min(c),
+            None => self.food_stored + amount,
         };
+    }
+
+    pub fn accept_food(&mut self, amount: f32) {
+        self.apply_food_cap_inline(amount);
         self.food_returned += amount as u32;
         // Food-inflow pulse: instantaneous bump. The exponential decay
         // is applied per-tick in colony_economy_tick so a steady
