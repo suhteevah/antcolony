@@ -3666,6 +3666,7 @@ fn seasonal_scalar(doy: u32, peak_start: u32, peak_end: u32, dearth_mul: f32) ->
     dearth_mul
 }
 
+#[inline]
 fn season_to_idx(s: Season) -> u8 {
     match s {
         Season::Winter => 0,
