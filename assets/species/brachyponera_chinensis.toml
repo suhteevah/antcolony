@@ -101,3 +101,13 @@ fun_facts = [
 keeper_notes = '''A research-focused species rather than a beginner pet. Sting is medically significant — keepers with known insect-sting allergies should not handle this species. In the simulation, B. chinensis is modeled primarily as the displacement counterpart to Aphaenogaster rudis, with active ant-predation behavior and minimal trail-laying.
 
 Hibernation is winter quiescence, not strict diapause — keep above freezing but cool (5-10 C) for 6-8 weeks to maintain queen reproductive cycle.'''
+
+[forage]
+niche = "predator"
+peak_food_per_day = 420.0
+dearth_food_multiplier = 0.1
+peak_doy_start = 105
+peak_doy_end = 274
+cluster_size = 8
+# Bednar, Shik & Silverman 2013 Ecol. Entomol. 38:1; Bednar & Silverman
+# 2011 J. Insect Sci. 11:91; docs/species/brachyponera_chinensis.md §5.

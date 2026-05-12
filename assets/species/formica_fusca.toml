@@ -100,3 +100,13 @@ keeper_notes = '''A fascinating intermediate-tier species for keepers interested
 Diet: standard Formicinae fare — sugar water or honey for carbs, frozen feeder insects (crickets, fruit flies) for protein. Aphid herding is enthusiastic when given the opportunity.
 
 The interesting use-case is as a host for keepers attempting to raise F. rufa from a fertile queen — fusca workers will accept and raise rufa brood as their own once the rufa queen has chemically infiltrated the colony.'''
+
+[forage]
+niche = "omnivore"
+peak_food_per_day = 1600.0
+dearth_food_multiplier = 0.0
+peak_doy_start = 105
+peak_doy_end = 274
+cluster_size = 2
+# Czechowski et al. 2002 Ants of Poland; Stockan & Robinson 2016 Ch.5;
+# docs/species/formica_fusca.md §5.

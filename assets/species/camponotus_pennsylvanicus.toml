@@ -106,3 +106,13 @@ fun_facts = [
 keeper_notes = '''A patience species. First-year queens produce tiny nanitic workers and the colony seems to stall for months — this is normal. Do not overfeed or the brood will mold. A test tube with cotton works for the first year; upgrade to a hydrated hybrid nest once worker count exceeds ~50.
 
 Hibernation at 5-12 C from November through March is required. Skipping diapause will cause queens to stop laying and eventually die. Majors begin appearing once colony size exceeds about 100 workers.'''
+
+[forage]
+niche = "omnivore"
+peak_food_per_day = 1100.0
+dearth_food_multiplier = 0.0
+peak_doy_start = 120
+peak_doy_end = 274
+cluster_size = 2
+# Hansen & Klotz 2005 p.78-91; Sanders 1972 Can. Entomol. 104:1681;
+# Traniello 1977; docs/species/camponotus_pennsylvanicus.md §5.

@@ -103,3 +103,13 @@ fun_facts = [
 keeper_notes = '''Extremely easy to keep. Unlike most temperate species, Tetramorium immigrans does not strictly require a hibernation period in captivity — urban populations nesting beside heated buildings often reproduce year-round. A brief cool period helps but is not mandatory.
 
 Warning: colonies can grow explosively once past 500 workers. Have an upgrade nest ready before the outworld fills with brood piles. They are tolerant of dryness but protein-hungry — offer fresh insects 2-3 times a week.'''
+
+[forage]
+niche = "opportunist"
+peak_food_per_day = 5200.0
+dearth_food_multiplier = 0.5
+peak_doy_start = 91
+peak_doy_end = 304
+cluster_size = 4
+# Calibeo & Oi 2014/2024 UF/IFAS EENY-600; Diamond et al. 2018 PRSB
+# 285:20180036; docs/species/tetramorium_immigrans.md §5.

@@ -102,3 +102,13 @@ keeper_notes = '''An advanced-keeper species due to small colony size (a small f
 Hibernation is required — 8-12 weeks at 5-10 C in autumn. Without diapause, queen oviposition collapses within a year.
 
 Recommended for the simulation specifically because of the genus's uniquely well-documented behavioral ecology — every metric we can plot (forager activity, recruitment latency, inactive-worker fraction, emigration latency) has decades of laboratory benchmarks to compare against.'''
+
+[forage]
+niche = "opportunist"
+peak_food_per_day = 32.0
+dearth_food_multiplier = 0.0
+peak_doy_start = 105
+peak_doy_end = 274
+cluster_size = 1
+# Pratt 2005 Behav. Ecol. 16:488; Dornhaus 2008 PLoS Biol. 6:e285;
+# docs/species/temnothorax_curvinodis.md §5.

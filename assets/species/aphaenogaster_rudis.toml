@@ -105,3 +105,13 @@ fun_facts = [
 keeper_notes = '''Excellent beginner species for keepers who want a smaller, slower colony rather than explosive growth. The modest target population means a single hybrid nest can house a mature colony for life.
 
 Hibernation at 5-10 C from November through March is required — this species experiences hard winters under leaf litter in the wild. Offer mixed small seeds (chia, poppy) alongside insect protein. Temperament is calm; workers rarely bite and have no meaningful sting.'''
+
+[forage]
+niche = "opportunist"
+peak_food_per_day = 180.0
+dearth_food_multiplier = 0.0
+peak_doy_start = 75
+peak_doy_end = 305
+cluster_size = 1
+# Lubertazzi 2012 Psyche 2012:752815; Ness et al. 2017 Ch.5; Mitchell
+# et al. 2002 J. Insect Behav. 18:481; docs/species/aphaenogaster_rudis.md §5.

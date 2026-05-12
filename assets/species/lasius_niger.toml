@@ -104,3 +104,13 @@ fun_facts = [
 keeper_notes = '''The gold-standard beginner species. Tolerant of humidity swings, temperature fluctuations, and minor keeper mistakes. A small test tube setup with cotton plug and water reservoir is all a founding queen needs for the first six months.
 
 Hibernation (diapause) at 8-15 C from October through March is REQUIRED for queen longevity and egg viability. Skipping diapause will shorten the queen's life dramatically. A wine fridge or garage shelf works well.'''
+
+[forage]
+niche = "sugar_feeder"
+peak_food_per_day = 4200.0
+dearth_food_multiplier = 0.15
+peak_doy_start = 105
+peak_doy_end = 274
+cluster_size = 2
+# Stadler & Dixon 2005 Annu. Rev. Ecol. Evol. Syst. 36:345; Beckers et al.
+# 1993 J. Insect Behav. 6:751; docs/species/lasius_niger.md §5.

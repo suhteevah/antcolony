@@ -106,3 +106,13 @@ fun_facts = [
 keeper_notes = '''Very easy. Polygyne founding means you can start with multiple queens and workers together, skipping the slow single-queen founding phase entirely. No hibernation required — indoor populations reproduce year-round.
 
 Growth is fast and the colony will outgrow a test tube within a couple of months. Have a small formicarium ready early. Sweet liquid (honey water or sugar water) is the staple; offer fruit flies or small crickets for protein once or twice a week. Crushing a worker to smell the signature coconut-rot odor is a rite of passage.'''
+
+[forage]
+niche = "sugar_feeder"
+peak_food_per_day = 2800.0
+dearth_food_multiplier = 0.4
+peak_doy_start = 91
+peak_doy_end = 304
+cluster_size = 3
+# Buczkowski & Bennett 2008 Insectes Sociaux 53:282; AntWiki;
+# docs/species/tapinoma_sessile.md §5.

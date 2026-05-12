@@ -109,3 +109,13 @@ keeper_notes = '''Not recommended for beginners. The social-parasitic founding r
 Even a successful colony is demanding — wood ants are highly aggressive, spray formic acid readily (painful in the eyes), and need very large enclosures with thermal gradients to simulate mound conditions. Hibernation at 2-8 C from October through April is mandatory and must be deep to match their natural winter cluster behavior.
 
 Also check local law: keeping F. rufa is restricted or outright illegal in several European jurisdictions.'''
+
+[forage]
+niche = "predator"
+peak_food_per_day = 90000.0
+dearth_food_multiplier = 0.05
+peak_doy_start = 105
+peak_doy_end = 258
+cluster_size = 4
+# Hölldobler & Wilson 1990 The Ants p.379; Trigos-Peral et al. 2025
+# Insects 16:518; docs/species/formica_rufa.md §5.

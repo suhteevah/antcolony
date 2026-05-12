@@ -107,3 +107,13 @@ fun_facts = [
 keeper_notes = '''Not a beginner species — the sting alone earns the advanced rating. A single well-placed sting is intensely painful and can cause systemic reactions in sensitive individuals. Long tweezers and sealed outworlds are mandatory.
 
 They also need a dry, arid setup unlike most hobby ants — over-humidified enclosures will mold brood rapidly. Offer mixed grass seeds (millet, chia, dandelion) as staple diet with occasional insect protein. Hibernation at 10-15 C through winter is required; in the wild they plug the mound and cluster deep.'''
+
+[forage]
+niche = "granivore"
+peak_food_per_day = 2400.0
+dearth_food_multiplier = 0.0
+peak_doy_start = 121
+peak_doy_end = 288
+cluster_size = 25
+# MacMahon Mull Crist 2000 Annu. Rev. Ecol. Syst. 31:265; Crist & MacMahon
+# 1992 Ecology 73:1768; docs/species/pogonomyrmex_occidentalis.md §5.
