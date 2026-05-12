@@ -249,6 +249,9 @@ impl Species {
             height: env.world_height,
             food_spawn_rate: 0.0,
             food_cluster_size: 5,
+            forage_dearth_multiplier: 0.1,
+            forage_peak_doy_start: 105,
+            forage_peak_doy_end: 274,
         };
 
         // Pheromone defaults stay calibrated to a single sim-substep

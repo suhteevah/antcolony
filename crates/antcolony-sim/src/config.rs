@@ -85,9 +85,28 @@ impl Default for HazardConfig {
 pub struct WorldConfig {
     pub width: usize,
     pub height: usize,
+    /// Mean food clusters spawned per in-game day across the active
+    /// foraging season. 0.0 = no respawn (legacy bench behavior).
     pub food_spawn_rate: f32,
+    /// Tiles per food cluster (Euclidean radius).
     pub food_cluster_size: usize,
+    /// Multiplier on `food_spawn_rate` outside the peak DOY window.
+    /// 0.0 = total winter shutdown, 1.0 = no seasonal modulation.
+    #[serde(default = "default_dearth_multiplier")]
+    pub forage_dearth_multiplier: f32,
+    /// Day-of-year (0-365) where forage availability starts to ramp
+    /// up from dearth toward peak.
+    #[serde(default = "default_peak_doy_start")]
+    pub forage_peak_doy_start: u32,
+    /// Day-of-year where forage availability starts to ramp back
+    /// down toward dearth.
+    #[serde(default = "default_peak_doy_end")]
+    pub forage_peak_doy_end: u32,
 }
+
+fn default_dearth_multiplier() -> f32 { 0.1 }
+fn default_peak_doy_start() -> u32 { 105 }   // mid-April default
+fn default_peak_doy_end() -> u32 { 274 }     // end of September default
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -305,6 +324,9 @@ impl Default for WorldConfig {
             height: 256,
             food_spawn_rate: 0.0,
             food_cluster_size: 5,
+            forage_dearth_multiplier: 0.1,
+            forage_peak_doy_start: 105,
+            forage_peak_doy_end: 274,
         }
     }
 }
