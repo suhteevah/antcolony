@@ -1145,6 +1145,7 @@ impl Simulation {
         self.colony_economy_tick();
         self.nuptial_flight_tick();
         self.evaluate_milestones();
+        self.food_spawn_tick();
 
         // High-frequency physics substeps. Calibrated against the
         // Seasonal baseline (1 substep = original Seasonal tick worth
@@ -1989,6 +1990,106 @@ impl Simulation {
 
         // --- 4. Weather events. ---
         self.weather_tick(&cfg);
+    }
+
+    /// World-tick food respawn. Reads `WorldConfig.food_spawn_rate` (clusters
+    /// per in-game day at peak) and seasonal modulators, draws a Poisson-ish
+    /// per-tick probability, and (on a hit) places one cluster on a random
+    /// Outworld cell. Skips nest entrances, predator cells, non-Outworld modules.
+    ///
+    /// Uses a fresh per-tick ChaCha8 seeded from self.tick so the main
+    /// decision-pass RNG stream is untouched (byte-determinism invariant).
+    fn food_spawn_tick(&mut self) {
+        let w = self.config.world.clone();
+        if w.food_spawn_rate <= 0.0 {
+            return;
+        }
+
+        let doy = self.day_of_year();
+        let season_scalar = seasonal_scalar(
+            doy,
+            w.forage_peak_doy_start,
+            w.forage_peak_doy_end,
+            w.forage_dearth_multiplier,
+        );
+
+        // Convert per-day rate -> per-outer-tick probability.
+        let secs_per_tick = self.in_game_seconds_per_tick as f64;
+        let p_this_tick =
+            (w.food_spawn_rate as f64) * (secs_per_tick / 86_400.0) * season_scalar as f64;
+        if p_this_tick <= 0.0 {
+            return;
+        }
+
+        // SplitMix64 over the tick, then use that as ChaCha8 seed.
+        // wrapping_mul alone produces biased ChaCha8 first-outputs for sparse
+        // events with low p; SplitMix decorrelates adjacent ticks.
+        let mut z = self.tick.wrapping_add(0x9E3779B97F4A7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z = z ^ (z >> 31);
+        let mut rng = ChaCha8Rng::seed_from_u64(z);
+        let draw = rng.r#gen::<f64>();
+        if draw >= p_this_tick {
+            return;
+        }
+
+        let candidates: Vec<usize> = self
+            .topology
+            .modules
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m.kind, ModuleKind::Outworld))
+            .map(|(i, _)| i)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let mid_idx = candidates[rng.r#gen::<usize>() % candidates.len()];
+        let mid = self.topology.modules[mid_idx].id;
+
+        let (mw, mh) = {
+            let m = self.topology.module(mid);
+            (m.width() as i64, m.height() as i64)
+        };
+        if mw == 0 || mh == 0 {
+            return;
+        }
+        let cx = rng.r#gen::<i64>().rem_euclid(mw);
+        let cy = rng.r#gen::<i64>().rem_euclid(mh);
+
+        let center_cell = self
+            .topology
+            .module(mid)
+            .world
+            .get(cx as usize, cy as usize);
+        if !matches!(center_cell, Terrain::Empty) {
+            return;
+        }
+
+        // Don't drop food on top of a predator (radius 3 cells).
+        let target = glam::Vec2::new(cx as f32, cy as f32);
+        let too_close = self
+            .predators
+            .iter()
+            .any(|p| p.module_id == mid && (p.position - target).length_squared() < 9.0);
+        if too_close {
+            return;
+        }
+
+        let radius = w.food_cluster_size as i64;
+        let units = w.food_cluster_size as u32;
+        let placed = self.spawn_food_cluster_on(mid, cx, cy, radius, units);
+
+        tracing::debug!(
+            tick = self.tick,
+            doy,
+            mid = ?mid,
+            cx,
+            cy,
+            placed,
+            "food_spawn_tick placed cluster"
+        );
     }
 
     fn spider_tick(
@@ -3543,6 +3644,28 @@ impl Simulation {
 }
 
 #[inline]
+/// Returns a multiplier in [dearth_mul, 1.0] based on day-of-year.
+/// Inside [peak_start, peak_end] -> 1.0. Outside -> dearth_mul. Edges
+/// linearly ramp over 14 days for biological smoothness.
+fn seasonal_scalar(doy: u32, peak_start: u32, peak_end: u32, dearth_mul: f32) -> f32 {
+    let ramp_days = 14u32;
+    let doy = doy.min(365);
+    if doy >= peak_start && doy <= peak_end {
+        return 1.0;
+    }
+    // Ramps near the start
+    if doy + ramp_days >= peak_start && doy < peak_start {
+        let p = (doy + ramp_days - peak_start) as f32 / ramp_days as f32;
+        return dearth_mul + (1.0 - dearth_mul) * p;
+    }
+    // Ramps near the end
+    if doy > peak_end && doy <= peak_end + ramp_days {
+        let p = 1.0 - ((doy - peak_end) as f32 / ramp_days as f32);
+        return dearth_mul + (1.0 - dearth_mul) * p;
+    }
+    dearth_mul
+}
+
 fn season_to_idx(s: Season) -> u8 {
     match s {
         Season::Winter => 0,
