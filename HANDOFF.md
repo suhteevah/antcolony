@@ -4,6 +4,132 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-12 — Phase 1.5 food-spawn calibration: A/B/C/D shipped, attempt3 blocked on attempt2 completion
+
+🟡 Project Status: **Phase 1.5 code-complete, attempt3 smoke pending.** 13 commits since 2026-05-10. All 154 lib tests pass on kokonoe. Three sim-level fixes shipped (food_spawn_tick wired, v2 starvation cap math, food_storage_cap wired species→colony). Roadmap doc + per-species literature calibration + validation harness all committed. **attempt2 smoke (with v2 cap only) still running on cnc** — 6/10 species finished, 2 running, 3 queued. Phase E (relaunch attempt3 with full Phase 1.5 fixes) waits for attempt2 to finish (~10-20h more, mid-Wednesday).
+
+### What Was Done This Session
+
+**Diagnosis of attempt2 starvation data:**
+- Found the v1 starvation cap math (`cap.max(1)`) was wrong. With STARVATION_PER_TICK = 1/43200/100, the per-tick product for typical colonies (200-500 adults) rounds to <1, then `.max(1)` clamps it to 1 death/tick → 43200 deaths/day max, NOT the intended 1%/day. A 500-adult colony wipes in 500 ticks once food_stored goes negative — same one-day cliff as pre-fix.
+- Live data confirmed: lasius_niger DOY 257→261 (+4), pogonomyrmex DOY 275→282 (+7), formica_rufa DOY 76→79 (+3), camponotus DOY 80→118 (+38). Cliffs shifted by days, not eliminated. Same one-game-day mass wipe pattern.
+
+**Sim fix v2 — starvation cap (commits `b525b28` + adjacent test commit):**
+- Added `Colony.starvation_accumulator: f32` field — fractional deaths debt.
+- Per starving tick: `accumulator += adult_total * STARVATION_PER_TICK`; `deaths = floor(accumulator)`; debit on death.
+- Resets to 0 when food_stored ≥ 0 (whether at tick start or after brood cannibalism saves the colony — both branches handled).
+- 500 adults now lose ~5/day under sustained starvation (1% target), not 43200/day.
+- Old `colony_starves_without_food` integration test was too loose (passed even with buggy cap) — tightened to `(4..=7) deaths in 43200 ticks` for 500 adults.
+
+**Launcher / queue fixes (commit `0ff323e`):**
+- The launcher bug: `--out <root>/<species>` made the smoke binary write to `<root>/<species>/<species>/daily.csv` (double-nested). Binary already appends `/<species>/` internally. Fixed: launcher now passes `--out <root>` once.
+- queue_smoke.sh v1 (associative-array tracking) crashed silently mid-run; only the first 2 PIDs ever showed in `queue_pids.json`. Rewrote using `wait -n` (bash 4.3+) — flat `queue_pids.txt` "<pid> <species>" lines. Survives ssh drops.
+- check_phase1_smoke.ps1 reads the new flat format.
+
+**Discovery — `food_spawn_rate` was a dead field:**
+- After fixing the cap, attempt2 data showed all colonies bleeding at ~5 workers/day with food=0 for months. The cap math was correct; the colonies were just starving from no food inflow.
+- Investigation: `food_spawn_rate` is defined in `config.rs:88`, documented in CLAUDE.md, set to 0.0 in `species.rs:250` — and **never read anywhere in the simulation**. The world has NO food respawn mechanism. Only the 3 initial clusters (110 food total) + sporadic predator-corpse drops.
+- Also discovered: `food_storage_cap_override` field existed (postmortem #4 from prior session) but was never wired species TOML → Colony at construction time. The TODO comment at `colony.rs:159` said so explicitly. aphaenogaster_rudis attempt2 confirmed it by hitting 35,998 food / 1098 workers = 32.8× ratio, well past the literature-realistic ceiling.
+
+**Proper food-spawn calibration plan — `docs/superpowers/plans/2026-05-12-proper-food-spawn-calibration.md` (commit `5dd8beb`):**
+- 1013-line plan with 5 phases (A: wire food_spawn_tick, B: per-species [forage] TOML, C: food_storage_cap fix, D: validation harness, E: rerun+verify).
+- 3 research subagents spawned in parallel: forage ecology (10 species, literature-cited), code investigation (RNG pattern, integration point, TOML→SimConfig chain), validation criteria (per-species pass thresholds). Outputs folded into Appendices A/B/C.
+- Aggregate green light = ≥8/10 species pass + 0 hard-stop violations. Hard-stop species: lasius_niger, camponotus_pennsylvanicus.
+
+**Phase A — food_spawn_tick (commits `7fe3bc2`, `6e1af96`, `1840887`, `1853264`, `9c0ad1f`, `f06c206`):**
+- Added `WorldConfig.forage_dearth_multiplier / forage_peak_doy_start / forage_peak_doy_end` fields with serde defaults.
+- TDD red→green: failing test that drains food on Outworld and expects respawn during peak season.
+- `Simulation::food_spawn_tick` at simulation.rs:1995-2095 — outer-tick (NOT physics_substep), Pattern B RNG. **Important fix discovered during impl**: the spec'd `ChaCha8Rng::seed_from_u64(self.tick.wrapping_mul(K))` produced 0 hits in 5000 ticks because ChaCha8's first-output across counter-linear seeds doesn't distribute uniformly in low-probability tails. Solution: SplitMix64 pre-mix on the tick before feeding ChaCha8. Canonical constants (`0x9E3779B97F4A7C15`, `0xBF58476D1CE4E5B9`, `0x94D049BB133111EB`, shifts `>>30`, `>>27`, `>>31`).
+- `seasonal_scalar` free fn — 14-day linear ramp at peak window edges.
+- Skip nest entrances + non-Empty cells + predator-radius-3.
+- 3 tests: peak respawn, winter dearth=0 silence, non-Outworld safety.
+- Bonus minor fix: a stray `#[inline]` got assigned to the wrong function by an insertion side-effect, restored.
+
+**Phase B — Per-species [forage] TOML (commits `c8789d3`, `46b4c2e`):**
+- `ForageProfile` struct (6 fields: niche, peak_food_per_day, dearth_food_multiplier, peak_doy_start/end, cluster_size) with `Default` impl preserving legacy zero-respawn.
+- `Species.forage` field with `#[serde(default)]`. `Species::apply` populates all 5 forage-relevant `WorldConfig` fields from `self.forage.*`.
+- All 10 species TOMLs got calibrated `[forage]` blocks. Highlights: Pogonomyrmex granivore 2400/day cluster=25 (seed cache pattern); Formica rufa predator 90000/day (Gösswald 100k prey items/day cited); Temnothorax acorn-ant 32/day cluster=1 (solo scouts). Citations include Stadler & Dixon, Crist & MacMahon, Hölldobler & Wilson, Buczkowski, Bednar & Silverman, Pratt, Dornhaus.
+
+**Phase C — food_storage_cap wiring + math (commits `56d8c96`, `2988fed`, `2ae1d88`, `8cdd4cd`):**
+- TDD test that pinned the actual bug: `Colony::accept_food()` at `colony.rs:276` is the bypass — adds food unconditionally. Cap was applied only at end of `colony_economy_tick`, so foragers depositing during physics substeps escaped the clamp until the NEXT outer tick.
+- Fix: Added `Colony.effective_food_cap_cached: Option<f32>` — refreshed at top of `colony_economy_tick` (once per outer tick, cheap). `accept_food` now consults the cache. Two other in-tick inflows (brood cannibalism recovery, trophic eggs) also clamp via a `Colony.apply_food_cap_inline` helper that doesn't spoof the throttle counters (food_returned, food_inflow_recent — those should only increment for foraged food, not internal recycling).
+- Wired `diet_extended.food_storage_cap` → `ColonyConfig.food_storage_cap` → `ColonyState.food_storage_cap_override` in all 3 `Simulation::new_*` constructors. The TODO at `colony.rs:159` is RESOLVED.
+- Per-species caps in all 10 TOMLs, calibrated as `food_per_worker_max × target_population` from Appendix C. Examples: pogonomyrmex=300k (high — granivore caches seeds), formica_rufa=600k, temnothorax=400 (tiny acorn colony), brachyponera=3k (predator, no caching).
+- Drive-by: fixed pre-existing `phase_a_toml_compat.rs` test that hardcoded `species.len() == 7` (current shipped count is 10) → changed to `>= 7` floor.
+
+**Phase D — validation harness (commit `7c4aa02`):**
+- `scripts/verify_phase1_v3_exit.ps1` — 93-line PowerShell harness. Reads per-species daily.csv, evaluates against year_2_worker_range, food_per_worker_max, year_over_year_growth, max_cliff_drop. Green light = ≥8/10 PASS + 0 hard-stop violations. Exit 0 green, exit 1 not ready.
+- Smoke-tested against attempt2 data: 4 FAIL (incl. lasius_niger + camponotus_pennsylvanicus hard-stops), 6 SKIP (incomplete/missing), NOT READY verdict. Harness reads correctly.
+
+**Memory written this session:** see `~/.claude/projects/J--antcolony/memory/` — new memories on the cap-math bug pattern, the food_spawn_rate dead-field discovery, the SplitMix64-seed pattern, and the subagent-driven-development workflow tally.
+
+### Current State
+
+**Working:**
+- 13 commits ahead of `8a05543` (initial commit) — all pushed to GitHub.
+- 154 lib tests pass on kokonoe.
+- Plan + 3 phases (A, B, C) + harness (D) all committed. Implementation is code-complete.
+- attempt2 smoke still progressing on cnc.
+
+**attempt2 progress (still running):**
+- ✅ Finished: lasius_niger (57 workers), pogonomyrmex_occidentalis (8), formica_rufa (378), camponotus_pennsylvanicus (20), aphaenogaster_rudis (1098 workers / 35,998 food / **32.8× ratio confirming overaccumulation bug**)
+- 🟡 Running: tapinoma_sessile (87% through), formica_fusca (38% through)
+- ⏳ Queued: tetramorium_immigrans, brachyponera_chinensis, temnothorax_curvinodis
+- ETA to attempt2 completion: 10-20 more hours
+
+**Phase E blocked on attempt2 completion:**
+- E1: pull attempt2 results (10 species) as baseline
+- E2: sync source + TOMLs to cnc, rebuild, launch attempt3 to `runs/phase1-2yr-attempt3/`
+- E3: run `verify_phase1_v3_exit.ps1`, decide outreach unblock or postmortem
+
+**Stubbed/deferred (unchanged from prior session):**
+- `predates_ants` TOML field on B. chinensis still silently ignored (Phase 2 task)
+- Per-ant activity-fraction tracking (Phase 2)
+- Soft cold-foraging-vs-temperature curve (Phase 2)
+
+### Blocking Issues
+
+None for development. attempt3 is **wait-blocked** on attempt2 finishing — no operator action needed until the queue.done file appears on cnc.
+
+### What's Next
+
+In priority order for the incoming session:
+
+1. **Check attempt2 status first.** `ssh cnc-server "cat /opt/antcolony/runs/phase1-2yr/_logs/queue.log | tail -20; ls /opt/antcolony/runs/phase1-2yr/_logs/queue.done 2>/dev/null && echo DONE"`. If still running, wait or work on something else.
+
+2. **When attempt2 completes**, execute the 3 remaining task IDs from the plan:
+   - **E1:** `mkdir -p J:\antcolony\bench\smoke-phase1-2yr-attempt2/<sp>` for each species, scp daily.csv. Snapshot as baseline.
+   - **E2:** scp the modified sim files + species TOMLs to cnc:
+     ```bash
+     scp J:/antcolony/crates/antcolony-sim/src/{config.rs,colony.rs,simulation.rs,species.rs} cnc-server:/opt/antcolony/crates/antcolony-sim/src/
+     scp J:/antcolony/assets/species/*.toml cnc-server:/opt/antcolony/assets/species/
+     ```
+     Then on cnc: `cd /opt/antcolony && RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= cargo clean -p antcolony-sim && cargo build --release -p antcolony-sim --example smoke_10yr_ai -j 2`. Modify `run_phase1_smoke.ps1` so output dir is `runs/phase1-2yr-attempt3/` (preserve attempt2). Launch.
+   - **E3:** Wait for attempt3, pull results, run `.\scripts\verify_phase1_v3_exit.ps1`. If GREEN LIGHT, unblock outreach. If NOT READY, postmortem failing species before iterating.
+
+3. **If attempt3 fails**, the harness output names the specific failing condition per species. Investigate the corresponding biology / sim path. The harness pass criteria are documented in the plan's Appendix C with literature citations — push back against arbitrary tuning that breaks the citation chain.
+
+### Notes for Next Session
+
+**The plan is the source of truth.** `docs/superpowers/plans/2026-05-12-proper-food-spawn-calibration.md` has the complete spec including all 3 research-agent outputs in Appendices A/B/C. The plan file is 1013 lines but well-indexed.
+
+**Subagent-driven-development worked great** — ~30 dispatches (implementer + spec reviewer + code quality reviewer per task × 10 tasks). Most tasks were 1-round revisions (approve + small follow-up fix). The verbose two-stage review caught real issues: SplitMix64 seeding bug (would have been silently broken), `#[inline]` displacement, DRY violation in 3 cap-clamp sites, and a pre-existing `species.len() == 7` test bug. Worth using again for future plan execution.
+
+**cnc smoke timing is variable per species** — small-population species (lasius, pogo, camponotus) finish in 4-7h; food-overaccumulation species (tapinoma, rudis) take 12-14h because the colony has thousands of ants/brood eating CPU. The current attempt2's tapinoma + rudis are the slowest by far. With the C2/C3 fixes in place, attempt3 should be much faster across the board (caps prevent runaway colony growth).
+
+**Don't disturb the queue script.** `queue_smoke.sh` on cnc has been refactored to use `wait -n` and is robust to ssh drops. The queue.pid is at `/opt/antcolony/runs/phase1-2yr/_logs/queue.pid`. To stop: `ssh cnc-server "kill $(cat /opt/antcolony/runs/phase1-2yr/_logs/queue.pid); pkill -f smoke_10yr_ai"`.
+
+**aphaenogaster_rudis attempt2 = 32.8× food/worker ratio** is the definitive evidence the C2/C3 wiring fix was needed. Harness `food_per_worker_max=8.0` for rudis would FAIL it. attempt3 with the cap wired through should hit ≤ 8.0.
+
+**One known follow-up nit** from the D1 review (not blocking): the harness uses unordered `@{}` hashtable so species print order may jitter run-to-run. Change to `[ordered]@{}` if/when consistent diffing matters.
+
+**Spec docs are stable:**
+- `docs/superpowers/specs/2026-05-09-outreach-roadmap-design.md` — 6-phase outreach roadmap (unchanged this session)
+- `docs/superpowers/plans/2026-05-09-phase1-sim-foundation.md` — Phase 1 plan from prior session (now superseded by 2026-05-12 for everything food-spawn related)
+- `docs/superpowers/plans/2026-05-12-proper-food-spawn-calibration.md` — this session's plan
+
+---
+
 ## Session 2026-05-10 — Phase 1 sim foundation: all 5 postmortem fixes + food cap shipped, smoke not yet launched
 
 🟡 Project Status: **Phase 1 code-complete, smoke launch pending.** All 5 cliff/cap fixes from the 2026-05-09 postmortem are committed and 144 unit tests pass. The 2yr 10-species smoke that validates the fixes was attempted but botched twice (operator error — see "Notes for Next Session"). Cnc-server provisioned with smoke binary; both kokonoe + cnc are clean.
