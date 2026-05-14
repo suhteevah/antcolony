@@ -14,11 +14,11 @@
 
 set -o pipefail
 
-OUTROOT=/opt/antcolony/runs/phase1-2yr
-BIN=/opt/antcolony/target/release/examples/smoke_10yr_ai
-YEARS=2
-SEED=42
-MAX_CONCURRENT=2
+OUTROOT=${OUTROOT:-/opt/antcolony/runs/phase1-2yr}
+BIN=${BIN:-/opt/antcolony/target/release/examples/smoke_10yr_ai}
+YEARS=${YEARS:-2}
+SEED=${SEED:-42}
+MAX_CONCURRENT=${MAX_CONCURRENT:-2}
 
 SPECIES=(
   lasius_niger

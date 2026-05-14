@@ -1,0 +1,32 @@
+# Stripped cnc-only workspace manifest. Builds antcolony-sim and its examples
+# (smoke_10yr_ai, etc.) without pulling in bevy/candle/trainer/net/render or
+# the root binary. Shipped by scripts/launch_attempt3.ps1 to cnc as
+# /opt/antcolony/Cargo.toml so the smoke binary can rebuild cleanly there.
+
+[workspace]
+resolver = "2"
+members = ["crates/antcolony-sim"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+rand = "0.8"
+rand_chacha = "0.3"
+glam = { version = "0.29", features = ["serde"] }
+rayon = "1.10"
+toml = "0.8"
+wide = "0.7"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

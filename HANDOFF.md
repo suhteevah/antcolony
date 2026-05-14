@@ -4,6 +4,87 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-13 — attempt2 baselined, attempt3 launched on fresh binary
+
+🟡 Project Status: **attempt2 complete + baselined; attempt3 running on cnc (PID 574934).** All 10 species in attempt2 ran 2yr to completion (732 rows each). Harness against attempt2 = 0/10 PASS, 2 hard-stops — exactly the bug-bleeding baseline expected. attempt3 launched with the C2/C3 fixes (food_storage_cap wired species→colony + food_spawn_tick) baked into the synced source. ETA to attempt3 completion: ~10-15h (caps should make it faster than attempt2 since runaway colonies are now capped).
+
+### What Was Done This Session
+
+**E1 — attempt2 baseline pulled and verified (0/10 PASS):**
+- Pulled 10 species × {daily.csv, decisions.csv, summary.md} from `cnc:/opt/antcolony/runs/phase1-2yr/` to `J:\antcolony\bench\smoke-phase1-2yr-attempt2\`. All 10 species at 732 rows (2yr).
+- Ran `scripts/verify_phase1_v3_exit.ps1 J:\antcolony\bench\smoke-phase1-2yr-attempt2`: **0 PASS / 10 FAIL, 2 hard-stops** (lasius_niger collapsed to 57 workers, camponotus to 20). Confirms the cap-not-wired bug: aphaenogaster_rudis 32.8× food/worker, temnothorax 30.8×, tapinoma 17.3×. Frozen as the buggy baseline for comparison.
+
+**E2 — attempt3 launched on cnc with fixes:**
+- Created `scripts/Cargo.cnc.toml` — stripped workspace, sim-only, no root `[package]`, no candle, no bevy. Needed because local `Cargo.toml` references `../candle-src/candle-core` (doesn't exist on cnc) and declares a root binary needing `src/main.rs` (also doesn't exist on cnc).
+- Created `scripts/launch_attempt3.ps1` — end-to-end: tar local sim source + examples + species TOMLs + queue script, scp to cnc, ship Cargo.cnc.toml as Cargo.toml, delete Cargo.lock, cargo clean + rebuild with `set -o pipefail` + `exit ${PIPESTATUS[0]}`, freshness-check the binary mtime (must be within 5 min of launch or throw), prep `runs/phase1-2yr-attempt3/`, launch `queue_smoke.sh` with `OUTROOT=` env override under nohup.
+- Patched `scripts/queue_smoke.sh` to accept env overrides (`OUTROOT`, `BIN`, `YEARS`, `SEED`, `MAX_CONCURRENT`) — backward compatible.
+- **First attempt3 launch failed silently:** cargo build error ("no targets specified in manifest") got swallowed by the `| tail -20` pipe, queue launched on the 2-day-old stale binary. Caught it within ~80s, killed the 2 species processes + queue, rebuilt the launch script with proper exit-code propagation + mtime guard. Second launch: clean 31s rebuild → fresh binary @ `2026-05-13 17:18:53` → queue PID 574934 running `lasius_niger` + `pogonomyrmex_occidentalis` first.
+
+**Memory written this session:**
+- Updated `project_cnc_provisioning_gotchas.md` with Bonus 3 (Cargo.cnc.toml stripped workspace) and Bonus 4 (build-failure abort guard).
+- New `feedback_distinguish_data_vs_verdict.md` — when reporting harness output, lead with data completeness ("all 10 ran to completion") before the verdict ("0 PASS"). "0 PASS" alone reads as "0 data."
+
+### Current State
+
+**Working:**
+- attempt2 baseline frozen at `bench/smoke-phase1-2yr-attempt2/` (10 species × full 2yr daily.csv).
+- attempt3 running on cnc — queue PID 574934, output to `cnc:/opt/antcolony/runs/phase1-2yr-attempt3/`.
+- All 154 lib tests still pass on kokonoe (unchanged this session).
+- All Phase 1.5 code committed and pushed (`05498aa` initial commit on GitHub).
+
+**Running (cnc):**
+- attempt3 queue, 2-at-a-time, started 2026-05-13T17:18:54. First pair: `lasius_niger` + `pogonomyrmex_occidentalis`. Remaining 8 species will dispatch as slots free.
+
+**Stubbed/deferred (unchanged):**
+- `predates_ants` TOML field on B. chinensis still silently ignored (Phase 2).
+- Per-ant activity-fraction tracking (Phase 2).
+- Soft cold-foraging-vs-temperature curve (Phase 2).
+
+### Blocking Issues
+
+None for development. attempt3 is **wait-blocked** on the cnc queue finishing (~10-15h). E3 (verifier + outreach decision) cannot run until then.
+
+### What's Next
+
+In priority order for the incoming session:
+
+1. **Check attempt3 status first:**
+   ```bash
+   ssh cnc-server "tail -20 /opt/antcolony/runs/phase1-2yr-attempt3/_logs/queue.log; ls /opt/antcolony/runs/phase1-2yr-attempt3/_logs/queue.done 2>/dev/null && echo DONE || echo RUNNING"
+   ```
+   If RUNNING, wait or work on something else. If DONE, proceed.
+
+2. **E3 — pull attempt3 results and verify:**
+   ```powershell
+   # Pull (adapt the scp loop from this session — see git log for the inline ps1):
+   $species = (ssh cnc-server "ls -d /opt/antcolony/runs/phase1-2yr-attempt3/[a-z]*/" | foreach { ($_ -split '/')[-2] })
+   foreach ($sp in $species) {
+       New-Item -ItemType Directory -Force -Path "J:\antcolony\bench\smoke-phase1-2yr-attempt3\$sp" | Out-Null
+       scp "cnc-server:/opt/antcolony/runs/phase1-2yr-attempt3/$sp/daily.csv"     "J:\antcolony\bench\smoke-phase1-2yr-attempt3\$sp\daily.csv"
+       scp "cnc-server:/opt/antcolony/runs/phase1-2yr-attempt3/$sp/decisions.csv" "J:\antcolony\bench\smoke-phase1-2yr-attempt3\$sp\decisions.csv"
+       scp "cnc-server:/opt/antcolony/runs/phase1-2yr-attempt3/$sp/summary.md"    "J:\antcolony\bench\smoke-phase1-2yr-attempt3\$sp\summary.md"
+   }
+   # Verify:
+   & 'J:\antcolony\scripts\verify_phase1_v3_exit.ps1' 'J:\antcolony\bench\smoke-phase1-2yr-attempt3'
+   ```
+   (Default arg of verify_phase1_v3_exit is already `bench\smoke-phase1-2yr-attempt3`, so the trailing arg is optional.)
+
+3. **Decide:** If ≥8/10 PASS and 0 hard-stops → outreach unblocked, proceed to draft emails per `docs/superpowers/specs/2026-05-09-outreach-roadmap-design.md`. If NOT READY → postmortem the failing species against Appendix C literature criteria in `docs/superpowers/plans/2026-05-12-proper-food-spawn-calibration.md` before iterating.
+
+### Notes for Next Session
+
+**Use `scripts/launch_attempt3.ps1` for any future re-launches.** It bundles all the lessons: stripped Cargo.cnc.toml, scp instead of binary pipe through PowerShell 5.1, build failure abort, binary freshness guard, OUTROOT env override on queue_smoke.sh. Re-running it from scratch will tar+ship+rebuild+relaunch cleanly — just edit `$RemoteOutRoot` if you want a different output dir (e.g. `phase1-2yr-attempt4`).
+
+**Why attempt2's Cargo.toml on cnc was different:** Pre-this-session, cnc had an older trimmed Cargo.toml from `cnc_provision.ps1`. My initial sync overwrote it with the full local Cargo.toml, which broke the build. The new `Cargo.cnc.toml` formalizes the trimmed version so future syncs don't repeat the mistake. Stored in `scripts/` so it's committed alongside code.
+
+**The "0 PASS" reporting confusion** — Matt asked "did we get 0 data?" after I reported the attempt2 verifier output. The data IS the deliverable for a buggy baseline run; "0 PASS" without context reads as "no data." Memory `feedback_distinguish_data_vs_verdict.md` captures the fix: lead with row counts, then harness verdict, then next step.
+
+**attempt3 timing prediction:** attempt2 took 6 days wall-clock (May 11 06:47 → May 13 14:04), with rudis + tapinoma at ~14h each. attempt3's food_storage_cap should prevent the runaway-colony slowdown, so expect 8-12h total. Reasonable to check back tomorrow morning.
+
+**Don't disturb the queue.** `queue.pid` is at `/opt/antcolony/runs/phase1-2yr-attempt3/_logs/queue.pid`. To stop cleanly: `ssh cnc-server "kill \$(cat /opt/antcolony/runs/phase1-2yr-attempt3/_logs/queue.pid); pkill -f smoke_10yr_ai"`.
+
+---
+
 ## Session 2026-05-12 — Phase 1.5 food-spawn calibration: A/B/C/D shipped, attempt3 blocked on attempt2 completion
 
 🟡 Project Status: **Phase 1.5 code-complete, attempt3 smoke pending.** 13 commits since 2026-05-10. All 154 lib tests pass on kokonoe. Three sim-level fixes shipped (food_spawn_tick wired, v2 starvation cap math, food_storage_cap wired species→colony). Roadmap doc + per-species literature calibration + validation harness all committed. **attempt2 smoke (with v2 cap only) still running on cnc** — 6/10 species finished, 2 running, 3 queued. Phase E (relaunch attempt3 with full Phase 1.5 fixes) waits for attempt2 to finish (~10-20h more, mid-Wednesday).
