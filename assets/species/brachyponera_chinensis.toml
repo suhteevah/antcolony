@@ -75,7 +75,7 @@ seed_dispersal = false  # NOT a seed disperser — this is the keystone of the d
 honeydew_dependent = false
 host_species_required = []  # not parasitic
 predates_ants = true  # actively hunts and eats native ants in invaded range (Bednar & Silverman 2011 — gut content includes native ant fragments)
-food_storage_cap = 3000.0  # C3: 2.0 food/worker × 1500 target_population (App C calibration — small ponerine, fresh-prey foragers)
+food_storage_cap = 1000.0  # C3-attempt4: 2.0 food/worker × 500 verifier year-2 ceiling (was 3000 = mature target_pop overshoot)
 
 [ecological_role]
 keystone = false  # destroyer-of-keystones rather than keystone itself

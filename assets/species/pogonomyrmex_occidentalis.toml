@@ -80,7 +80,7 @@ context_aggression = false  # defensive but not unprovoked; mound disturbance tr
 seed_dispersal = false  # granivore — they EAT seeds, not disperse them. Granivory ≠ myrmecochory (cf. Aphaenogaster). Doc §5 explicitly: "seed predators (seeds eaten)"
 honeydew_dependent = false  # granivore, not honeydew-dependent (doc §5 — diet is seeds + opportunistic arthropod prey)
 host_species_required = []  # claustral founding, not a parasitic founder (doc §3)
-food_storage_cap = 300000.0  # C3: 30.0 food/worker × 10000 target_population (App C calibration — granivore seed cache)
+food_storage_cap = 45000.0  # C3-attempt4: 30.0 food/worker × 1500 verifier year-2 ceiling (was 300000 = mature target_pop overshoot; granivore cache still generous)
 
 [ecological_role]
 keystone = true  # major prairie seed-bank impact, ecosystem engineer for seed predation/dispersal/competition (doc §5; MacMahon et al. 2000)

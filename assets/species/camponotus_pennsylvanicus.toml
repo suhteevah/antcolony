@@ -81,7 +81,7 @@ context_aggression = false  # no published context-dependent aggression modulati
 seed_dispersal = false  # not a seed disperser (cf. Aphaenogaster); omnivore on honeydew + arthropod prey (doc §5)
 honeydew_dependent = false  # honeydew is dominant summer carb but supplemented by nectar, fruit, scavenged protein (doc §5; Hansen & Klotz 2005)
 host_species_required = []  # not a parasitic founder — fully claustral on endogenous reserves (doc §3)
-food_storage_cap = 40000.0  # C3: 5.0 food/worker × 8000 target_population (App C calibration — large workers, individual foragers)
+food_storage_cap = 1000.0  # C3-attempt4: 5.0 food/worker × 200 verifier year-2 ceiling (was 40000 = mature target_pop overshoot, 40× too loose)
 
 [ecological_role]
 keystone = false  # ecologically important wood-decay processor but not formally keystone-classified

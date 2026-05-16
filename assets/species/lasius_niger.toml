@@ -80,7 +80,7 @@ context_aggression = true  # Boulay et al. 2024 bioRxiv — kin-aware aggression
 seed_dispersal = false  # not a seed disperser (cf. Aphaenogaster)
 honeydew_dependent = false  # heavy honeydew user but not obligate (doc §5; Wikipedia §Diet)
 host_species_required = []  # not a parasitic founder
-food_storage_cap = 45000.0  # C3: 3.0 food/worker × 15000 target_population (App C calibration)
+food_storage_cap = 9000.0  # C3-attempt4: 3.0 food/worker × 3000 verifier year-2 ceiling (was 45000 = mature target_pop overshoot)
 
 [ecological_role]
 keystone = false  # widespread + dominant but not formally keystone-classified

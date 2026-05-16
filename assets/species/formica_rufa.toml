@@ -80,7 +80,7 @@ context_aggression = false  # uniformly high aggression (`aggression = 0.9`); in
 seed_dispersal = false  # not a seed disperser (cf. Aphaenogaster)
 honeydew_dependent = true  # ~200 kg honeydew/yr per mature mound from Cinara/Lachnus aphid herds in conifer canopy (doc §5; Hölldobler & Wilson 1990)
 host_species_required = ["formica_fusca"]  # obligate social parasite on F. fusca group at founding (doc §3; Borowiec et al. 2021); fusca species TOML not yet shipped — forward-looking reference
-food_storage_cap = 600000.0  # C3: 2.0 food/worker × 300000 target_population (App C calibration — supercolony scale, honeydew flux)
+food_storage_cap = 1000.0  # C3-attempt4: 2.0 food/worker × 500 verifier year-2 ceiling (was 600000 = supercolony-mature overshoot, 600× too loose)
 
 [ecological_role]
 keystone = true  # legally protected across much of Europe due to pest-suppression and biodiversity support role (doc §1, §5; National Geographic 2023)

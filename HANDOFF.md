@@ -4,6 +4,124 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-16 — attempt3 partial diagnosis, attempt4 launched with recalibrated caps
+
+🟡 Project Status: **attempt3 aborted at 4/10 species; attempt4 launched on cnc (queue PID 743067).** attempt3 ran for ~63h and completed only lasius_niger + pogonomyrmex_occidentalis before being killed. Both completed species FAILED the verifier — not from cliffs (Phase 1.5 fixed those) but from colony overgrowth into oversized food_storage_caps. Root cause: TOML caps were computed as `food_per_worker_max × mature_target_population` instead of `× verifier_year_2_ceiling`. All 10 TOMLs recalibrated; attempt4 in flight with the new caps.
+
+### What Was Done This Session
+
+**E1 — pulled partial attempt3 results + verifier diagnosis:**
+- Pulled `lasius_niger` + `pogonomyrmex_occidentalis` (both 732 rows = 2yr complete) from `cnc:/opt/antcolony/runs/phase1-2yr-attempt3/` to `J:\antcolony\bench\smoke-phase1-2yr-attempt3\`. Confirmed survival — Phase 1.5 cliff fixes worked (no seasonal-transition collapses).
+- Ran `scripts/verify_phase1_v3_exit.ps1`: **0 PASS / 2 FAIL, 1 hard-stop**.
+  - `lasius_niger`: workers=3598 > 3000 ceiling; food/worker=12.5 > 3.0 max; yoy=78% < 100% min (HARD-STOP)
+  - `pogonomyrmex_occidentalis`: workers=3446 > 1500 ceiling; food/worker=87.1 > 30.0 max
+- Both colonies hit their `food_storage_cap` (lasius pinned at 44999/45000; pogo at 299999/300000) for all of year 2. Brood pipeline saturated (eggs/larvae/pupae steady at 420/630/420).
+- lasius peaked at 4672 workers in yr1 then drifted down to 3598 in yr2 — worker mortality outpacing pupation under capped-brood ceiling.
+
+**E2 — root-caused the calibration error (not the cap wiring):**
+- The cap IS working correctly (food clamps at the cap value, confirmed in CSVs). The bug is in the TOML cap *values*.
+- Phase 1.5's C3 step set `food_storage_cap = food_per_worker_max × target_population`. But `target_population` is the **mature colony size** from species docs (15k lasius, 10k pogo). For a 2-year run, mature size is the wrong reference — colonies grow into the verifier's worker ceiling, hit the cap, then drift.
+- Audited verifier thresholds against species docs literature — both `lasius_niger ≤ 3000` and `pogo ≤ 1500` for a 2yr colony are defensible. lasius matures at 5-15k (AntWiki); pogo matures at 6-12k over 4-7y (Cole & Wiernasz). Year-2 of each trajectory lands at the verifier's ceiling.
+
+**E3 — recalibrated all 10 species TOMLs:**
+New math: `food_storage_cap = food_per_worker_max × verifier_year_2_worker_ceiling`. Per-species changes (all 10 TOMLs touched, comment updated to `# C3-attempt4: ... year-2 ceiling`):
+
+| Species | Old cap | New cap | Reduction |
+|---|---:|---:|---:|
+| lasius_niger | 45000 | 9000 | 5× |
+| pogonomyrmex_occidentalis | 300000 | 45000 | 6.7× |
+| formica_rufa | 600000 | 1000 | **600×** |
+| camponotus_pennsylvanicus | 40000 | 1000 | 40× |
+| tapinoma_sessile | 40000 | 8000 | 5× |
+| aphaenogaster_rudis | 6400 | 2800 | 2.3× |
+| formica_fusca | 24000 | 2400 | 10× |
+| tetramorium_immigrans | 80000 | 10000 | 8× |
+| brachyponera_chinensis | 3000 | 1000 | 3× |
+| temnothorax_curvinodis | 400 | 300 | 1.3× |
+
+**E4 — killed attempt3 on cnc:**
+- Confirmed via `ps` that attempt3 had only 2 species running (formica_rufa @29h25m, camponotus_pennsylvanicus @11h) plus the queue dispatcher. 6 species had never started.
+- formica_rufa's 600× cap miss meant it was destined to FAIL the verifier no matter how long it ran. Sunk-cost call: kill it now rather than burn ~30 more cnc hours on guaranteed-fail data.
+- `kill $(cat queue.pid)` + `pkill -f smoke_10yr_ai`. Verified clean. Load dropped from 8.77 → 3.67.
+
+**E5 — built `scripts/launch_attempt4.ps1` + launched:**
+- Copy of `launch_attempt3.ps1` with `attempt3 → attempt4` paths. Two important deviations:
+  - **tar gotcha:** GNU tar (`/usr/bin/tar` from Git Bash) interprets `J:\...` paths as `host:path` and fails with "Cannot connect to C: resolve failed". Fix: invoke `C:\Windows\System32\tar.exe` explicitly (bsdtar, handles Windows paths natively).
+  - **Binary freshness guard:** attempt4 has no Rust source changes — only TOMLs (runtime config). cargo hardlinks `target/release/examples/smoke_10yr_ai` to `target/release/deps/smoke_10yr_ai-<hash>`; `rm` on one side leaves the other intact, and `cargo clean -p antcolony-sim` doesn't break the hardlink. Result: attempt3's May 13 binary stays "immortal" through `cargo clean` + `cargo build`. The 5-minute binary-mtime guard misfired even though the build was correct. Fix: guard checks **TOML mtime** instead — verifies the config sync landed, since that's the only thing that changes for attempt4. Future source-changing attempts will need a different guard (forced workspace clean or source-file touch).
+- attempt4 launched 2026-05-16T06:43:37. Queue PID 743067 ALIVE. First pair: lasius_niger (pid=743079) + pogonomyrmex_occidentalis (pid=743083).
+
+**Memory written this session:**
+- New `feedback_cargo_hardlink_freshness.md` — binary mtime is not a reliable build-freshness guard; cargo's hardlink between deps/ and examples/ makes the artifact immortal until source genuinely changes. Use TOML mtime for config-only attempts, force full `cargo clean` (workspace) for source-changing attempts.
+
+### Current State
+
+**Working:**
+- All 10 species TOMLs recalibrated with year-2-grounded `food_storage_cap`.
+- attempt4 running on cnc — queue PID 743067 dispatching first pair.
+- attempt2 baseline preserved at `bench/smoke-phase1-2yr-attempt2/` (10 species × 732 rows, 0/10 PASS — the bug-bleeding reference).
+- attempt3 partial preserved at `bench/smoke-phase1-2yr-attempt3/` (2 species × 732 rows, 0/2 PASS — the cap-overshoot reference).
+
+**Running (cnc):**
+- attempt4 queue, 2-at-a-time, started 2026-05-16T06:43:37. First pair: `lasius_niger` + `pogonomyrmex_occidentalis`. Output to `cnc:/opt/antcolony/runs/phase1-2yr-attempt4/`.
+
+**Stubbed/deferred (unchanged):**
+- `predates_ants` TOML field on B. chinensis still silently ignored (Phase 2).
+- Per-ant activity-fraction tracking (Phase 2).
+- Soft cold-foraging-vs-temperature curve (Phase 2).
+
+### Blocking Issues
+
+None for development. attempt4 is **wait-blocked** on the cnc queue finishing (estimated ~25-40h with the tighter caps — much faster than attempt2/3 because small colonies have lower per-tick cost).
+
+### What's Next
+
+In priority order:
+
+1. **Check attempt4 status:**
+   ```bash
+   ssh cnc-server "tail -30 /opt/antcolony/runs/phase1-2yr-attempt4/_logs/queue.log; ls /opt/antcolony/runs/phase1-2yr-attempt4/_logs/queue.done 2>/dev/null && echo DONE || echo RUNNING"
+   ```
+   Likely DONE by 2026-05-18 morning.
+
+2. **Pull attempt4 results + verify** (same pattern as attempt3 E1/E2):
+   ```powershell
+   $species = (ssh cnc-server "ls -d /opt/antcolony/runs/phase1-2yr-attempt4/[a-z]*/" | foreach { ($_ -split '/')[-2] })
+   foreach ($sp in $species) {
+       New-Item -ItemType Directory -Force -Path "J:\antcolony\bench\smoke-phase1-2yr-attempt4\$sp" | Out-Null
+       scp "cnc-server:/opt/antcolony/runs/phase1-2yr-attempt4/$sp/daily.csv"     "J:\antcolony\bench\smoke-phase1-2yr-attempt4\$sp\daily.csv"
+       scp "cnc-server:/opt/antcolony/runs/phase1-2yr-attempt4/$sp/decisions.csv" "J:\antcolony\bench\smoke-phase1-2yr-attempt4\$sp\decisions.csv"
+       scp "cnc-server:/opt/antcolony/runs/phase1-2yr-attempt4/$sp/summary.md"    "J:\antcolony\bench\smoke-phase1-2yr-attempt4\$sp\summary.md"
+   }
+   powershell.exe -ExecutionPolicy Bypass -File scripts\verify_phase1_v3_exit.ps1 'J:\antcolony\bench\smoke-phase1-2yr-attempt4'
+   ```
+
+3. **Decide on outcome:**
+   - **GREEN (≥8/10 PASS, 0 hard-stops):** outreach unblocked. Proceed to draft emails per `docs/superpowers/specs/2026-05-09-outreach-roadmap-design.md`.
+   - **YELLOW (1-7/10 PASS):** postmortem failing species against Appendix C. Likely fine-tuning per-species `peak_food_per_day` or worker mortality rates. Iterate.
+   - **RED (still hitting verifier ceilings on most species):** check whether the year-2 ceiling assumption itself is wrong, or whether some other knob (e.g. queen_eggs_per_day, food_per_adult_per_day) needs adjustment alongside the cap.
+
+### Notes for Next Session
+
+**Use `scripts/launch_attempt4.ps1`, not `launch_attempt3.ps1`.** The attempt4 launcher has two fixes baked in:
+- Explicit `C:\Windows\System32\tar.exe` (avoids Git-Bash GNU-tar Windows-path parse failure)
+- TOML-mtime freshness guard instead of binary-mtime (avoids cargo hardlink trap — see memory `feedback_cargo_hardlink_freshness`)
+
+If attempt4 source changes need to be picked up in a future attempt5, the launcher needs an additional fix: either `cargo clean` (workspace-wide, NOT `-p`) or `touch crates/antcolony-sim/src/simulation.rs` before the build. The current `cargo clean -p antcolony-sim` + `rm target/release/examples/...` is insufficient because of the deps/ hardlink.
+
+**attempt4 timing prediction:** Each species should run *much* faster than attempt2/3 because the tight caps prevent colony overgrowth → fewer ants per tick → lower per-tick CPU cost. Estimate 5-8h per species at 2-at-a-time → ~25-40h total wall-clock. Likely complete by 2026-05-18 morning.
+
+**Don't disturb the queue.** `queue.pid` at `/opt/antcolony/runs/phase1-2yr-attempt4/_logs/queue.pid`. To stop cleanly: `ssh cnc-server "kill \$(cat /opt/antcolony/runs/phase1-2yr-attempt4/_logs/queue.pid); pkill -f smoke_10yr_ai"`.
+
+**The "calibration overshoot" pattern is worth watching for.** attempt3 succeeded biologically (no cliffs) but failed numerically (verifier ceilings). The fix wasn't to relax the verifier — it was to tighten the TOML caps. The literature-anchored verifier thresholds are the source of truth; calibrate sim parameters to them, not the other way around.
+
+**Cap math going forward:** `food_storage_cap` should be calibrated against the **horizon-appropriate** worker count, not "mature target_population". For a 2yr smoke, use the verifier's year-2 ceiling. For a 7yr Pogonomyrmex run (Cole/Wiernasz reproduction), use the year-7 ceiling. The mature target_pop in species docs is a sim-tuning anchor for endgame balance, not a smoke-test cap multiplier.
+
+**Spec docs are stable:**
+- `docs/superpowers/specs/2026-05-09-outreach-roadmap-design.md`
+- `docs/superpowers/plans/2026-05-12-proper-food-spawn-calibration.md` — now needs an addendum noting that App C's `target_population × food_per_worker_max` cap math was the wrong reference; supplant with verifier-ceiling math for any future cap derivation.
+
+---
+
 ## Session 2026-05-13 — attempt2 baselined, attempt3 launched on fresh binary
 
 🟡 Project Status: **attempt2 complete + baselined; attempt3 running on cnc (PID 574934).** All 10 species in attempt2 ran 2yr to completion (732 rows each). Harness against attempt2 = 0/10 PASS, 2 hard-stops — exactly the bug-bleeding baseline expected. attempt3 launched with the C2/C3 fixes (food_storage_cap wired species→colony + food_spawn_tick) baked into the synced source. ETA to attempt3 completion: ~10-15h (caps should make it faster than attempt2 since runaway colonies are now capped).

@@ -80,7 +80,7 @@ context_aggression = false  # doc §7 — uniformly timid response (flee + scatt
 seed_dispersal = true  # doc §5 — DEFINING TRAIT: single most important seed-disperser of eastern deciduous understory (~30-40% of wildflower species); myrmecochory via elaiosomes (Beattie 1985; Beattie & Culver 1981; Ness et al. in Cambridge Ant-Plant Interactions Ch. 5)
 honeydew_dependent = false  # doc §5 — generalist (small arthropods, EFN, occasional sugar exudates); not a honeydew specialist (Clark & King 2012)
 host_species_required = []  # not a parasitic founder
-food_storage_cap = 6400.0  # C3: 8.0 food/worker × 800 target_population (App C calibration — small forest-floor colonies)
+food_storage_cap = 2800.0  # C3-attempt4: 8.0 food/worker × 350 verifier year-2 ceiling (was 6400 = mature target_pop overshoot)
 
 [ecological_role]
 keystone = true  # doc §5, §7 — keystone seed-disperser of eastern deciduous forest understory; loss measurably collapses wildflower mutualisms (Warren et al. Ecosphere 2018; Spicer Rice et al. 2015)

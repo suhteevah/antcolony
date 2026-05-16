@@ -74,7 +74,7 @@ context_aggression = false  # no published context-dependent aggression modulati
 seed_dispersal = false  # not a seed disperser
 honeydew_dependent = false  # heavy honeydew user but not obligate
 host_species_required = []  # not a parasitic founder — IS the host for other parasitic Formica
-food_storage_cap = 24000.0  # C3: 3.0 food/worker × 8000 target_population (App C calibration — mid-sized Palearctic generalist)
+food_storage_cap = 2400.0  # C3-attempt4: 3.0 food/worker × 800 verifier year-2 ceiling (was 24000 = mature target_pop overshoot)
 
 [ecological_role]
 keystone = false  # ecologically important as host for parasitic Formica radiation but not formally keystone-classified
