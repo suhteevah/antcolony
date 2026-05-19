@@ -4,6 +4,102 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-18 — attempt4 partial pulled, cnc spun down for P100 install
+
+🔴 Project Status: **attempt4 inconclusive — 3/10 species complete, all FAIL with new failure mode; cnc shut down mid-queue for GPU upgrade.** Pulled 5 species partial (3 complete + 2 interrupted), verifier says 0 PASS / 3 FAIL / 2 hard-stops. The year-2-ceiling cap math fixed the food-overaccumulation bug but introduced cap-starvation — colonies stall food-pinned at cap with yoy < 100% (lasius 81%, camponotus 70%).
+
+### What Was Done This Session
+
+**Pulled attempt4 partial (5 species) before cnc shutdown:**
+- Complete 2yr (732 rows each): `lasius_niger` (workers=2574, food=9000@cap, ratio=3.5×, yoy=81%), `pogonomyrmex_occidentalis` (workers=2810, food=45000@cap), `camponotus_pennsylvanicus` (workers=409, food=999.75@cap≈1000, yoy=70%)
+- Interrupted at SIGTERM (BufWriter not flushed — see below): `formica_rufa` (379 rows on disk, log shows process had ticked to day ~433 / 59%, ~54 days lost from daily.csv buffer), `tapinoma_sessile` (261 rows, food=0 starvation already visible)
+- 5 species never started: `aphaenogaster_rudis`, `formica_fusca`, `tetramorium_immigrans`, `brachyponera_chinensis`, `temnothorax_curvinodis`
+
+**Verifier on partial (`scripts/verify_phase1_v3_exit.ps1`): 0/3 PASS, 2 hard-stops, NOT READY.**
+- lasius_niger: workers under ceiling (2574 < 3000) ✓ but food/worker=3.5 > 3.0 AND yoy=81% < 100% (hard-stop)
+- pogo: workers=2810 > 1500 (1.87× over, cap reduction insufficient — cap is not the binding constraint for pogo's worker count)
+- camponotus: workers=409 > 200 AND yoy=70% < 200% (hard-stop)
+
+**Diagnosed formica_rufa "CSV stalled but process alive" mystery:**
+- Process pid 3143598 was at 99% CPU, tick ~18.7M (59%), but daily.csv frozen at 379 rows for 12+ hours. err.log was actively progressing — process wasn't hung.
+- Root cause: `smoke_10yr_ai.rs` line 181 wraps daily.csv in `BufWriter::new(File::create(...))` with no per-row `flush()`. Default 8KB capacity. At ~65 bytes/row, ~120 days of rows fit in one buffer fill. Slow-rotating daily writes never fill the buffer after early game — last flush left 379 rows on disk, the next ~54 days sat in memory.
+- decisions.csv (line 180) was fine because its high write volume keeps the buffer cycling.
+- No disk/inode/dmesg issues. fd 4 open writable. VmRSS=7.7 MB normal. /opt has 708G free, BTRFS healthy.
+- **Confirmed `Drop` did NOT flush on SIGTERM** — Rust's default signal disposition terminates without unwinding. Final post-kill check: formica_rufa daily.csv unchanged at 24573 bytes/mtime 07:23, tapinoma daily.csv last row truncated mid-line. Buffered rows lost as predicted.
+
+**Clean shutdown of cnc:**
+- Kill order designed to avoid re-dispatch: queue dispatcher (PID 743067) FIRST → SIGTERM both smokes (3143598 formica_rufa, 422943 tapinoma) → verified 0 remaining processes.
+- Pre-shutdown inventory: only 3 antcolony processes total, all children of queue, no orphans. Other run dirs (`phase1-2yr`, `phase1-2yr-attempt3`) idle on disk, safe to leave.
+- Issued `sudo shutdown -h now`. ssh probe 20s later returned `Connection timed out` → cnc down.
+- **Co-resident services that went down with cnc**: abacus-api, authentik (auth/SSO), claude-agentapi, claude-orchestrator, crowdsec, fleet-syslog, grafana, homepage, icecc-scheduler, lattice-server, litellm-proxy, llama-rpc (CUDA), nats-server, +more. Whole-box outage until P100s are installed and cnc is back up.
+
+**Memory written this session:**
+- New `feedback_bufwriter_no_flush_on_sigterm.md` — Rust's `std::io::BufWriter` does NOT flush on SIGTERM/SIGKILL. For long-running binaries writing low-volume CSVs (one row/day), buffered rows are lost on signal-kill. Mitigations: per-write `flush()`, signal handler that calls flush before exit, or `LineWriter` for line-based output.
+
+### Current State
+
+**Working / preserved (on kokonoe):**
+- attempt4 partial in `bench/smoke-phase1-2yr-attempt4/` — 3 complete species + 2 interrupted, plus `_logs/` (queue.log, queue_pids.txt, formica_rufa.log.err, tapinoma.log.err).
+- attempt2 baseline (`bench/smoke-phase1-2yr-attempt2/`) and attempt3 partial (`bench/smoke-phase1-2yr-attempt3/`) still intact — full history of cap-math iterations.
+- 154 lib tests pass on kokonoe (unchanged this session).
+
+**Down (cnc-server):**
+- Hardware powered off for P100 GPU install. All antcolony cnc workload stopped. /opt/antcolony/runs/phase1-2yr-attempt4/ left as-is on disk for resume.
+- Co-resident fleet services (litellm-proxy, llama-rpc, claude-orchestrator, authentik, grafana, etc.) offline.
+
+**Stubbed/deferred (unchanged):**
+- `predates_ants` TOML field on B. chinensis still silently ignored (Phase 2).
+- Per-ant activity-fraction tracking (Phase 2).
+- Soft cold-foraging-vs-temperature curve (Phase 2).
+
+### Blocking Issues
+
+1. **cnc offline** — all cnc-side work blocked on Matt completing the P100 install + power-on.
+2. **Cap-math design needs rework before attempt5** — year-2-ceiling × food_per_worker_max gives correct food bound but causes worker decline (yoy < 100%) when colony stalls below ceiling. Three options to consider (no decision yet):
+   - Relax verifier `food_per_worker_max` to allow food/worker > max when worker count is under ceiling.
+   - Decouple cap from ceiling — set cap from actual mature steady-state food intake / day, not as a multiplier of population.
+   - Add worker-mortality / queen-lay-rate calibration so colonies don't drift below ceiling in the first place.
+
+### What's Next
+
+In priority order for the next session (after cnc returns):
+
+1. **Verify cnc came back clean.** `ssh cnc-server "uptime; nvidia-smi; systemctl --failed; df -h /opt"`. Check the P100s are detected. Confirm fleet services restarted (`systemctl status litellm-proxy llama-rpc claude-orchestrator ...`).
+
+2. **Postmortem attempt4 partial.** Three species worth of data on the new cap model. Write `docs/superpomers/postmortems/2026-05-18-attempt4-cap-starvation.md` covering:
+   - Why lasius hits food/worker=3.5 despite cap at 9000 (workers fell below ceiling)
+   - Why pogo's worker count is insensitive to cap reduction (food not the binding constraint there)
+   - Why camponotus shows yoy=70% (cap at 1000 too tight, colony bleeds workers under steady-state food starvation)
+   - Recommend cap-math v3 approach.
+
+3. **Decide cap-math v3.** Aim: a cap that does NOT cause yoy decline. Likely path: tie cap to `mature_target_population × food_per_worker_max` (the original attempt3 math) BUT pair it with worker-mortality calibration so colonies don't blow past the verifier's year-2 ceiling. The verifier's ceiling is the target the sim should grow INTO, not the cap value.
+
+4. **Optional pre-attempt5 fixes:**
+   - Add a `signal-hook` handler to `smoke_10yr_ai` so SIGTERM flushes daily.csv before exit (prevents the 54-day-loss situation).
+   - Per-row `day_w.flush()?` after each daily write — cheap (1 row/day) and guarantees no buffer loss. **Probably the right fix; the SIGTERM-handler is a nice-to-have on top.**
+
+5. **Re-launch attempt5** once cap-math v3 is settled. Use `scripts/launch_attempt4.ps1` as template (rename to `launch_attempt5.ps1`, update paths). Don't forget: TOML-mtime freshness guard for config-only changes; full workspace `cargo clean` if any Rust source changes.
+
+### Notes for Next Session
+
+**The BufWriter gotcha cost 54 days of formica_rufa data.** Even though the run was a doomed-cap-miss anyway, this would have bitten harder on a successful species. Fix `smoke_10yr_ai.rs:181` to either (a) call `day_w.flush()?` after each writeln, or (b) install a SIGTERM handler. Option (a) is two lines. Should be done before attempt5.
+
+**Cap math evolution to date:**
+- attempt1/2 baseline (pre-cap): runaway colonies + 30× food overaccumulation
+- attempt3 (cap = food_per_worker_max × mature_target_population): worker count overshot verifier ceilings, food at-cap but oversized
+- attempt4 (cap = food_per_worker_max × verifier_year_2_ceiling): cap correctly tight at ceiling, BUT colonies bleed workers below ceiling and food/worker still fails
+- attempt5 design: ???
+
+The pattern is "we're moving the failure between three knobs (cap, worker-mortality, lay-rate) and only ever calibrating one at a time". Probably need to calibrate all three jointly against the verifier targets.
+
+**cnc resume checklist when it returns:**
+- Confirm `nvidia-smi` shows the P100s and CUDA version
+- Check `systemctl --failed` is empty
+- If any fleet service didn't auto-restart, bring it up manually (most are unit-files in `/etc/systemd/system/`)
+- Then sync source (via `scripts/launch_attemptN.ps1` template) and resume antcolony work
+
+---
+
 ## Session 2026-05-16 — attempt3 partial diagnosis, attempt4 launched with recalibrated caps
 
 🟡 Project Status: **attempt3 aborted at 4/10 species; attempt4 launched on cnc (queue PID 743067).** attempt3 ran for ~63h and completed only lasius_niger + pogonomyrmex_occidentalis before being killed. Both completed species FAILED the verifier — not from cliffs (Phase 1.5 fixed those) but from colony overgrowth into oversized food_storage_caps. Root cause: TOML caps were computed as `food_per_worker_max × mature_target_population` instead of `× verifier_year_2_ceiling`. All 10 TOMLs recalibrated; attempt4 in flight with the new caps.
