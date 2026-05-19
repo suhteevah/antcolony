@@ -35,3 +35,7 @@ pub use combat::CombatKs;
 pub use forager::ForagerKs;
 pub use knowledge_source::{Cadence, Contribution, KnowledgeSource, KsName};
 pub use strategist::StrategistKs;
+
+pub mod observation;
+
+pub use observation::AntModulators;
