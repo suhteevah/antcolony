@@ -20,8 +20,8 @@
 //!   pool              : learned [CLS]-style first-token output → 384
 //!   heads             : action(384→6), intent(384→64), value(384→1)
 
-use candle_core::{Result, Tensor};
-use candle_nn::{Conv2d, Linear, VarBuilder};
+use candle_core::{IndexOp, Result, Tensor};
+use candle_nn::{Conv2d, Linear, Module, VarBuilder};
 
 use crate::hierarchical::sizing::Sizing;
 use crate::hierarchical::transformer::TransformerBlock;
@@ -54,6 +54,13 @@ pub struct CommanderPolicy {
 
     // Learnable per-dim policy std
     pub(crate) log_std: Tensor,
+}
+
+/// Bundle of forward-pass outputs from CommanderPolicy.
+pub struct CommanderForwardOut {
+    pub action: Tensor,   // [B, 6] — pre-tanh
+    pub intent: Tensor,   // [B, 64]
+    pub value: Tensor,    // [B]
 }
 
 impl CommanderPolicy {
@@ -122,6 +129,65 @@ impl CommanderPolicy {
             log_std,
         })
     }
+
+    pub fn forward(
+        &self,
+        state: &Tensor,      // [B, 17]
+        pheromone: &Tensor,  // [B, 4, 32, 32]
+        history: &Tensor,    // [B, K=8, 96]
+    ) -> Result<CommanderForwardOut> {
+        let (b, _) = state.dims2()?;
+        let d_enc = self.sizing.cmdr_encoder_dim;
+        let d_model = self.sizing.cmdr_d_model;
+
+        // ── Pheromone CNN ──
+        // Conv2d(pad=1,s=1) → ReLU: [B,4,32,32] → [B,mid,32,32]
+        // Conv2d(pad=1,s=2) → ReLU: [B,mid,32,32] → [B,hi,16,16]
+        // AvgPool2d(2,2):           [B,hi,16,16] → [B,hi,8,8]
+        // Flatten → [B, 8*8*hi]
+        // Linear → [B, d_enc]
+        let p = self.pher_conv1.forward(pheromone)?.relu()?;
+        let p = self.pher_conv2.forward(&p)?.relu()?;
+        let p = p.avg_pool2d((2, 2))?;
+        let p = p.flatten_from(1)?;  // [B, 8*8*hi]
+        let pher_tok = self.pher_proj.forward(&p)?;  // [B, d_enc]
+
+        // ── State encoder ──
+        let state_tok = self.state_encoder.forward(state)?;  // [B, d_enc]
+
+        // ── History encoder (per-token) ──
+        // history: [B, K, 96] → reshape [B*K, 96] → Linear → [B*K, d_enc] → reshape [B, K, d_enc]
+        let (b_h, k, _) = history.dims3()?;
+        debug_assert_eq!(b_h, b);
+        let h_flat = history.reshape((b * k, self.sizing.fixed_history_tok_d))?;
+        let h_enc = self.history_encoder.forward(&h_flat)?;
+        let history_toks = h_enc.reshape((b, k, d_enc))?;  // [B, K, d_enc]
+
+        // ── Stack tokens [pher, state, history_0..K-1] → reproject to d_model ──
+        let pher_tok = pher_tok.unsqueeze(1)?;    // [B, 1, d_enc]
+        let state_tok = state_tok.unsqueeze(1)?;  // [B, 1, d_enc]
+        let concat = Tensor::cat(&[&pher_tok, &state_tok, &history_toks], 1)?;  // [B, 2+K, d_enc]
+        let tokens = self.stream_proj.forward(&concat)?;  // [B, 2+K, d_model]
+
+        // ── Prepend learnable CLS token: [1, 1, d_model] → [B, 1, d_model] ──
+        let cls = self.cls_token.expand((b, 1, d_model))?;
+        let mut x = Tensor::cat(&[&cls, &tokens], 1)?;  // [B, 1+2+K, d_model]
+
+        // ── Transformer backbone ──
+        for block in &self.blocks {
+            x = block.forward(&x)?;
+        }
+
+        // ── Pool: CLS-position output (index 0) ──
+        let cls_out = x.i((.., 0, ..))?;  // [B, d_model]
+
+        // ── Heads ──
+        let action = self.action_head.forward(&cls_out)?;        // [B, 6] — pre-tanh
+        let intent = self.intent_head.forward(&cls_out)?;        // [B, 64]
+        let value = self.value_head.forward(&cls_out)?.squeeze(1)?;  // [B]
+
+        Ok(CommanderForwardOut { action, intent, value })
+    }
 }
 
 #[cfg(test)]
@@ -139,6 +205,32 @@ mod tests {
         let policy = CommanderPolicy::new(vb, A1).unwrap();
         assert_eq!(policy.blocks.len(), A1.cmdr_layers);
         assert_eq!(policy.sizing.cmdr_d_model, 384);
+    }
+
+    #[test]
+    fn a1_commander_forward_shapes() {
+        let varmap = VarMap::new();
+        let device = Device::Cpu;
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let policy = CommanderPolicy::new(vb, A1).unwrap();
+
+        let b = 2usize;
+        let state = Tensor::randn(0.0f32, 1.0, (b, A1.fixed_state_d), &device).unwrap();
+        let pheromone = Tensor::randn(
+            0.0f32, 1.0,
+            (b, A1.fixed_pheromone_c, A1.fixed_pheromone_h, A1.fixed_pheromone_w),
+            &device,
+        ).unwrap();
+        let history = Tensor::randn(
+            0.0f32, 1.0,
+            (b, A1.fixed_history_k, A1.fixed_history_tok_d),
+            &device,
+        ).unwrap();
+
+        let out = policy.forward(&state, &pheromone, &history).unwrap();
+        assert_eq!(out.action.dims(), &[b, A1.fixed_action_d]);
+        assert_eq!(out.intent.dims(), &[b, A1.fixed_intent_d]);
+        assert_eq!(out.value.dims(), &[b]);
     }
 
     #[test]
