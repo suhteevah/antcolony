@@ -3,6 +3,41 @@
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
+/// Serde helper for `[f32; 64]` — serde's built-in array impls only cover
+/// up to N=32; larger arrays need a manual helper.
+mod serde_f32_64 {
+    use serde::{Deserializer, Serializer, de::SeqAccess, de::Visitor, ser::SerializeTuple};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(arr: &[f32; 64], s: S) -> Result<S::Ok, S::Error> {
+        let mut tup = s.serialize_tuple(64)?;
+        for v in arr {
+            tup.serialize_element(v)?;
+        }
+        tup.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; 64], D::Error> {
+        struct Arr64;
+        impl<'de> Visitor<'de> for Arr64 {
+            type Value = [f32; 64];
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "array of 64 f32 values")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<[f32; 64], A::Error> {
+                let mut arr = [0.0f32; 64];
+                for slot in &mut arr {
+                    *slot = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                }
+                Ok(arr)
+            }
+        }
+        d.deserialize_tuple(64, Arr64)
+    }
+}
+
 use crate::ant::AntCaste;
 use crate::milestones::Milestone;
 
@@ -99,6 +134,10 @@ pub struct PopulationCounts {
     pub workers: u32,
     pub soldiers: u32,
     pub breeders: u32,
+}
+
+fn default_commander_intent() -> [f32; 64] {
+    [0.0; 64]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +259,17 @@ pub struct ColonyState {
     /// See postmortem fix #4 + Task C2.
     #[serde(default)]
     pub effective_food_cap_cached: Option<f32>,
+    /// Ring buffer of the last 8 commander decision tokens. Populated by
+    /// `Simulation::apply_ai_decision` once the hierarchical trainer
+    /// (Phase 2) is wired. Empty for runs without a trainer attached.
+    #[serde(default)]
+    pub commander_history: arrayvec::ArrayVec<crate::ai::observation::HistoryToken, 8>,
+    /// 64-d intent vector broadcast by the commander tier to the ant
+    /// tier. Zeros when no trainer is attached (ants treat zero intent
+    /// as "no special bias", consistent with the identity-default
+    /// AntModulators). Updated via `Simulation::apply_commander_intent`.
+    #[serde(default = "default_commander_intent", with = "serde_f32_64")]
+    pub commander_intent: [f32; 64],
 }
 
 impl ColonyState {
@@ -262,6 +312,8 @@ impl ColonyState {
             food_storage_cap_override: None,
             starvation_accumulator: 0.0,
             effective_food_cap_cached: None,
+            commander_history: arrayvec::ArrayVec::new(),
+            commander_intent: [0.0; 64],
         }
     }
 
@@ -323,5 +375,23 @@ impl ColonyState {
     /// Sum of all live adult ants tracked in `population`.
     pub fn adult_total(&self) -> u32 {
         self.population.workers + self.population.soldiers + self.population.breeders
+    }
+}
+
+impl Default for ColonyState {
+    fn default() -> Self {
+        Self::new(0, 0.0, glam::Vec2::ZERO)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colony_state_starts_with_empty_history_and_zero_intent() {
+        let cs = ColonyState::default();
+        assert_eq!(cs.commander_history.len(), 0);
+        assert_eq!(cs.commander_intent, [0.0f32; 64]);
     }
 }

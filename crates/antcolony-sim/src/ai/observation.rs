@@ -10,6 +10,41 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Serde helper for `[f32; 72]` — serde's built-in array impls only cover
+/// up to N=32; larger arrays need a manual helper.
+mod serde_f32_72 {
+    use serde::{Deserializer, Serializer, de::SeqAccess, de::Visitor, ser::SerializeTuple};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(arr: &[f32; 72], s: S) -> Result<S::Ok, S::Error> {
+        let mut tup = s.serialize_tuple(72)?;
+        for v in arr {
+            tup.serialize_element(v)?;
+        }
+        tup.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; 72], D::Error> {
+        struct Arr72;
+        impl<'de> Visitor<'de> for Arr72 {
+            type Value = [f32; 72];
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "array of 72 f32 values")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<[f32; 72], A::Error> {
+                let mut arr = [0.0f32; 72];
+                for slot in &mut arr {
+                    *slot = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                }
+                Ok(arr)
+            }
+        }
+        d.deserialize_tuple(72, Arr72)
+    }
+}
+
 /// Per-ant ACO knobs the per-ant brain (Phase 2) outputs each tick.
 ///
 /// Defaults are the **identity** for the existing ACO math in
@@ -72,6 +107,36 @@ pub struct PheromoneSnapshot {
     pub colony_scent: Box<[f32]>,
 }
 
+/// One entry in the commander's history ring buffer (last 8 decision
+/// cycles). The commander backbone consumes K=8 of these as 96-d tokens
+/// alongside the state and pheromone inputs. Pad fields are unused by
+/// Phase 1 — they're reserved for auxiliary features in later phases.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HistoryToken {
+    pub state: [f32; 17],
+    pub action: [f32; 6],
+    pub reward: f32,
+    #[serde(with = "serde_f32_72")]
+    pub pad: [f32; 72],
+}
+
+impl Default for HistoryToken {
+    fn default() -> Self {
+        Self {
+            state: [0.0; 17],
+            action: [0.0; 6],
+            reward: 0.0,
+            pad: [0.0; 72],
+        }
+    }
+}
+
+impl HistoryToken {
+    /// Total float count when flattened — used as a shape check by Phase
+    /// 2 trainer code. Must equal 17 + 6 + 1 + 72 = 96.
+    pub const FLAT_LEN: usize = 96;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +149,14 @@ mod tests {
         assert_eq!(m.exploration_mod, 0.0);
         assert_eq!(m.deposit_mult, 1.0);
         assert_eq!(m.state_bias, 0.0);
+    }
+
+    #[test]
+    fn history_token_flat_len_is_96() {
+        assert_eq!(HistoryToken::FLAT_LEN, 96);
+        let t = HistoryToken::default();
+        let total = t.state.len() + t.action.len() + 1 + t.pad.len();
+        assert_eq!(total, HistoryToken::FLAT_LEN);
     }
 
     #[test]
