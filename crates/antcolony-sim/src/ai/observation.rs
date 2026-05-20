@@ -57,6 +57,21 @@ impl Default for AntModulators {
     }
 }
 
+/// Snapshot of all four pheromone channels at a single tick. Used by
+/// the commander tier's CNN-encoded spatial input. The trainer
+/// downsamples this to a fixed 32×32 via `Simulation::pheromone_snapshot`
+/// before feeding the policy net.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PheromoneSnapshot {
+    pub width: u16,
+    pub height: u16,
+    /// Row-major, length = width*height. Indexed as [y * width + x].
+    pub food_trail: Box<[f32]>,
+    pub home_trail: Box<[f32]>,
+    pub alarm: Box<[f32]>,
+    pub colony_scent: Box<[f32]>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

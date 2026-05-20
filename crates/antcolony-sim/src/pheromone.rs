@@ -220,6 +220,44 @@ impl PheromoneGrid {
     pub fn total_intensity(&self, layer: PheromoneLayer) -> f32 {
         self.layer_slice(layer).iter().sum()
     }
+
+    /// Adaptive average-pool of the given layer down to `out_w × out_h`.
+    /// When `out_w == self.width && out_h == self.height` returns a clone.
+    /// Output is row-major, length = out_w * out_h.
+    ///
+    /// Used by `Simulation::pheromone_snapshot` to give the commander
+    /// brain a fixed-size spatial input regardless of the arena resolution.
+    pub fn downsample_to(&self, out_w: u16, out_h: u16, layer: PheromoneLayer) -> Box<[f32]> {
+        let in_w = self.width;
+        let in_h = self.height;
+        let out_w_us = out_w as usize;
+        let out_h_us = out_h as usize;
+        let layer_data = self.layer_slice(layer);
+
+        if in_w == out_w_us && in_h == out_h_us {
+            return layer_data.to_vec().into_boxed_slice();
+        }
+
+        let mut out = vec![0.0f32; out_w_us * out_h_us];
+        for oy in 0..out_h_us {
+            let y_lo = (oy * in_h) / out_h_us;
+            let y_hi = ((oy + 1) * in_h) / out_h_us;
+            for ox in 0..out_w_us {
+                let x_lo = (ox * in_w) / out_w_us;
+                let x_hi = ((ox + 1) * in_w) / out_w_us;
+                let mut sum = 0.0f32;
+                let mut n = 0u32;
+                for iy in y_lo..y_hi.max(y_lo + 1) {
+                    for ix in x_lo..x_hi.max(x_lo + 1) {
+                        sum += layer_data[iy * in_w + ix];
+                        n += 1;
+                    }
+                }
+                out[oy * out_w_us + ox] = if n > 0 { sum / n as f32 } else { 0.0 };
+            }
+        }
+        out.into_boxed_slice()
+    }
 }
 
 #[cfg(test)]
@@ -276,6 +314,38 @@ mod tests {
         let total: f32 = samples.iter().map(|(_, v)| v).sum();
         // Only the front cell should register.
         assert!(total > 4.0 && total < 6.0, "total={}", total);
+    }
+
+    #[test]
+    fn downsample_to_32x32_preserves_sum() {
+        let mut grid = PheromoneGrid::new(64, 64);
+        // Sprinkle some signal
+        for y in 0..64 {
+            for x in 0..64 {
+                grid.deposit(x, y, PheromoneLayer::FoodTrail, (x as f32 + y as f32) * 0.01, 100.0);
+            }
+        }
+        let down = grid.downsample_to(32, 32, PheromoneLayer::FoodTrail);
+        assert_eq!(down.len(), 32 * 32);
+        let full_sum: f32 = (0..64 * 64).map(|i| {
+            let x = i % 64; let y = i / 64;
+            grid.read(x, y, PheromoneLayer::FoodTrail)
+        }).sum();
+        let down_sum: f32 = down.iter().sum();
+        // 2×2 average pooling — sum should equal full_sum / 4 (each input cell
+        // contributes 1/4 to one output cell).
+        let expected = full_sum / 4.0;
+        let rel_err = (down_sum - expected).abs() / expected.max(1e-6);
+        assert!(rel_err < 1e-3, "downsample sum {} should be ~{} (rel_err {})", down_sum, expected, rel_err);
+    }
+
+    #[test]
+    fn downsample_passthrough_same_size() {
+        let mut grid = PheromoneGrid::new(32, 32);
+        grid.deposit(5, 5, PheromoneLayer::FoodTrail, 7.0, 10.0);
+        let down = grid.downsample_to(32, 32, PheromoneLayer::FoodTrail);
+        assert_eq!(down.len(), 32 * 32);
+        assert!((down[5 * 32 + 5] - 7.0).abs() < 1e-6);
     }
 }
 
