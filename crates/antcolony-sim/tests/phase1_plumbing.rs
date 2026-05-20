@@ -395,3 +395,64 @@ fn all_phase1_types_reexported_at_crate_root() {
     fn _check_rich(_: &antcolony_sim::RichObservation) {}
     fn _check_antobs(_: &antcolony_sim::AntObservation) {}
 }
+
+#[test]
+fn deposit_mult_strengthens_pheromone_deposition() {
+    use antcolony_sim::ai::observation::AntModulators;
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
+    use antcolony_sim::Simulation;
+
+    fn run_sim(seed: u64, ticks: u64, deposit_mult: f32) -> f32 {
+        let cfg = SimConfig {
+            world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+            pheromone: PheromoneConfig::default(),
+            ant: AntConfig { initial_count: 10, ..AntConfig::default() },
+            colony: ColonyConfig::default(),
+            combat: CombatConfig::default(),
+            hazards: HazardConfig::default(),
+        };
+        // Single-module sim so pheromones() returns the same module ants walk on.
+        let mut sim = Simulation::new(cfg, seed);
+        // Spawn food at two corners so ants can enter ReturningHome state and
+        // deposit FoodTrail — gives both trail types a chance to accumulate.
+        sim.spawn_food_cluster(5, 5, 3, 200);
+        sim.spawn_food_cluster(26, 26, 3, 200);
+
+        for t in 0..ticks {
+            if t % 5 == 0 {
+                let obs0 = sim.per_ant_observations(0);
+                let mods: Vec<_> = obs0.iter().map(|_| AntModulators {
+                    alpha_mult: 1.0,
+                    beta_mult: 1.0,
+                    exploration_mod: 0.0,
+                    deposit_mult,
+                    state_bias: 0.0,
+                }).collect();
+                let ids: Vec<_> = obs0.iter().map(|o| o.ant_id).collect();
+                sim.apply_ant_modulators(0, &mods, &ids);
+            }
+            sim.tick();
+        }
+        // Sum total pheromone intensity (home_trail + food_trail) from the
+        // single module — ants deposit home_trail while Exploring/FollowingTrail
+        // and food_trail while ReturningHome, so both are driven by deposit_mult.
+        let rich = sim.colony_rich_observation(0).unwrap();
+        let home_sum: f32 = rich.pheromone_field.home_trail.iter().sum();
+        let food_sum: f32 = rich.pheromone_field.food_trail.iter().sum();
+        home_sum + food_sum
+    }
+
+    // Same seed, same ticks, only deposit_mult differs.
+    let low = run_sim(0xdeb05_a, 500, 1.0);
+    let high = run_sim(0xdeb05_a, 500, 5.0);
+
+    assert!(
+        high > low * 1.5,
+        "deposit_mult=5.0 should produce noticeably more pheromone than 1.0 \
+         (got high={}, low={}, ratio={:.2})",
+        high, low, high / low.max(1e-6),
+    );
+}

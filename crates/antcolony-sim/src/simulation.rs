@@ -1735,6 +1735,7 @@ impl Simulation {
                     }
                     _ => continue,
                 };
+                let amount = amount * ant.modulators.deposit_mult;
                 let tube = self.topology.tube(transit.tube);
                 let idx = tube.cell_index(transit.progress);
                 tube_deposits.push((transit.tube, idx, layer_idx, amount));
@@ -1749,10 +1750,10 @@ impl Simulation {
             let layered = match ant.state {
                 AntState::Diapause => None,
                 AntState::ReturningHome => {
-                    Some((PheromoneLayer::FoodTrail, pcfg.deposit_food_trail))
+                    Some((PheromoneLayer::FoodTrail, pcfg.deposit_food_trail * ant.modulators.deposit_mult))
                 }
                 AntState::Exploring | AntState::FollowingTrail => {
-                    Some((PheromoneLayer::HomeTrail, pcfg.deposit_home_trail))
+                    Some((PheromoneLayer::HomeTrail, pcfg.deposit_home_trail * ant.modulators.deposit_mult))
                 }
                 _ => None,
             };
