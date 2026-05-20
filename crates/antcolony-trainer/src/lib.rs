@@ -23,6 +23,8 @@ pub mod policy;
 pub mod ppo;
 pub mod env;
 pub mod league;
+pub mod hierarchical;
+// pub use hierarchical::{HierarchicalActorCritic, CommanderPolicy, AntPolicy, Sizing}; // uncommented progressively
 
 pub use backend::{Backend, CandleBackend};
 pub use policy::ActorCritic;
