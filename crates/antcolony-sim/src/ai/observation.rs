@@ -10,6 +10,41 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Serde helper for `[f32; 60]` — serde's built-in array impls only cover
+/// up to N=32; larger arrays need a manual helper.
+mod serde_f32_60 {
+    use serde::{Deserializer, Serializer, de::SeqAccess, de::Visitor, ser::SerializeTuple};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(arr: &[f32; 60], s: S) -> Result<S::Ok, S::Error> {
+        let mut tup = s.serialize_tuple(60)?;
+        for v in arr {
+            tup.serialize_element(v)?;
+        }
+        tup.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; 60], D::Error> {
+        struct Arr60;
+        impl<'de> Visitor<'de> for Arr60 {
+            type Value = [f32; 60];
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "array of 60 f32 values")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<[f32; 60], A::Error> {
+                let mut arr = [0.0f32; 60];
+                for slot in &mut arr {
+                    *slot = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                }
+                Ok(arr)
+            }
+        }
+        d.deserialize_tuple(60, Arr60)
+    }
+}
+
 /// Serde helper for `[f32; 72]` — serde's built-in array impls only cover
 /// up to N=32; larger arrays need a manual helper.
 mod serde_f32_72 {
@@ -137,13 +172,32 @@ impl HistoryToken {
     pub const FLAT_LEN: usize = 96;
 }
 
-/// Per-ant observation produced by the simulation each tick. Consumed by
-/// the per-ant brain tier (Phase 2). **Fields defined in Task 7** — this
-/// is intentionally a unit-struct placeholder so the rest of the crate
-/// (and the Phase-1 integration test imports) can name the type without
-/// committing to a shape the T7 spec hasn't applied yet.
+/// Per-ant local observation, one entry per adult ant in the colony.
+/// Batched form so the trainer can stack into a single GPU tensor. The
+/// commander's intent vector is NOT included here — the trainer reads
+/// it once per decision window via the colony's `commander_intent`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct AntObservation;
+pub struct AntObservation {
+    pub ant_id: u32,
+    /// 5 forward steps × 3 lateral cells × 4 pheromone channels = 60.
+    /// Sampled along the ant's heading. Same cone geometry as
+    /// `PheromoneGrid::sample_cone` uses for `choose_direction`.
+    /// Layout: `channel * 15 + step * 3 + lateral` (channel-major).
+    #[serde(with = "serde_f32_60")]
+    pub pheromone_cone: [f32; 60],
+    /// food_carried, heading_sin, heading_cos, caste_onehot[3],
+    /// state_timer_norm, age_norm. Exact layout fixed for trainer
+    /// compatibility:
+    ///   internal[0] = food_carried
+    ///   internal[1] = heading.sin()
+    ///   internal[2] = heading.cos()
+    ///   internal[3] = caste_is_worker  (0.0 or 1.0)
+    ///   internal[4] = caste_is_soldier
+    ///   internal[5] = caste_is_breeder
+    ///   internal[6] = (state_timer as f32 / 1000.0).clamp(0, 1)
+    ///   internal[7] = (age as f32 / 10000.0).clamp(0, 1)
+    pub internal: [f32; 8],
+}
 
 /// Bundle of everything the commander brain reads at decision time.
 /// The `state` field is the existing `ColonyAiState`; the other two are

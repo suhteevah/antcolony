@@ -465,6 +465,71 @@ impl Simulation {
         }
     }
 
+    /// Collect a per-ant local observation for every adult ant in this
+    /// colony, excluding queens (queens don't make movement decisions).
+    /// Empty vec when the colony does not exist. The pheromone cone is
+    /// sampled along each ant's heading using the existing
+    /// `PheromoneGrid::sample_cone` (same geometry as choose_direction).
+    pub fn per_ant_observations(&self, colony_id: u8) -> Vec<crate::ai::observation::AntObservation> {
+        use crate::ai::observation::AntObservation;
+
+        let Some(_colony) = self.colonies.get(colony_id as usize) else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        for ant in self
+            .ants
+            .iter()
+            .filter(|a| a.colony_id == colony_id)
+            .filter(|a| !matches!(a.caste, AntCaste::Queen))
+        {
+            let mut cone = [0.0f32; 60];
+            // 5 forward steps × 3 lateral cells × 4 channels = 60 floats.
+            // Layout: cone[channel * 15 + step * 3 + lateral]
+            for (ch_idx, layer) in [
+                PheromoneLayer::FoodTrail,
+                PheromoneLayer::HomeTrail,
+                PheromoneLayer::Alarm,
+                PheromoneLayer::ColonyScent,
+            ]
+            .iter()
+            .enumerate()
+            {
+                let samples = self.pheromones().sample_cone(
+                    ant.position,
+                    ant.heading,
+                    60.0_f32.to_radians(),
+                    5.0,
+                    *layer,
+                );
+                // Layout the up-to-15 samples into the per-channel slots.
+                // If sample_cone returns fewer than 15, the trailing slots
+                // stay 0.0 (their init).
+                for (i, (_pos, intensity)) in samples.iter().take(15).enumerate() {
+                    cone[ch_idx * 15 + i] = *intensity;
+                }
+            }
+
+            let mut internal = [0.0f32; 8];
+            internal[0] = ant.food_carried;
+            internal[1] = ant.heading.sin();
+            internal[2] = ant.heading.cos();
+            internal[3] = if ant.caste == AntCaste::Worker { 1.0 } else { 0.0 };
+            internal[4] = if ant.caste == AntCaste::Soldier { 1.0 } else { 0.0 };
+            internal[5] = if ant.caste == AntCaste::Breeder { 1.0 } else { 0.0 };
+            internal[6] = (ant.state_timer as f32 / 1000.0).clamp(0.0, 1.0);
+            internal[7] = (ant.age as f32 / 10000.0).clamp(0.0, 1.0);
+
+            out.push(AntObservation {
+                ant_id: ant.id,
+                pheromone_cone: cone,
+                internal,
+            });
+        }
+        out
+    }
+
     /// AI-vs-AI mode constructor — same as `new_two_colony_with_topology`
     /// but flips both colonies' `is_ai_controlled = true` so the
     /// existing per-tick AI brain (`red_ai_tick`) acts on both sides.
