@@ -17,6 +17,15 @@ fn cpu_hac() -> (VarMap, HierarchicalActorCritic, Device) {
     (varmap, hac, device)
 }
 
+/// HAC with all-zero weights. With mean=0, only Box-Muller noise determines u,
+/// keeping pre-squash values in ±4 so tanh doesn't saturate and atanh round-trips.
+fn zeros_hac() -> (HierarchicalActorCritic, Device) {
+    let device = Device::Cpu;
+    let vb = VarBuilder::zeros(candle_core::DType::F32, &device);
+    let hac = HierarchicalActorCritic::new(vb, A1).unwrap();
+    (hac, device)
+}
+
 #[test]
 fn sample_commander_shapes_and_finite() {
     let (_vm, hac, device) = cpu_hac();
@@ -49,4 +58,43 @@ fn sample_commander_shapes_and_finite() {
     let lp_v: Vec<f32> = s.log_prob.flatten_all().unwrap().to_vec1().unwrap();
     assert!(lp_v.iter().all(|v| v.is_finite()),
         "log_prob non-finite: {:?}", lp_v);
+}
+
+#[test]
+fn log_prob_round_trip_through_squash() {
+    // If we sample an action via sample_commander, then ask
+    // log_prob_of_commander_action for the SAME action under the SAME policy,
+    // we should get approximately the SAME log_prob. Tolerance 1e-3 accounts
+    // for numerical noise from the atanh edge clamp.
+    // Use zeros_hac so all network weights are zero, giving mean=0 for every
+    // action dim. Box-Muller noise with the seeded RNG then produces u in ±4
+    // (very unlikely to exceed), so tanh does not saturate and atanh inverts
+    // cleanly within the 1e-3 tolerance stated in the plan.
+    let (hac, device) = zeros_hac();
+    let b = 2usize;
+    let state = Tensor::randn(0.0f32, 1.0, (b, A1.fixed_state_d), &device).unwrap();
+    let pheromone = Tensor::randn(
+        0.0f32, 1.0,
+        (b, A1.fixed_pheromone_c, A1.fixed_pheromone_h, A1.fixed_pheromone_w),
+        &device,
+    ).unwrap();
+    let history = Tensor::randn(
+        0.0f32, 1.0,
+        (b, A1.fixed_history_k, A1.fixed_history_tok_d),
+        &device,
+    ).unwrap();
+
+    let mut rng = ChaCha8Rng::seed_from_u64(0xcafe);
+    let s = hac.sample_commander(&state, &pheromone, &history, &mut rng).unwrap();
+    let lp_round = hac.log_prob_of_commander_action(&state, &pheromone, &history, &s.action).unwrap();
+
+    let lp_sample: Vec<f32> = s.log_prob.flatten_all().unwrap().to_vec1().unwrap();
+    let lp_recompute: Vec<f32> = lp_round.flatten_all().unwrap().to_vec1().unwrap();
+    for (sample, recompute) in lp_sample.iter().zip(lp_recompute.iter()) {
+        assert!(
+            (sample - recompute).abs() < 1e-3,
+            "log_prob round-trip mismatch: sample={sample}, recompute={recompute}, diff={}",
+            (sample - recompute).abs(),
+        );
+    }
 }
