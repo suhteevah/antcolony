@@ -96,6 +96,12 @@ pub struct Ant {
     /// grains" + "Kickout mound" entries.
     #[serde(default)]
     pub carrying_soil: bool,
+    /// Per-ant ACO modulators set by the per-ant brain (Phase 2). With
+    /// default values (1.0, 1.0, 0.0, 1.0, 0.0), `choose_direction`
+    /// reduces to the pre-Phase-1 ACO formula bit-for-bit. See
+    /// `ai::observation::AntModulators`.
+    #[serde(default)]
+    pub modulators: crate::ai::observation::AntModulators,
 }
 
 impl Ant {
@@ -130,6 +136,7 @@ impl Ant {
             dig_progress: 0,
             dig_target: None,
             carrying_soil: false,
+            modulators: crate::ai::observation::AntModulators::default(),
         }
     }
 
@@ -262,6 +269,12 @@ mod tests {
         assert_eq!(a.target_layer(), PheromoneLayer::HomeTrail);
         a.transition(AntState::Exploring);
         assert_eq!(a.target_layer(), PheromoneLayer::FoodTrail);
+    }
+
+    #[test]
+    fn new_ant_has_default_modulators() {
+        let a = Ant::new_worker(1, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
+        assert_eq!(a.modulators, crate::ai::observation::AntModulators::default());
     }
 
     #[test]

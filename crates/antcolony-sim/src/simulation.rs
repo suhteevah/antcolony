@@ -3924,6 +3924,7 @@ pub fn spawn_initial_ants(
         dig_progress: 0,
         dig_target: None,
         carrying_soil: false,
+        modulators: crate::ai::observation::AntModulators::default(),
     });
 
     for i in 0..config.ant.initial_count {
