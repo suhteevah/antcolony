@@ -11,6 +11,14 @@
 use candle_core::{Result, Tensor};
 use candle_nn::VarBuilder;
 
+/// Bundle of outputs from a stochastic commander sample.
+pub struct CommanderSample {
+    pub action: Tensor,    // [B, 6] — post-squash to [0, 1]
+    pub intent: Tensor,    // [B, 64]
+    pub value: Tensor,     // [B]
+    pub log_prob: Tensor,  // [B] — log-prob of action under the Gaussian+tanh policy
+}
+
 use crate::hierarchical::ant::{AntForwardOut, AntPolicy};
 use crate::hierarchical::commander::{CommanderForwardOut, CommanderPolicy};
 use crate::hierarchical::sizing::Sizing;
@@ -47,6 +55,76 @@ impl HierarchicalActorCritic {
     ) -> Result<AntForwardOut> {
         self.ant.forward(cone, internal, intent)
     }
+
+    /// Stochastic commander rollout step. Mirrors the Gaussian + tanh-squash
+    /// + Jacobian-corrected log-prob recipe used by the existing flat
+    /// `ActorCritic::sample` (see `crates/antcolony-trainer/src/policy.rs:92`).
+    /// Uses the provided RNG so rollouts are reproducible.
+    pub fn sample_commander(
+        &self,
+        state: &Tensor,
+        pheromone: &Tensor,
+        history: &Tensor,
+        rng: &mut rand_chacha::ChaCha8Rng,
+    ) -> candle_core::Result<CommanderSample> {
+        use rand::Rng;
+
+        let fwd = self.commander.forward(state, pheromone, history)?;
+        let mean = fwd.action;                          // [B, action_d]
+        let (b, action_d) = mean.dims2()?;
+        let std = self.commander.log_std.exp()?;        // [action_d]
+
+        // Box-Muller noise per batch entry, per dim.
+        let mut noise = Vec::with_capacity(b * action_d);
+        for _ in 0..(b * action_d) {
+            let u1: f32 = rng.gen_range(1e-6_f32..1.0);
+            let u2: f32 = rng.gen_range(0.0_f32..1.0);
+            noise.push((-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos());
+        }
+        let noise_t = Tensor::from_vec(noise, (b, action_d), mean.device())?;
+        let scaled = noise_t.broadcast_mul(&std)?;      // [B, action_d]
+        let u = (&mean + &scaled)?;                     // [B, action_d] pre-squash sample
+        let action = squash_tanh_to_unit(&u)?;          // [B, action_d] in [0, 1]
+
+        // log-prob under Normal(mean, std), with squash Jacobian correction.
+        // diff: [B, action_d], std_sq: [action_d] — broadcast_div handles rank mismatch.
+        let diff = (&u - &mean)?;
+        let std_sq = std.broadcast_mul(&std)?;          // [action_d]
+        let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
+        let two_pi_log = 0.918_938_5_f64;               // 0.5 * ln(2π)
+        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log)?;
+        // broadcast_sub: [B, action_d] - [action_d] — candle handles the rank diff.
+        let log_pdf = log_pdf_part1.broadcast_sub(&self.commander.log_std)?;
+
+        // Squash Jacobian: -log(1 - tanh²(u) + ε) − log(2)
+        // The plan formulation writes log_jac = log(1 - tanh²(u) + ε) + affine(-log2).
+        // PPO uses (log_pdf - log_jac) = log_pdf - [log(1-tanh²+ε) - log2]
+        //                              = log_pdf - log(1-tanh²+ε) + log2
+        // which equals the standard SAC Jacobian correction.
+        let tanh_u = u.tanh()?;
+        let one = Tensor::ones_like(&tanh_u)?;
+        let one_minus_tanh_sq = (&one - &(&tanh_u * &tanh_u)?)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.693_147_2_f64)?;
+
+        // Sum over action_d → [B] scalar log-prob per batch entry.
+        let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;
+
+        Ok(CommanderSample {
+            action,
+            intent: fwd.intent,
+            value: fwd.value,
+            log_prob,
+        })
+    }
+}
+
+/// Map pre-squash `u: [...]` to post-squash action in `[0, 1]` per dim,
+/// using `0.5 * (tanh(u) + 1)`. Matches the existing `ActorCritic::squash`
+/// (policy.rs:75) so trained weights are deployment-compatible.
+fn squash_tanh_to_unit(u: &Tensor) -> candle_core::Result<Tensor> {
+    let t = u.tanh()?;
+    let one = Tensor::ones_like(&t)?;
+    (t + one)?.affine(0.5, 0.0)
 }
 
 #[cfg(test)]

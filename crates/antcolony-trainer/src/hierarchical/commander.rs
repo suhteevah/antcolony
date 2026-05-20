@@ -52,8 +52,7 @@ pub struct CommanderPolicy {
     pub(crate) intent_head: Linear,
     pub(crate) value_head: Linear,
 
-    // Learnable per-dim policy std — Phase 2b PPO entropy bonus will read this.
-    #[allow(dead_code)]
+    // Learnable per-dim policy std — read by HierarchicalActorCritic::sample_commander.
     pub(crate) log_std: Tensor,
 }
 
