@@ -273,6 +273,9 @@ mod tests {
 
     #[test]
     fn new_ant_has_default_modulators() {
+        // Plumbing check: `new_worker` (and its delegate `new_with_caste`) must
+        // wire the field. Identity-correctness of `AntModulators::default()`
+        // itself is verified by `ai::observation::tests::modulators_default_is_identity`.
         let a = Ant::new_worker(1, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
         assert_eq!(a.modulators, crate::ai::observation::AntModulators::default());
     }
