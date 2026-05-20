@@ -211,6 +211,57 @@ impl MatchEnv {
         traj
     }
 
+    /// Batched per-ant observations across BOTH colonies. The `intent_per_colony`
+    /// argument is a `(2, FIXED_INTENT_D)` tensor where row 0 is colony-0's
+    /// commander intent and row 1 is colony-1's. The returned `intent_b` tensor
+    /// expands those rows so each ant sees its own colony's intent.
+    ///
+    /// `index_map` maps each row of the returned tensors back to its source ant
+    /// — entry `i` is `(colony_id, ant_id)`. The trainer uses this when packing
+    /// modulator outputs back into per-ant write-back calls.
+    pub fn all_ant_obs_batch(
+        &self,
+        intent_per_colony: &candle_core::Tensor,
+        device: &candle_core::Device,
+    ) -> anyhow::Result<(
+        candle_core::Tensor,
+        candle_core::Tensor,
+        candle_core::Tensor,
+        Vec<(u8, u32)>,
+    )> {
+        use candle_core::Tensor;
+        use crate::hierarchical::sizing::{FIXED_CONE_D, FIXED_INTENT_D, FIXED_INTERNAL_D};
+
+        let obs0 = self.sim.per_ant_observations(0);
+        let obs1 = self.sim.per_ant_observations(1);
+        let n0 = obs0.len();
+        let n1 = obs1.len();
+        let n_total = n0 + n1;
+
+        let mut cone_v = Vec::with_capacity(n_total * FIXED_CONE_D);
+        let mut internal_v = Vec::with_capacity(n_total * FIXED_INTERNAL_D);
+        let mut index_map = Vec::with_capacity(n_total);
+        for o in &obs0 {
+            cone_v.extend_from_slice(&o.pheromone_cone);
+            internal_v.extend_from_slice(&o.internal);
+            index_map.push((0u8, o.ant_id));
+        }
+        for o in &obs1 {
+            cone_v.extend_from_slice(&o.pheromone_cone);
+            internal_v.extend_from_slice(&o.internal);
+            index_map.push((1u8, o.ant_id));
+        }
+        let cone = Tensor::from_vec(cone_v, (n_total, FIXED_CONE_D), device)?;
+        let internal = Tensor::from_vec(internal_v, (n_total, FIXED_INTERNAL_D), device)?;
+
+        // intent_b: take row 0 of intent_per_colony, broadcast to n0 rows; same for row 1, n1.
+        let intent0 = intent_per_colony.narrow(0, 0, 1)?.broadcast_as((n0, FIXED_INTENT_D))?;
+        let intent1 = intent_per_colony.narrow(0, 1, 1)?.broadcast_as((n1, FIXED_INTENT_D))?;
+        let intent_b = Tensor::cat(&[&intent0, &intent1], 0)?;
+
+        Ok((cone, internal, intent_b, index_map))
+    }
+
     /// Batched commander observations across both colonies (shape leading
     /// dim = 2). Returns (state, pheromone, history) ready to feed
     /// `HierarchicalActorCritic::forward_commander` (or `sample_commander`).
@@ -251,5 +302,29 @@ mod env_tests {
         assert_eq!(state.dims(), &[2, FIXED_STATE_D]);
         assert_eq!(pheromone.dims(), &[2, FIXED_PHEROMONE_C, FIXED_PHEROMONE_H, FIXED_PHEROMONE_W]);
         assert_eq!(history.dims(), &[2, FIXED_HISTORY_K, FIXED_HISTORY_TOK_D]);
+    }
+
+    #[test]
+    fn all_ant_obs_batch_shapes_and_index_map() {
+        use crate::hierarchical::sizing::{FIXED_CONE_D, FIXED_INTENT_D, FIXED_INTERNAL_D};
+        let env = MatchEnv::new(0xb1a5_e1);
+        let device = Device::Cpu;
+        let intent_per_colony = candle_core::Tensor::randn(
+            0.0f32, 1.0,
+            (2, FIXED_INTENT_D),
+            &device,
+        ).unwrap();
+
+        let (cone, internal, intent_b, index_map) = env.all_ant_obs_batch(&intent_per_colony, &device).unwrap();
+        let n_total = index_map.len();
+        assert!(n_total >= 2, "expected at least 2 ants across both colonies");
+
+        assert_eq!(cone.dims(), &[n_total, FIXED_CONE_D]);
+        assert_eq!(internal.dims(), &[n_total, FIXED_INTERNAL_D]);
+        assert_eq!(intent_b.dims(), &[n_total, FIXED_INTENT_D]);
+
+        let colonies: std::collections::HashSet<u8> = index_map.iter().map(|(c, _)| *c).collect();
+        assert!(colonies.contains(&0));
+        assert!(colonies.contains(&1));
     }
 }
