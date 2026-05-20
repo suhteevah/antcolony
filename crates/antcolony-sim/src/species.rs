@@ -798,14 +798,17 @@ keeper_notes = "Docile, hardy, forgiving."
         use crate::environment::Environment;
 
         // 1) The real on-disk TOML for P. occidentalis declares
-        //    food_storage_cap = 300000.0 inside [diet_extended].
+        //    food_storage_cap = 45000.0 inside [diet_extended].
+        //    (Recalibrated 2026-05-18 attempt4: 30 food/worker × 1500
+        //    verifier year-2 ceiling. Was 300000 from the mature
+        //    target_population overshoot.)
         let toml_str = include_str!("../../../assets/species/pogonomyrmex_occidentalis.toml");
         let species: Species =
             Species::load_from_str(toml_str).expect("parse pogonomyrmex_occidentalis.toml");
         assert_eq!(
             species.diet_extended.food_storage_cap,
-            Some(300_000.0),
-            "pogonomyrmex_occidentalis.toml should declare food_storage_cap = 300000.0"
+            Some(45_000.0),
+            "pogonomyrmex_occidentalis.toml should declare food_storage_cap = 45000.0"
         );
 
         // 2) Species::apply must copy that value into ColonyConfig.
@@ -813,7 +816,7 @@ keeper_notes = "Docile, hardy, forgiving."
         let cfg = species.apply(&env);
         assert_eq!(
             cfg.colony.food_storage_cap,
-            Some(300_000.0),
+            Some(45_000.0),
             "Species::apply must forward diet_extended.food_storage_cap into ColonyConfig"
         );
 
@@ -821,7 +824,7 @@ keeper_notes = "Docile, hardy, forgiving."
         let sim = crate::simulation::Simulation::new(cfg, 42);
         assert_eq!(
             sim.colonies[0].food_storage_cap_override,
-            Some(300_000.0),
+            Some(45_000.0),
             "Colony override should match species cap (TODO from colony.rs:159 must be wired)"
         );
     }
