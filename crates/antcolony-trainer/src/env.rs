@@ -262,6 +262,76 @@ impl MatchEnv {
         Ok((cone, internal, intent_b, index_map))
     }
 
+    /// Apply commander intent vectors to both colonies. `intent_per_colony`
+    /// is a (2, FIXED_INTENT_D) tensor — row 0 → colony 0, row 1 → colony 1.
+    pub fn apply_commander_intents(&mut self, intent_per_colony: &candle_core::Tensor) -> anyhow::Result<()> {
+        use crate::hierarchical::sizing::FIXED_INTENT_D;
+        let dims = intent_per_colony.dims();
+        if dims != [2usize, FIXED_INTENT_D].as_slice() {
+            anyhow::bail!(
+                "apply_commander_intents: expected shape [2, {}], got {:?}",
+                FIXED_INTENT_D, dims,
+            );
+        }
+        let row0: Vec<f32> = intent_per_colony.narrow(0, 0, 1)?.flatten_all()?.to_vec1()?;
+        let row1: Vec<f32> = intent_per_colony.narrow(0, 1, 1)?.flatten_all()?.to_vec1()?;
+        let mut a0 = [0.0f32; FIXED_INTENT_D];
+        a0.copy_from_slice(&row0);
+        let mut a1 = [0.0f32; FIXED_INTENT_D];
+        a1.copy_from_slice(&row1);
+        self.sim.apply_commander_intent(0, &a0);
+        self.sim.apply_commander_intent(1, &a1);
+        Ok(())
+    }
+
+    /// Apply batched per-ant modulators to the right (colony, ant) pairs.
+    /// `mods_t` is a (N, FIXED_MODULATOR_D) tensor; `index_map[i]` tells us
+    /// which ant row `i` belongs to. Groups writes by colony for one
+    /// apply_ant_modulators call per colony.
+    pub fn apply_ant_modulators_batched(
+        &mut self,
+        mods_t: &candle_core::Tensor,
+        index_map: &[(u8, u32)],
+    ) -> anyhow::Result<()> {
+        use antcolony_sim::ai::observation::AntModulators;
+        use crate::hierarchical::sizing::FIXED_MODULATOR_D;
+
+        let dims = mods_t.dims();
+        if dims.len() != 2 || dims[1] != FIXED_MODULATOR_D || dims[0] != index_map.len() {
+            anyhow::bail!(
+                "apply_ant_modulators_batched: expected shape [{}, {}], got {:?}",
+                index_map.len(), FIXED_MODULATOR_D, dims,
+            );
+        }
+        let flat: Vec<f32> = mods_t.flatten_all()?.to_vec1()?;
+
+        // Group writes by colony so we make one apply_ant_modulators call per colony.
+        let mut by_colony: [(Vec<AntModulators>, Vec<u32>); 2] = [
+            (Vec::new(), Vec::new()),
+            (Vec::new(), Vec::new()),
+        ];
+        for (i, &(cid, aid)) in index_map.iter().enumerate() {
+            let off = i * FIXED_MODULATOR_D;
+            let m = AntModulators {
+                alpha_mult: flat[off],
+                beta_mult: flat[off + 1],
+                exploration_mod: flat[off + 2],
+                deposit_mult: flat[off + 3],
+                state_bias: flat[off + 4],
+            };
+            let slot = if cid == 0 { 0 } else { 1 };
+            by_colony[slot].0.push(m);
+            by_colony[slot].1.push(aid);
+        }
+        for cid in [0u8, 1u8] {
+            let slot = cid as usize;
+            if !by_colony[slot].1.is_empty() {
+                self.sim.apply_ant_modulators(cid, &by_colony[slot].0, &by_colony[slot].1);
+            }
+        }
+        Ok(())
+    }
+
     /// Batched commander observations across both colonies (shape leading
     /// dim = 2). Returns (state, pheromone, history) ready to feed
     /// `HierarchicalActorCritic::forward_commander` (or `sample_commander`).
@@ -326,5 +396,44 @@ mod env_tests {
         let colonies: std::collections::HashSet<u8> = index_map.iter().map(|(c, _)| *c).collect();
         assert!(colonies.contains(&0));
         assert!(colonies.contains(&1));
+    }
+
+    #[test]
+    fn apply_commander_intents_writes_both_colonies() {
+        use crate::hierarchical::sizing::FIXED_INTENT_D;
+        let mut env = MatchEnv::new(0xb1a5_e1);
+        let device = Device::Cpu;
+        let intent = candle_core::Tensor::randn(0.0f32, 1.0, (2, FIXED_INTENT_D), &device).unwrap();
+        env.apply_commander_intents(&intent).unwrap();
+        let c0 = env.sim.colonies.get(0).unwrap().commander_intent;
+        let c1 = env.sim.colonies.get(1).unwrap().commander_intent;
+        // Random input → row 0 ≠ row 1 with probability ~1.
+        assert_ne!(c0, c1, "commander intents should differ across colonies after random write");
+    }
+
+    #[test]
+    fn apply_ant_modulators_batched_clamps_and_writes_through() {
+        use crate::hierarchical::sizing::{FIXED_INTENT_D, FIXED_MODULATOR_D};
+        let mut env = MatchEnv::new(0xb1a5_e1);
+        let device = Device::Cpu;
+
+        // Get an index_map by calling all_ant_obs_batch first.
+        let intent = candle_core::Tensor::zeros((2, FIXED_INTENT_D), candle_core::DType::F32, &device).unwrap();
+        let (_, _, _, index_map) = env.all_ant_obs_batch(&intent, &device).unwrap();
+        let n = index_map.len();
+
+        // Per-ant pattern: (3.0, 0.5, 0.05, 2.0, -1.0) — all within the safe clamp ranges.
+        let mut mods_v = Vec::with_capacity(n * FIXED_MODULATOR_D);
+        for _ in 0..n {
+            mods_v.extend_from_slice(&[3.0_f32, 0.5, 0.05, 2.0, -1.0]);
+        }
+        let mods_t = candle_core::Tensor::from_vec(mods_v, (n, FIXED_MODULATOR_D), &device).unwrap();
+
+        env.apply_ant_modulators_batched(&mods_t, &index_map).unwrap();
+
+        let (cid, aid) = index_map[0];
+        let ant = env.sim.ants.iter().find(|a| a.id == aid && a.colony_id == cid).unwrap();
+        assert_eq!(ant.modulators.alpha_mult, 3.0);
+        assert_eq!(ant.modulators.beta_mult, 0.5);
     }
 }
