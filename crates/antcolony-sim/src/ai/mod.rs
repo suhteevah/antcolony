@@ -23,6 +23,7 @@ pub mod strategist;
 pub mod forager;
 pub mod combat;
 pub mod arbiter;
+pub mod observation;
 
 pub use arbiter::Arbiter;
 pub use blackboard::{Blackboard, BlackboardSnapshot, Directive, Fact, FactRef};
@@ -34,8 +35,5 @@ pub use brain::{
 pub use combat::CombatKs;
 pub use forager::ForagerKs;
 pub use knowledge_source::{Cadence, Contribution, KnowledgeSource, KsName};
-pub use strategist::StrategistKs;
-
-pub mod observation;
-
 pub use observation::AntModulators;
+pub use strategist::StrategistKs;
