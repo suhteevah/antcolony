@@ -74,7 +74,7 @@ mod tests {
         let _ = HierarchicalActorCritic::new(vb, A1).unwrap();
         let total: usize = varmap.all_vars().iter().map(|v| v.dims().iter().product::<usize>()).sum();
         // A1 total ≈ 12M (9M commander + 3M ant). Wide band.
-        assert!(total >= 6_000_000 && total <= 20_000_000,
+        assert!((6_000_000..=20_000_000).contains(&total),
             "A1 HAC total params ~12M expected, got {}", total);
     }
 }

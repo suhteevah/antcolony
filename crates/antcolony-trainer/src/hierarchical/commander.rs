@@ -52,7 +52,8 @@ pub struct CommanderPolicy {
     pub(crate) intent_head: Linear,
     pub(crate) value_head: Linear,
 
-    // Learnable per-dim policy std
+    // Learnable per-dim policy std — Phase 2b PPO entropy bonus will read this.
+    #[allow(dead_code)]
     pub(crate) log_std: Tensor,
 }
 
@@ -249,7 +250,7 @@ mod tests {
         let total: usize = varmap.all_vars().iter().map(|v| v.dims().iter().product::<usize>()).sum();
         // A1 commander total spec ≈ 9M (transformer ~7M + encoders/heads ~2M).
         // Allow a wide band; tighter checks happen in the forward-shape tests.
-        assert!(total >= 5_000_000 && total <= 15_000_000,
+        assert!((5_000_000..=15_000_000).contains(&total),
             "A1 commander total params ~9M expected, got {}", total);
     }
 }

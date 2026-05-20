@@ -151,9 +151,9 @@ mod tests {
     fn a1_total_transformer_params_in_smoke_range() {
         let cmdr = A1.est_cmdr_transformer_params();
         let ant = A1.est_ant_transformer_params();
-        assert!(cmdr >= 5_000_000 && cmdr <= 10_000_000,
+        assert!((5_000_000..=10_000_000).contains(&cmdr),
             "A1 commander transformer expected ~7M, got {}", cmdr);
-        assert!(ant >= 2_000_000 && ant <= 5_000_000,
+        assert!((2_000_000..=5_000_000).contains(&ant),
             "A1 ant transformer expected ~3M, got {}", ant);
     }
 
@@ -161,9 +161,9 @@ mod tests {
     fn a2_total_transformer_params_in_8gb_range() {
         let cmdr = A2.est_cmdr_transformer_params();
         let ant = A2.est_ant_transformer_params();
-        assert!(cmdr >= 40_000_000 && cmdr <= 80_000_000,
+        assert!((40_000_000..=80_000_000).contains(&cmdr),
             "A2 commander transformer expected ~57M, got {}", cmdr);
-        assert!(ant >= 12_000_000 && ant <= 30_000_000,
+        assert!((12_000_000..=30_000_000).contains(&ant),
             "A2 ant transformer expected ~19M, got {}", ant);
     }
 

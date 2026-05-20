@@ -32,6 +32,8 @@ pub struct AntPolicy {
 
     pub(crate) modulator_head: Linear,
     pub(crate) value_head: Linear,
+    // Phase 2b PPO entropy bonus will read log_std; keep it allocated.
+    #[allow(dead_code)]
     pub(crate) log_std: Tensor,
 }
 
@@ -136,7 +138,7 @@ mod tests {
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
         let _ = AntPolicy::new(vb, A1).unwrap();
         let total: usize = varmap.all_vars().iter().map(|v| v.dims().iter().product::<usize>()).sum();
-        assert!(total >= 1_000_000 && total <= 6_000_000,
+        assert!((1_000_000..=6_000_000).contains(&total),
             "A1 ant total params ~3M expected, got {}", total);
     }
 
