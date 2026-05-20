@@ -179,10 +179,19 @@ impl HistoryToken {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AntObservation {
     pub ant_id: u32,
-    /// 5 forward steps × 3 lateral cells × 4 pheromone channels = 60.
-    /// Sampled along the ant's heading. Same cone geometry as
-    /// `PheromoneGrid::sample_cone` uses for `choose_direction`.
-    /// Layout: `channel * 15 + step * 3 + lateral` (channel-major).
+    /// Up to 15 pheromone-cone samples × 4 channels = 60 floats.
+    /// Sampled via `PheromoneGrid::sample_cone` with the same geometry
+    /// `choose_direction` uses (60° forward cone, radius 5).
+    ///
+    /// **Layout: channel-major, position-within-channel is unordered.**
+    /// `cone[ch * 15 + i]` is the i-th hit of channel `ch`, where i runs
+    /// 0..N with N = `sample_cone`'s actual hit count (≤ 15). Trailing
+    /// slots are zero. `sample_cone` iterates cells in raster order, so
+    /// `i` does NOT correspond to a fixed `(step, lateral)` grid
+    /// position — only to "i-th cell of the cone visited." The Phase-2
+    /// trainer must treat these as a bag of samples, not a structured
+    /// 5×3 spatial input. If positional structure is needed later, add
+    /// a separate `sample_cone_structured` helper to `PheromoneGrid`.
     #[serde(with = "serde_f32_60")]
     pub pheromone_cone: [f32; 60],
     /// food_carried, heading_sin, heading_cos, caste_onehot[3],
