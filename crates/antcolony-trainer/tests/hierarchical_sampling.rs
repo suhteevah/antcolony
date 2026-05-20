@@ -98,3 +98,26 @@ fn log_prob_round_trip_through_squash() {
         );
     }
 }
+
+#[test]
+fn sample_ant_shapes_and_finite() {
+    let (_vm, hac, device) = cpu_hac();
+    let b = 7usize;
+    let cone = Tensor::randn(0.0f32, 1.0, (b, A1.fixed_cone_d), &device).unwrap();
+    let intern = Tensor::randn(0.0f32, 1.0, (b, A1.fixed_internal_d), &device).unwrap();
+    let intent = Tensor::randn(0.0f32, 1.0, (b, A1.fixed_intent_d), &device).unwrap();
+
+    let mut rng = ChaCha8Rng::seed_from_u64(0xc0ffee);
+    let s = hac.sample_ant(&cone, &intern, &intent, &mut rng).unwrap();
+    assert_eq!(s.modulator.dims(), &[b, A1.fixed_modulator_d]);
+    assert_eq!(s.value.dims(), &[b]);
+    assert_eq!(s.log_prob.dims(), &[b]);
+
+    let mod_v: Vec<f32> = s.modulator.flatten_all().unwrap().to_vec1().unwrap();
+    assert!(mod_v.iter().all(|v| v.is_finite()));
+    assert!(mod_v.iter().all(|v| (0.0..=1.0).contains(v)),
+        "post-squash modulator should be in [0, 1], got {:?}", mod_v);
+
+    let lp_v: Vec<f32> = s.log_prob.flatten_all().unwrap().to_vec1().unwrap();
+    assert!(lp_v.iter().all(|v| v.is_finite()));
+}

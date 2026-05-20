@@ -32,8 +32,6 @@ pub struct AntPolicy {
 
     pub(crate) modulator_head: Linear,
     pub(crate) value_head: Linear,
-    // Phase 2b PPO entropy bonus will read log_std; keep it allocated.
-    #[allow(dead_code)]
     pub(crate) log_std: Tensor,
 }
 

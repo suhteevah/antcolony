@@ -11,6 +11,13 @@
 use candle_core::{Result, Tensor};
 use candle_nn::VarBuilder;
 
+/// Bundle of outputs from a stochastic ant sample.
+pub struct AntSample {
+    pub modulator: Tensor,  // [B, 5] — post-squash to [0, 1]
+    pub value: Tensor,      // [B]
+    pub log_prob: Tensor,   // [B]
+}
+
 /// Bundle of outputs from a stochastic commander sample.
 pub struct CommanderSample {
     pub action: Tensor,    // [B, 6] — post-squash to [0, 1]
@@ -119,6 +126,52 @@ impl HierarchicalActorCritic {
         })
     }
 
+    /// Stochastic ant rollout step. Mirrors `sample_commander` but on the
+    /// 5-d modulator action space.
+    pub fn sample_ant(
+        &self,
+        cone: &Tensor,
+        internal: &Tensor,
+        intent: &Tensor,
+        rng: &mut rand_chacha::ChaCha8Rng,
+    ) -> candle_core::Result<AntSample> {
+        use rand::Rng;
+        let fwd = self.ant.forward(cone, internal, intent)?;
+        let mean = fwd.modulator;
+        let (b, mod_d) = mean.dims2()?;
+        let std = self.ant.log_std.exp()?;
+
+        // TODO(aether-FR): replace with Tensor::randn when native op available.
+        let mut noise = Vec::with_capacity(b * mod_d);
+        for _ in 0..(b * mod_d) {
+            let u1: f32 = rng.gen_range(1e-6_f32..1.0);
+            let u2: f32 = rng.gen_range(0.0_f32..1.0);
+            noise.push((-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos());
+        }
+        let noise_t = Tensor::from_vec(noise, (b, mod_d), mean.device())?;
+        let scaled = noise_t.broadcast_mul(&std)?;
+        let u = (&mean + &scaled)?;
+        let modulator = squash_tanh_to_unit(&u)?;
+
+        let diff = (&u - &mean)?;
+        let std_sq = std.broadcast_mul(&std)?;
+        let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
+        let two_pi_log = 0.9189385332_f64;
+        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log)?;
+        let log_pdf = log_pdf_part1.broadcast_sub(&self.ant.log_std)?;
+        let tanh_u = u.tanh()?;
+        let one = Tensor::ones_like(&tanh_u)?;
+        let one_minus_tanh_sq = (&one - &(&tanh_u * &tanh_u)?)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
+        let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;
+
+        Ok(AntSample {
+            modulator,
+            value: fwd.value,
+            log_prob,
+        })
+    }
+
     /// Recompute the log-prob of a previously-sampled (post-squash) action
     /// under the current policy. Used by PPO's importance ratio
     /// (`r_θ = exp(log_prob_now - log_prob_old)`). Mirrors
@@ -157,9 +210,6 @@ impl HierarchicalActorCritic {
     }
 }
 
-/// Map pre-squash `u: [...]` to post-squash action in `[0, 1]` per dim,
-/// using `0.5 * (tanh(u) + 1)`. Matches the existing `ActorCritic::squash`
-/// (policy.rs:75) so trained weights are deployment-compatible.
 /// Map pre-squash `u: [...]` to post-squash action in `[0, 1]` per dim.
 /// `pub(crate)` so [`sample_ant`] (Task 9) can reuse without duplicating.
 pub(crate) fn squash_tanh_to_unit(u: &Tensor) -> candle_core::Result<Tensor> {
