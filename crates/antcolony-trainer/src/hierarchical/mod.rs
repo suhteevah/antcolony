@@ -13,6 +13,7 @@
 pub mod actor_critic;
 pub mod ant;
 pub mod commander;
+pub mod obs_to_tensors;
 pub mod sizing;
 pub mod transformer;
 

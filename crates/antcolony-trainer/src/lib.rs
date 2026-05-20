@@ -25,6 +25,7 @@ pub mod env;
 pub mod league;
 pub mod hierarchical;
 pub use hierarchical::{HierarchicalActorCritic, CommanderPolicy, AntPolicy, Sizing};
+pub use hierarchical::obs_to_tensors::{rich_to_tensors, ant_obs_to_tensors, rich_batch_to_tensors};
 
 pub use backend::{Backend, CandleBackend};
 pub use policy::ActorCritic;
