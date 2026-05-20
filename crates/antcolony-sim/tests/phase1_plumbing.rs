@@ -330,6 +330,60 @@ fn defaults_reproduce_baseline_population_trajectory() {
 }
 
 #[test]
+fn high_alpha_modulators_change_sim_trajectory() {
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
+    use antcolony_sim::{Simulation, Topology};
+
+    fn run_sim(seed: u64, ticks: u64, force_high_alpha: bool) -> u32 {
+        let cfg = SimConfig {
+            world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+            pheromone: PheromoneConfig::default(),
+            ant: AntConfig { initial_count: 10, ..AntConfig::default() },
+            colony: ColonyConfig::default(),
+            combat: CombatConfig::default(),
+            hazards: HazardConfig::default(),
+        };
+        let topology = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, seed, 0, 2);
+
+        for t in 0..ticks {
+            if force_high_alpha && t % 5 == 0 {
+                // Set every ant in colony 0 to alpha_mult=5 (max pheromone-following).
+                let obs0 = sim.per_ant_observations(0);
+                let mods: Vec<_> = obs0.iter().map(|_| antcolony_sim::AntModulators {
+                    alpha_mult: 5.0,
+                    beta_mult: 1.0,
+                    exploration_mod: -0.1, // max suppression of random exploration
+                    deposit_mult: 1.0,
+                    state_bias: 0.0,
+                }).collect();
+                let ids: Vec<_> = obs0.iter().map(|o| o.ant_id).collect();
+                sim.apply_ant_modulators(0, &mods, &ids);
+            }
+            sim.tick();
+        }
+        sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0)
+    }
+
+    let baseline_workers = run_sim(0xbeef_ace, 1000, false);
+    let high_alpha_workers = run_sim(0xbeef_ace, 1000, true);
+
+    // Behavior MUST differ — high_alpha-driven ants follow trails more
+    // tightly, so colony-1's food intake (and downstream worker count)
+    // is materially different from baseline. The test asserts difference,
+    // not direction — either side could be larger depending on emergent
+    // dynamics, and that's fine.
+    assert_ne!(
+        baseline_workers, high_alpha_workers,
+        "non-default modulators must change the sim trajectory (got identical worker counts {} = {})",
+        baseline_workers, high_alpha_workers,
+    );
+}
+
+#[test]
 fn all_phase1_types_reexported_at_crate_root() {
     // This test compiles only if all five types are re-exported at the
     // crate root — the public API surface the trainer crate consumes.
