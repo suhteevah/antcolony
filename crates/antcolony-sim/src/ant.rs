@@ -202,13 +202,23 @@ impl Ant {
 ///
 /// - With probability `exploration_rate`, returns a random heading.
 /// - If no pheromone is sensed, picks a forward-biased random heading.
+///
+/// Modulator wiring: `alpha_eff = cfg.alpha * mods.alpha_mult` (clamped [0.1, 10.0]),
+/// `beta_eff = cfg.beta * mods.beta_mult` (clamped [0.1, 10.0]),
+/// `explore_eff = cfg.exploration_rate + mods.exploration_mod` (clamped [0.0, 1.0]).
+/// Default modulators (1.0, 1.0, 0.0, ...) reduce to the pre-plumbing formula.
 pub fn choose_direction(
     ant: &Ant,
     grid: &PheromoneGrid,
     cfg: &AntConfig,
     rng: &mut impl Rng,
 ) -> f32 {
-    if rng.r#gen::<f32>() < cfg.exploration_rate {
+    let mods = &ant.modulators;
+    let alpha_eff = (cfg.alpha * mods.alpha_mult).clamp(0.1, 10.0);
+    let beta_eff  = (cfg.beta  * mods.beta_mult ).clamp(0.1, 10.0);
+    let explore_eff = (cfg.exploration_rate + mods.exploration_mod).clamp(0.0, 1.0);
+
+    if rng.r#gen::<f32>() < explore_eff {
         return rng.gen_range(0.0..std::f32::consts::TAU);
     }
 
@@ -228,16 +238,14 @@ pub fn choose_direction(
             continue;
         }
         let angle = delta.y.atan2(delta.x);
-        // forward-bias heuristic
         let bias = (1.0 + (angle - ant.heading).cos()).max(0.01);
         let tau = intensity.max(0.0);
-        let w = (tau + 0.01).powf(cfg.alpha) * bias.powf(cfg.beta);
+        let w = (tau + 0.01).powf(alpha_eff) * bias.powf(beta_eff);
         weighted.push((angle, w));
         total += w;
     }
 
     if total <= 1e-6 || weighted.is_empty() {
-        // No useful signal — wander forward with a small jitter.
         let jitter = rng.gen_range(-0.6..0.6);
         return ant.heading + jitter;
     }
@@ -302,5 +310,99 @@ mod tests {
             }
         }
         assert!(eastward > 150, "expected eastward bias, got {}", eastward);
+    }
+
+    #[test]
+    fn default_modulators_reproduce_baseline_direction() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha8Rng;
+
+        let mut grid = PheromoneGrid::new(40, 40);
+        for dx in 1..8 {
+            grid.deposit(20 + dx, 20, PheromoneLayer::FoodTrail, 8.0, 10.0);
+        }
+        let ant = Ant::new_worker(1, 0, Vec2::new(20.5, 20.5), 0.0, 10.0);
+        let mut cfg = AntConfig::default();
+        cfg.exploration_rate = 0.0;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(0xa17_de_f);
+        let mut eastward = 0;
+        for _ in 0..100 {
+            let h = choose_direction(&ant, &grid, &cfg, &mut rng);
+            if h.cos() > 0.0 { eastward += 1; }
+        }
+        assert!(eastward >= 70, "default modulators should give baseline behavior (≥70/100 eastward), got {}", eastward);
+    }
+
+    #[test]
+    fn high_alpha_mult_strengthens_pheromone_following() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha8Rng;
+
+        // Build a grid where the east trail is strong (2.0) and a competing
+        // NE trail is weak (0.3). Both are within the ±60° forward cone.
+        // When alpha=1: (2.0+0.01)^1 / (0.31)^1 ≈ 6.5x contrast.
+        // When alpha=5: (2.01)^5 / (0.31)^5 ≈ 33.2^5 / ... ≈ vastly larger contrast.
+        // High alpha concentrates weight on the stronger east cells, making
+        // the ant pick exactly-east headings more often.
+        // The threshold h.cos() > 0.7 (≈ ±45°) separates exactly-east from NE picks.
+        let mut grid = PheromoneGrid::new(40, 40);
+        // Strong east trail.
+        for dx in 1..5 {
+            grid.deposit(20 + dx, 20, PheromoneLayer::FoodTrail, 2.0, 10.0);
+        }
+        // Weak NE trail (within ±60° cone): dx=2,dy=1 is ~27° off east.
+        for dx in 1..4 {
+            grid.deposit(20 + dx, 20 + 1, PheromoneLayer::FoodTrail, 0.3, 10.0);
+        }
+
+        let mut ant = Ant::new_worker(1, 0, Vec2::new(20.5, 20.5), 0.0, 10.0);
+        let mut cfg = AntConfig::default();
+        cfg.exploration_rate = 0.0;
+
+        ant.modulators.alpha_mult = 5.0;
+        let mut rng = ChaCha8Rng::seed_from_u64(0x57e1_a17);
+        let mut exact_east_high = 0;
+        for _ in 0..200 {
+            let h = choose_direction(&ant, &grid, &cfg, &mut rng);
+            if h.cos() > 0.7 && h.sin().abs() < 0.5 { exact_east_high += 1; }
+        }
+
+        ant.modulators.alpha_mult = 1.0;
+        let mut rng = ChaCha8Rng::seed_from_u64(0x57e1_a17);
+        let mut exact_east_base = 0;
+        for _ in 0..200 {
+            let h = choose_direction(&ant, &grid, &cfg, &mut rng);
+            if h.cos() > 0.7 && h.sin().abs() < 0.5 { exact_east_base += 1; }
+        }
+
+        // Renamed to eastward_high / eastward_base to match the assertion message.
+        let eastward_high = exact_east_high;
+        let eastward_base = exact_east_base;
+        assert!(
+            eastward_high > eastward_base,
+            "alpha_mult=5 should pull east more strongly than alpha_mult=1 with a weak trail (got {} vs {})",
+            eastward_high, eastward_base,
+        );
+    }
+
+    #[test]
+    fn exploration_mod_zero_preserves_exploration() {
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha8Rng;
+
+        let grid = PheromoneGrid::new(10, 10);
+        let ant = Ant::new_worker(1, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
+        let mut cfg = AntConfig::default();
+        cfg.exploration_rate = 1.0;
+        let mut rng = ChaCha8Rng::seed_from_u64(0x6e0_77);
+
+        let mut headings = Vec::new();
+        for _ in 0..50 {
+            headings.push(choose_direction(&ant, &grid, &cfg, &mut rng));
+        }
+        let mean = headings.iter().sum::<f32>() / headings.len() as f32;
+        let variance: f32 = headings.iter().map(|h| (h - mean).powi(2)).sum::<f32>() / headings.len() as f32;
+        assert!(variance > 1.0, "uniform-random heading should have wide variance, got {}", variance);
     }
 }
