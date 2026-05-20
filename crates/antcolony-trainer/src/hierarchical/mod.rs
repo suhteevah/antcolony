@@ -21,4 +21,4 @@ pub mod transformer;
 // pub use actor_critic::HierarchicalActorCritic;  // T8
 // pub use ant::AntPolicy;                          // T7
 // pub use commander::CommanderPolicy;              // T6
-// pub use sizing::{Sizing, A1, A2, A3};            // T3
+pub use sizing::{Sizing, A1, A2, A3};            // T3
