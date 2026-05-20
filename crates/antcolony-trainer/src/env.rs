@@ -210,4 +210,46 @@ impl MatchEnv {
         };
         traj
     }
+
+    /// Batched commander observations across both colonies (shape leading
+    /// dim = 2). Returns (state, pheromone, history) ready to feed
+    /// `HierarchicalActorCritic::forward_commander` (or `sample_commander`).
+    pub fn commander_obs_batch(
+        &self,
+        device: &candle_core::Device,
+    ) -> anyhow::Result<(candle_core::Tensor, candle_core::Tensor, candle_core::Tensor)> {
+        let rich0 = self
+            .sim
+            .colony_rich_observation(0)
+            .ok_or_else(|| anyhow::anyhow!("MatchEnv: colony 0 missing"))?;
+        let rich1 = self
+            .sim
+            .colony_rich_observation(1)
+            .ok_or_else(|| anyhow::anyhow!("MatchEnv: colony 1 missing"))?;
+        let tup = crate::hierarchical::obs_to_tensors::rich_batch_to_tensors(
+            &[&rich0, &rich1],
+            device,
+        )?;
+        Ok(tup)
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+    use candle_core::Device;
+    use crate::hierarchical::sizing::{
+        FIXED_HISTORY_K, FIXED_HISTORY_TOK_D, FIXED_PHEROMONE_C, FIXED_PHEROMONE_H,
+        FIXED_PHEROMONE_W, FIXED_STATE_D,
+    };
+
+    #[test]
+    fn commander_obs_batch_shape_is_two_colonies_stacked() {
+        let env = MatchEnv::new(0xb1a5_e1);
+        let device = Device::Cpu;
+        let (state, pheromone, history) = env.commander_obs_batch(&device).unwrap();
+        assert_eq!(state.dims(), &[2, FIXED_STATE_D]);
+        assert_eq!(pheromone.dims(), &[2, FIXED_PHEROMONE_C, FIXED_PHEROMONE_H, FIXED_PHEROMONE_W]);
+        assert_eq!(history.dims(), &[2, FIXED_HISTORY_K, FIXED_HISTORY_TOK_D]);
+    }
 }
