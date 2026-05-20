@@ -19,15 +19,19 @@ pub struct TransformerBlock {
     pub n_heads: usize,
     pub d_head: usize,
 
-    pub norm_attn: LayerNorm,
-    pub q_proj: Linear,
-    pub k_proj: Linear,
-    pub v_proj: Linear,
-    pub o_proj: Linear,
+    // Weight-holding fields are pub(crate) so the trainer can enumerate
+    // them for optimizer state if needed, without exposing the internal
+    // layout to crate-external code. (d_model/n_heads/d_head stay fully
+    // public — they're just config inspection.)
+    pub(crate) norm_attn: LayerNorm,
+    pub(crate) q_proj: Linear,
+    pub(crate) k_proj: Linear,
+    pub(crate) v_proj: Linear,
+    pub(crate) o_proj: Linear,
 
-    pub norm_ffn: LayerNorm,
-    pub ffn_up: Linear,
-    pub ffn_down: Linear,
+    pub(crate) norm_ffn: LayerNorm,
+    pub(crate) ffn_up: Linear,
+    pub(crate) ffn_down: Linear,
 }
 
 impl TransformerBlock {
@@ -38,12 +42,13 @@ impl TransformerBlock {
     /// - `n_heads` — number of attention heads
     /// - `d_ffn` — feed-forward inner dim (usually 4×d_model in vanilla transformers)
     pub fn new(vb: VarBuilder, d_model: usize, n_heads: usize, d_ffn: usize) -> Result<Self> {
-        assert!(
-            d_model % n_heads == 0,
-            "d_model={} must be divisible by n_heads={}",
-            d_model,
-            n_heads,
-        );
+        if d_model % n_heads != 0 {
+            candle_core::bail!(
+                "d_model={} must be divisible by n_heads={}",
+                d_model,
+                n_heads,
+            );
+        }
         let d_head = d_model / n_heads;
 
         Ok(Self {
@@ -71,7 +76,7 @@ impl TransformerBlock {
         // FFN sub-block (pre-norm + residual).
         let ffn_in = self.norm_ffn.forward(&x)?;
         let ffn_mid = self.ffn_up.forward(&ffn_in)?;
-        let ffn_mid = ffn_mid.gelu()?;
+        let ffn_mid = ffn_mid.gelu()?; // tanh-approx GELU (candle default)
         let ffn_out = self.ffn_down.forward(&ffn_mid)?;
         let x = (x + ffn_out)?;
 
@@ -99,10 +104,12 @@ impl TransformerBlock {
             .transpose(1, 2)?
             .contiguous()?;
 
-        // scores = Q @ K^T / sqrt(d_head)
+        // scores = Q @ K^T / sqrt(d_head). The K transpose returns a view
+        // (stride-reversed); candle's matmul handles strided inputs, so
+        // no .contiguous() is needed before the matmul — that would
+        // allocate a full [B, H, D/H, T] copy every forward pass.
         let scale = 1.0 / (self.d_head as f64).sqrt();
-        let scores =
-            q.matmul(&k.transpose(D::Minus2, D::Minus1)?.contiguous()?)?;
+        let scores = q.matmul(&k.transpose(D::Minus2, D::Minus1)?)?;
         let scores = (scores * scale)?;
 
         let attn = candle_nn::ops::softmax(&scores, D::Minus1)?;
@@ -142,16 +149,19 @@ mod tests {
     fn block_d_model_must_divide_by_heads() {
         let (varmap, device) = cpu_vb();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        // 64 / 5 doesn't divide evenly — should panic.
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            TransformerBlock::new(vb, 64, 5, 128).unwrap()
-        }));
-        assert!(r.is_err(), "expected panic for non-divisible d_model/n_heads");
+        // 64 / 5 doesn't divide evenly — should return Err (not panic).
+        let r = TransformerBlock::new(vb, 64, 5, 128);
+        assert!(r.is_err(), "expected Err for non-divisible d_model/n_heads");
     }
 
     #[test]
     fn block_param_count_matches_estimate() {
-        // d=128, ffn=256: core = 4·128² + 2·128·256 = 65536 + 65536 = 131072.
+        // d=128, ffn=256: weight matrices alone = 4·128² + 2·128·256 = 131072.
+        // The total includes additionally:
+        //   4 Linear biases (Q/K/V/O):  4 × 128                 =   512
+        //   2 FFN biases (up/down):     128 + 256               =   384
+        //   2 LayerNorm pairs:          2 × (128 weight + 128 bias) = 512
+        // → deterministic total = 132480.
         let (varmap, device) = cpu_vb();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
         let _block = TransformerBlock::new(vb, 128, 4, 256).unwrap();
@@ -161,7 +171,9 @@ mod tests {
             .map(|v| v.dims().iter().product::<usize>())
             .sum();
         let core = 131_072;
-        // Allow ~10% headroom for biases + LN weights, plus an absolute slack of 4096 for tiny weights.
+        // Allow ~15% over the weight-matrix core to absorb biases + LN; the
+        // exact figure is 132480 but the loose bound stays robust to candle
+        // changing default Linear biases or LN parameter count.
         assert!(
             total >= core && total <= (core as f64 * 1.15) as usize + 4096,
             "param count {} should be approximately core {} (within +15% + LN slack)",
