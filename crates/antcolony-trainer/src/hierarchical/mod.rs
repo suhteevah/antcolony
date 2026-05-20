@@ -19,6 +19,6 @@ pub mod transformer;
 // Re-exports are added progressively as each sub-module lands. Uncomment
 // each line in its owning task:
 // pub use actor_critic::HierarchicalActorCritic;  // T8
-// pub use ant::AntPolicy;                          // T7
+pub use ant::AntPolicy;                          // T7
 pub use commander::CommanderPolicy;              // T5
 pub use sizing::{Sizing, A1, A2, A3};            // T3
