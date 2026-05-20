@@ -392,6 +392,48 @@ impl Simulation {
         })
     }
 
+    /// Rich observation bundle for the hierarchical commander brain. Wraps
+    /// the existing `colony_ai_state` (17-d) with a downsampled pheromone
+    /// snapshot + the colony's commander history ring. Returns `None` when
+    /// `colony_id` does not exist.
+    ///
+    /// Pheromone field is always downsampled to a fixed 32×32, regardless
+    /// of the actual arena size — the commander brain's CNN encoder expects
+    /// that shape.
+    pub fn colony_rich_observation(
+        &self,
+        colony_id: u8,
+    ) -> Option<crate::ai::observation::RichObservation> {
+        use crate::ai::observation::{PheromoneSnapshot, RichObservation};
+        use crate::pheromone::PheromoneLayer;
+
+        let state = self.colony_ai_state(colony_id)?;
+        let colony = self.colonies.iter().find(|c| c.id == colony_id)?;
+
+        let pheromone_field = PheromoneSnapshot {
+            width: 32,
+            height: 32,
+            food_trail: self
+                .pheromones()
+                .downsample_to(32, 32, PheromoneLayer::FoodTrail),
+            home_trail: self
+                .pheromones()
+                .downsample_to(32, 32, PheromoneLayer::HomeTrail),
+            alarm: self
+                .pheromones()
+                .downsample_to(32, 32, PheromoneLayer::Alarm),
+            colony_scent: self
+                .pheromones()
+                .downsample_to(32, 32, PheromoneLayer::ColonyScent),
+        };
+
+        Some(RichObservation {
+            state,
+            pheromone_field,
+            history: colony.commander_history.clone(),
+        })
+    }
+
     /// Apply a brain-emitted `AiDecision` to a colony. Renormalizes the
     /// caste ratio + behavior weights so the values sum to 1.0 (brains
     /// may emit any non-negative split; we don't punish them for not
