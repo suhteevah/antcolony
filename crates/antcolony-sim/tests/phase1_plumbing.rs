@@ -2,7 +2,9 @@
 //! end-to-end. These tests intentionally bypass the unit-test layer to
 //! catch wiring mistakes (e.g. forgetting to populate a snapshot field).
 
-use antcolony_sim::ai::observation::{AntModulators, AntObservation, HistoryToken, RichObservation};
+// The other Phase-1 observation types (AntModulators, AntObservation,
+// HistoryToken) are imported per-test as they're added in later tasks.
+use antcolony_sim::ai::observation::RichObservation;
 
 #[test]
 fn rich_observation_shape_for_default_match_env() {

@@ -137,38 +137,13 @@ impl HistoryToken {
     pub const FLAT_LEN: usize = 96;
 }
 
-/// Per-ant observation produced by the simulation each tick. Consumed by the
-/// per-ant brain tier (Phase 2). Fields are placeholders until the per-ant
-/// policy net is specified; for now the struct carries the ant's FSM state
-/// index and the pheromone readings in its sensing cone.
-///
-/// Phase 1 only wires the commander tier — this type is declared here so
-/// integration tests can import the module without breakage.
+/// Per-ant observation produced by the simulation each tick. Consumed by
+/// the per-ant brain tier (Phase 2). **Fields defined in Task 7** — this
+/// is intentionally a unit-struct placeholder so the rest of the crate
+/// (and the Phase-1 integration test imports) can name the type without
+/// committing to a shape the T7 spec hasn't applied yet.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct AntObservation {
-    /// Ant entity index within the simulation's flat ant Vec.
-    pub ant_index: u32,
-    /// Encoded FSM state (matches `AntState as u8`).
-    pub fsm_state: u8,
-    /// Pheromone readings in the forward sensing cone (5 cells × 4 channels).
-    pub cone_pheromone: [f32; 20],
-    /// Food carried normalized to `[0, 1]`.
-    pub food_carried_norm: f32,
-    /// Health normalized to `[0, 1]`.
-    pub health_norm: f32,
-}
-
-impl Default for AntObservation {
-    fn default() -> Self {
-        Self {
-            ant_index: 0,
-            fsm_state: 0,
-            cone_pheromone: [0.0; 20],
-            food_carried_norm: 0.0,
-            health_norm: 1.0,
-        }
-    }
-}
+pub struct AntObservation;
 
 /// Bundle of everything the commander brain reads at decision time.
 /// The `state` field is the existing `ColonyAiState`; the other two are
