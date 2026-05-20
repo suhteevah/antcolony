@@ -530,6 +530,55 @@ impl Simulation {
         out
     }
 
+    /// Write per-ant modulators for the next decision window. `ant_ids[i]`
+    /// receives `mods[i]`. Slices must be the same length (asserted in
+    /// debug builds). Ants not in `ant_ids` keep their current modulators
+    /// (which default to identity).
+    ///
+    /// Unknown ant ids (deceased, not in this colony, or never existed)
+    /// are silently skipped — `apply_ant_modulators` is on the per-tick
+    /// hot path during training and must not panic on stale id batches.
+    ///
+    /// Each component is clamped to its safe range (the trainer contract):
+    ///   alpha_mult, beta_mult, deposit_mult ∈ [0.1, 5.0]
+    ///   exploration_mod                     ∈ [-0.1, 0.1]
+    ///   state_bias                          ∈ [-2.0, 2.0]
+    ///
+    /// Note: `choose_direction` applies a wider read-side safety clamp
+    /// (`[0.1, 10.0]` for alpha/beta, `[0.0, 1.0]` for explore) as
+    /// defense-in-depth — see ant.rs.
+    pub fn apply_ant_modulators(
+        &mut self,
+        colony_id: u8,
+        mods: &[crate::ai::observation::AntModulators],
+        ant_ids: &[u32],
+    ) {
+        debug_assert_eq!(
+            mods.len(),
+            ant_ids.len(),
+            "apply_ant_modulators: mods and ant_ids must be same length"
+        );
+        if self.colonies.get(colony_id as usize).is_none() {
+            return;
+        }
+        for (m, &id) in mods.iter().zip(ant_ids.iter()) {
+            if let Some(ant) = self
+                .ants
+                .iter_mut()
+                .find(|a| a.id == id && a.colony_id == colony_id)
+            {
+                ant.modulators = crate::ai::observation::AntModulators {
+                    alpha_mult: m.alpha_mult.clamp(0.1, 5.0),
+                    beta_mult: m.beta_mult.clamp(0.1, 5.0),
+                    exploration_mod: m.exploration_mod.clamp(-0.1, 0.1),
+                    deposit_mult: m.deposit_mult.clamp(0.1, 5.0),
+                    state_bias: m.state_bias.clamp(-2.0, 2.0),
+                };
+            }
+            // Unknown id → silent skip.
+        }
+    }
+
     /// AI-vs-AI mode constructor — same as `new_two_colony_with_topology`
     /// but flips both colonies' `is_ai_controlled = true` so the
     /// existing per-tick AI brain (`red_ai_tick`) acts on both sides.

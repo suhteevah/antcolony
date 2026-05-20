@@ -127,3 +127,111 @@ fn per_ant_observations_empty_for_nonexistent_colony() {
     let obs = sim.per_ant_observations(99);
     assert_eq!(obs.len(), 0);
 }
+
+#[test]
+fn apply_ant_modulators_writes_through_to_pool() {
+    use antcolony_sim::ai::observation::AntModulators;
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
+    use antcolony_sim::{Simulation, Topology};
+
+    let cfg = SimConfig {
+        world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+        pheromone: PheromoneConfig::default(),
+        ant: AntConfig { initial_count: 5, ..AntConfig::default() },
+        colony: ColonyConfig::default(),
+        combat: CombatConfig::default(),
+        hazards: HazardConfig::default(),
+    };
+    let topology = Topology::two_colony_arena((24, 24), (32, 32));
+    let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, 0xa17, 0, 2);
+
+    let obs = sim.per_ant_observations(0);
+    assert!(obs.len() >= 2);
+    let target_id_a = obs[0].ant_id;
+    let target_id_b = obs[1].ant_id;
+
+    sim.apply_ant_modulators(
+        0,
+        &[AntModulators {
+            alpha_mult: 3.0,
+            beta_mult: 0.5,
+            exploration_mod: 0.05,
+            deposit_mult: 2.0,
+            state_bias: -1.0,
+        }],
+        &[target_id_a],
+    );
+
+    let ant_a = sim.ants.iter().find(|a| a.id == target_id_a).unwrap();
+    assert_eq!(ant_a.modulators.alpha_mult, 3.0);
+    let ant_b = sim.ants.iter().find(|a| a.id == target_id_b).unwrap();
+    assert_eq!(ant_b.modulators, AntModulators::default());
+}
+
+#[test]
+fn apply_ant_modulators_clamps_to_safe_ranges() {
+    use antcolony_sim::ai::observation::AntModulators;
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
+    use antcolony_sim::{Simulation, Topology};
+
+    let cfg = SimConfig {
+        world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+        pheromone: PheromoneConfig::default(),
+        ant: AntConfig { initial_count: 3, ..AntConfig::default() },
+        colony: ColonyConfig::default(),
+        combat: CombatConfig::default(),
+        hazards: HazardConfig::default(),
+    };
+    let topology = Topology::two_colony_arena((24, 24), (32, 32));
+    let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, 0xa17, 0, 2);
+    let target = sim.per_ant_observations(0)[0].ant_id;
+
+    sim.apply_ant_modulators(
+        0,
+        &[AntModulators {
+            alpha_mult: 999.0,
+            beta_mult: -10.0,
+            exploration_mod: 5.0,
+            deposit_mult: 1000.0,
+            state_bias: 100.0,
+        }],
+        &[target],
+    );
+
+    let ant = sim.ants.iter().find(|a| a.id == target).unwrap();
+    assert!((0.1..=5.0).contains(&ant.modulators.alpha_mult));
+    assert!((0.1..=5.0).contains(&ant.modulators.beta_mult));
+    assert!((-0.1..=0.1).contains(&ant.modulators.exploration_mod));
+    assert!((0.1..=5.0).contains(&ant.modulators.deposit_mult));
+    assert!((-2.0..=2.0).contains(&ant.modulators.state_bias));
+}
+
+#[test]
+fn apply_ant_modulators_unknown_id_is_noop() {
+    use antcolony_sim::ai::observation::AntModulators;
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
+    use antcolony_sim::{Simulation, Topology};
+
+    let cfg = SimConfig {
+        world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+        pheromone: PheromoneConfig::default(),
+        ant: AntConfig { initial_count: 3, ..AntConfig::default() },
+        colony: ColonyConfig::default(),
+        combat: CombatConfig::default(),
+        hazards: HazardConfig::default(),
+    };
+    let topology = Topology::two_colony_arena((24, 24), (32, 32));
+    let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, 0xa17, 0, 2);
+
+    // ant id 0xFFFFFFFF doesn't exist — must not panic.
+    sim.apply_ant_modulators(0, &[AntModulators::default()], &[0xFFFFFFFF]);
+}
