@@ -1,12 +1,16 @@
 # HANDOFF.md — Phased Implementation Spec
 
+**Last Updated:** 2026-05-20
+
 This document contains everything needed to implement the ant colony simulation from scratch. Each phase is self-contained with clear inputs, outputs, and acceptance criteria. **Phases are sequential — do not skip ahead.**
 
 ---
 
-## Session 2026-05-19 — Phase 1 ant-brain sim plumbing landed
+## Session 2026-05-19 — Phase 1 ant-brain sim plumbing landed (merged to main 2026-05-19, origin synced 2026-05-20)
 
-🟢 Project Status: **Phase 1 ship-ready.** Branch `feat/ant-brain-phase1` (commit `084dc83`) carries the full sim-side hierarchical-brain plumbing — 5 new types, 4 new `Simulation` methods, ACO modulator wiring in `choose_direction`. Defaults reproduce baseline sim trajectories bit-for-bit (verified by `defaults_reproduce_baseline_population_trajectory`). Non-defaults change behavior end-to-end (verified by `high_alpha_modulators_change_sim_trajectory`). Full workspace builds, all 163 pre-existing tests pass plus the 11 new Phase-1 tests.
+🟢 Project Status: **Phase 1 shipped.** All 20 commits of `feat/ant-brain-phase1` fast-forward-merged into `main` at `c3ba378`. Github-uploader-buildout auto-pushed `origin/main` 2026-05-20 01:01 PDT (commit `c0f73ed` is the auto-snapshot — README touch only, Phase-1 work is the 20 commits below it). `main` and `origin/main` in sync. Feature branch retained locally (`feat/ant-brain-phase1`) — safe to delete with `git branch -d feat/ant-brain-phase1`.
+
+Hierarchical-brain plumbing carries 5 new types, 4 new `Simulation` methods, ACO modulator wiring in `choose_direction`. Defaults reproduce baseline sim trajectories bit-for-bit (verified by `defaults_reproduce_baseline_population_trajectory`). Non-defaults change behavior end-to-end (verified by `high_alpha_modulators_change_sim_trajectory`). Full workspace builds, all 163 pre-existing tests pass plus the 11 new Phase-1 tests.
 
 ### What Was Done This Session
 
@@ -48,9 +52,10 @@ None. Phase 1 is ship-ready.
 
 ### What's Next
 
-1. **Merge `feat/ant-brain-phase1` into `main`** (PR or fast-forward — Matt's call).
-2. **Fix pre-existing species cap test** (1-line update: expect `45000.0` not `300000.0`).
+1. ~~Merge `feat/ant-brain-phase1` into `main`~~ ✅ done 2026-05-19, origin synced 2026-05-20.
+2. **Fix pre-existing species cap test** (1-line update: expect `45000.0` not `300000.0` in `species::tests::species_food_storage_cap_wires_to_colony_override`). Out-of-scope for Phase 1 but blocks `cargo test -p antcolony-sim` from going green.
 3. **Write Phase 2 plan** via `superpowers:writing-plans` from `docs/superpowers/specs/2026-05-18-ant-brain-hierarchical-design.md`. Phase 2 = trainer-side hierarchical policy net (`CommanderPolicy`, `AntPolicy`, `HierarchicalActorCritic`, joint PPO).
+4. **Optional cleanup sweep**: 33 pre-existing clippy errors (`-D warnings`) before Phase 2 if you want clippy as a CI gate later.
 
 ### Notes for Next Session
 
