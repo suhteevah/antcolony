@@ -4083,7 +4083,13 @@ fn decide_next_state(
                 return Some(AntState::PickingUpFood);
             }
             let scent = pher.read(ux, uy, PheromoneLayer::FoodTrail);
-            if scent > cfg.pheromone.min_threshold * 10.0 {
+            // state_bias in [-2.0, 2.0] (write-clamped). We add an additive offset to the
+            // perceived scent: positive bias makes the ant perceive stronger trail signal
+            // (easier to commit to FollowingTrail), negative makes it perceive weaker signal
+            // (needs genuinely strong trail before committing). Scale 0.5 per unit keeps the
+            // effect linear and bounded: state_bias=0.0 → no change (identity).
+            let perceived_scent = scent + ant.modulators.state_bias.clamp(-2.0, 2.0) * 0.5;
+            if perceived_scent > cfg.pheromone.min_threshold * 10.0 {
                 return Some(AntState::FollowingTrail);
             }
             None
@@ -4093,7 +4099,13 @@ fn decide_next_state(
                 return Some(AntState::PickingUpFood);
             }
             let scent = pher.read(ux, uy, PheromoneLayer::FoodTrail);
-            if scent < cfg.pheromone.min_threshold * 2.0 {
+            // Symmetric perceived-scent gate: same additive offset as the entry gate.
+            // Positive bias → perceived scent higher → harder to drop below exit threshold
+            // (ant stays in FollowingTrail on weak residual trail).
+            // Negative bias → perceived scent lower → easier to drop below exit threshold
+            // (ant abandons trail sooner, returns to random search).
+            let perceived_scent = scent + ant.modulators.state_bias.clamp(-2.0, 2.0) * 0.5;
+            if perceived_scent < cfg.pheromone.min_threshold * 2.0 {
                 return Some(AntState::Exploring);
             }
             None
