@@ -158,16 +158,23 @@ impl CommanderPolicy {
         // ── History encoder (per-token) ──
         // history: [B, K, 96] → reshape [B*K, 96] → Linear → [B*K, d_enc] → reshape [B, K, d_enc]
         let (b_h, k, _) = history.dims3()?;
-        debug_assert_eq!(b_h, b);
+        if b_h != b {
+            // Batch mismatch is always a caller bug — silent wrong-output in release
+            // builds would be very expensive to debug, so make this an Err in all builds.
+            candle_core::bail!(
+                "CommanderPolicy::forward batch mismatch: state batch={b}, history batch={b_h}"
+            );
+        }
         let h_flat = history.reshape((b * k, self.sizing.fixed_history_tok_d))?;
         let h_enc = self.history_encoder.forward(&h_flat)?;
         let history_toks = h_enc.reshape((b, k, d_enc))?;  // [B, K, d_enc]
 
         // ── Stack tokens [pher, state, history_0..K-1] → reproject to d_model ──
-        let pher_tok = pher_tok.unsqueeze(1)?;    // [B, 1, d_enc]
-        let state_tok = state_tok.unsqueeze(1)?;  // [B, 1, d_enc]
-        let concat = Tensor::cat(&[&pher_tok, &state_tok, &history_toks], 1)?;  // [B, 2+K, d_enc]
-        let tokens = self.stream_proj.forward(&concat)?;  // [B, 2+K, d_model]
+        // Use Tensor::stack to fuse unsqueeze+cat for the two prefix tokens — one
+        // allocation instead of three. The history tokens already have the token dim.
+        let prefix = Tensor::stack(&[&pher_tok, &state_tok], 1)?;          // [B, 2, d_enc]
+        let concat = Tensor::cat(&[&prefix, &history_toks], 1)?;           // [B, 2+K, d_enc]
+        let tokens = self.stream_proj.forward(&concat)?;                   // [B, 2+K, d_model]
 
         // ── Prepend learnable CLS token: [1, 1, d_model] → [B, 1, d_model] ──
         let cls = self.cls_token.expand((b, 1, d_model))?;
