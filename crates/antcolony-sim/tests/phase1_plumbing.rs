@@ -2,10 +2,6 @@
 //! end-to-end. These tests intentionally bypass the unit-test layer to
 //! catch wiring mistakes (e.g. forgetting to populate a snapshot field).
 
-// The other Phase-1 observation types (AntModulators, AntObservation,
-// HistoryToken) are imported per-test as they're added in later tasks.
-use antcolony_sim::ai::observation::RichObservation;
-
 #[test]
 fn rich_observation_shape_for_default_match_env() {
     use antcolony_sim::config::{
@@ -267,4 +263,17 @@ fn apply_commander_intent_roundtrips_through_rich_observation() {
 
     // Unknown colony — must not panic.
     sim.apply_commander_intent(99, &intent);
+}
+
+#[test]
+fn all_phase1_types_reexported_at_crate_root() {
+    // This test compiles only if all five types are re-exported at the
+    // crate root — the public API surface the trainer crate consumes.
+    let _: antcolony_sim::AntModulators = antcolony_sim::AntModulators::default();
+    let _: antcolony_sim::HistoryToken = antcolony_sim::HistoryToken::default();
+    // PheromoneSnapshot, RichObservation, AntObservation are non-Default;
+    // existence-check by type assignment only — wrapping in fn-ptr binding.
+    fn _check_phsnap(_: &antcolony_sim::PheromoneSnapshot) {}
+    fn _check_rich(_: &antcolony_sim::RichObservation) {}
+    fn _check_antobs(_: &antcolony_sim::AntObservation) {}
 }

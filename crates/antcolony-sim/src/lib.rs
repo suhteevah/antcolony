@@ -26,11 +26,12 @@ pub mod unlocks;
 pub mod world;
 
 pub use ai::{
-    AetherLmBrain, AggressorBrain, AiBrain, AiDecision, Arbiter, Blackboard, BlackboardSnapshot,
-    BrainArchetype, BreederBrain, Cadence, ColonyAiState, CombatKs, ConservativeBuilderBrain,
-    Contribution, DefenderBrain, Directive, EconomistBrain, Fact, FactRef, ForagerBrain, ForagerKs,
-    HeuristicBrain, KnowledgeSource, KsName, MatchStatus, MixedBrain, MlpBrain, RandomBrain,
-    SpeciesBrain, StrategistKs, TunedBrain,
+    AetherLmBrain, AggressorBrain, AiBrain, AiDecision, AntModulators, AntObservation, Arbiter,
+    Blackboard, BlackboardSnapshot, BrainArchetype, BreederBrain, Cadence, ColonyAiState, CombatKs,
+    ConservativeBuilderBrain, Contribution, DefenderBrain, Directive, EconomistBrain, Fact, FactRef,
+    ForagerBrain, ForagerKs, HistoryToken, HeuristicBrain, KnowledgeSource, KsName, MatchStatus,
+    MixedBrain, MlpBrain, PheromoneSnapshot, RandomBrain, RichObservation, SpeciesBrain,
+    StrategistKs, TunedBrain,
 };
 pub use ant::{Ant, AntCaste, AntState};
 pub use colony::{

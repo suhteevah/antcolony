@@ -35,5 +35,11 @@ pub use brain::{
 pub use combat::CombatKs;
 pub use forager::ForagerKs;
 pub use knowledge_source::{Cadence, Contribution, KnowledgeSource, KsName};
-pub use observation::AntModulators;
+pub use observation::{
+    AntModulators,
+    AntObservation,
+    HistoryToken,
+    PheromoneSnapshot,
+    RichObservation,
+};
 pub use strategist::StrategistKs;
