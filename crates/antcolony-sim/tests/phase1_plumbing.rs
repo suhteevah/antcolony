@@ -266,6 +266,70 @@ fn apply_commander_intent_roundtrips_through_rich_observation() {
 }
 
 #[test]
+fn defaults_reproduce_baseline_population_trajectory() {
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
+    use antcolony_sim::{Simulation, Topology};
+
+    fn run_sim(seed: u64, ticks: u64, exercise_plumbing: bool) -> Vec<(u32, u32, f32)> {
+        let cfg = SimConfig {
+            world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+            pheromone: PheromoneConfig::default(),
+            ant: AntConfig { initial_count: 10, ..AntConfig::default() },
+            colony: ColonyConfig::default(),
+            combat: CombatConfig::default(),
+            hazards: HazardConfig::default(),
+        };
+        let topology = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, seed, 0, 2);
+        for t in 0..ticks {
+            if exercise_plumbing && t % 5 == 0 {
+                // Call all the new read-side methods every 5 ticks. Their
+                // outputs are unused (the trainer does this in Phase 2).
+                // If they have side-effects this loop catches them.
+                let _ = sim.colony_rich_observation(0);
+                let _ = sim.colony_rich_observation(1);
+                let _ = sim.per_ant_observations(0);
+                let _ = sim.per_ant_observations(1);
+                // apply_ant_modulators with DEFAULTS is the identity
+                // transform — must not perturb the sim.
+                let obs0 = sim.per_ant_observations(0);
+                let mods: Vec<_> = obs0.iter().map(|_| antcolony_sim::AntModulators::default()).collect();
+                let ids: Vec<_> = obs0.iter().map(|o| o.ant_id).collect();
+                sim.apply_ant_modulators(0, &mods, &ids);
+                // apply_commander_intent with zeros is also identity.
+                sim.apply_commander_intent(0, &[0.0; 64]);
+                sim.apply_commander_intent(1, &[0.0; 64]);
+            }
+            sim.tick();
+        }
+        // Snapshot final population + food per colony.
+        let mut snap = Vec::new();
+        for cid in 0..2 {
+            if let Some(c) = sim.colonies.get(cid as usize) {
+                snap.push((
+                    c.population.workers,
+                    c.population.soldiers,
+                    c.food_stored,
+                ));
+            }
+        }
+        snap
+    }
+
+    let baseline = run_sim(0xb45_e11e, 500, false);
+    let with_plumbing = run_sim(0xb45_e11e, 500, true);
+
+    assert_eq!(
+        baseline, with_plumbing,
+        "defaults reproduce baseline trajectory: read-side methods + default modulators + zero intent must be the identity. \
+         baseline = {:?}, with_plumbing = {:?}", baseline, with_plumbing,
+    );
+}
+
+#[test]
 fn all_phase1_types_reexported_at_crate_root() {
     // This test compiles only if all five types are re-exported at the
     // crate root — the public API surface the trainer crate consumes.
