@@ -456,3 +456,67 @@ fn deposit_mult_strengthens_pheromone_deposition() {
         high, low, high / low.max(1e-6),
     );
 }
+
+#[test]
+fn state_bias_shifts_following_trail_transition_rate() {
+    use antcolony_sim::ai::observation::AntModulators;
+    use antcolony_sim::ant::AntState;
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
+    use antcolony_sim::Simulation;
+
+    fn run_sim(seed: u64, ticks: u64, state_bias: f32) -> u32 {
+        let cfg = SimConfig {
+            world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+            pheromone: PheromoneConfig::default(),
+            ant: AntConfig { initial_count: 20, ..AntConfig::default() },
+            colony: ColonyConfig::default(),
+            combat: CombatConfig::default(),
+            hazards: HazardConfig::default(),
+        };
+        let mut sim = Simulation::new(cfg, seed);
+        // Deposit a strong food trail so ants have something to follow.
+        sim.spawn_food_cluster(8, 8, 3, 200);
+        // Apply state_bias to every ant on every decision tick.
+        for t in 0..ticks {
+            if t % 5 == 0 {
+                let obs0 = sim.per_ant_observations(0);
+                let mods: Vec<_> = obs0.iter().map(|_| AntModulators {
+                    alpha_mult: 1.0,
+                    beta_mult: 1.0,
+                    exploration_mod: 0.0,
+                    deposit_mult: 1.0,
+                    state_bias,
+                }).collect();
+                let ids: Vec<_> = obs0.iter().map(|o| o.ant_id).collect();
+                sim.apply_ant_modulators(0, &mods, &ids);
+            }
+            sim.tick();
+        }
+        sim.ants.iter()
+            .filter(|a| a.colony_id == 0 && a.state == AntState::FollowingTrail)
+            .count() as u32
+    }
+
+    let baseline = run_sim(0xb1a5_e1, 300, 0.0);
+    let positive = run_sim(0xb1a5_e1, 300, 2.0);
+    let negative = run_sim(0xb1a5_e1, 300, -2.0);
+
+    assert!(
+        positive >= baseline,
+        "positive state_bias should not reduce FollowingTrail count (got positive={}, baseline={})",
+        positive, baseline,
+    );
+    assert!(
+        negative <= baseline,
+        "negative state_bias should not increase FollowingTrail count (got negative={}, baseline={})",
+        negative, baseline,
+    );
+    assert!(
+        positive != baseline || negative != baseline,
+        "state_bias has no effect — neither positive ({}) nor negative ({}) bias differs from baseline ({})",
+        positive, negative, baseline,
+    );
+}
