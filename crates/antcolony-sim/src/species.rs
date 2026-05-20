@@ -224,7 +224,6 @@ pub struct Species {
     // ---- Phase A schema extensions (additive, all optional) ----
     // See `species_extended.rs` for full semantics. Existing TOMLs that
     // omit these sections continue to load with defaults.
-
     /// Schema version of the extended sections below. Defaults to 1.
     /// Bumped only on breaking changes to the extended schema.
     #[serde(default = "default_schema_version")]
@@ -350,7 +349,11 @@ impl Species {
             // throughput advantage. Aphaenogaster rudis is the only
             // myrmecochore in the current pool.
             // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #11.
-            food_capacity: if self.diet_extended.seed_dispersal { 1.5 } else { 1.0 },
+            food_capacity: if self.diet_extended.seed_dispersal {
+                1.5
+            } else {
+                1.0
+            },
             initial_count: self.growth.initial_workers as usize,
             worker_size_mm: self.appearance.size_mm,
             polymorphic: self.biology.polymorphic,
@@ -382,7 +385,11 @@ impl Species {
         // mature mound from Cinara/Lachnus aphid herds — losing that
         // resource collapses the carb supply driving brood production).
         // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #12.
-        let honeydew_penalty: f32 = if self.diet_extended.honeydew_dependent { 0.8 } else { 1.0 };
+        let honeydew_penalty: f32 = if self.diet_extended.honeydew_dependent {
+            0.8
+        } else {
+            1.0
+        };
         // Phase B hook #10b — polygyne queen-count scales the colony's
         // total egg-laying rate. The species TOML's queen_eggs_per_day
         // is per-queen (Formica's 50/day is the suppressed per-queen
@@ -398,9 +405,9 @@ impl Species {
             QueenCount::FacultativelyPolygyne => 1.3,
             QueenCount::ObligatePolygyne => 2.0,
         };
-        let queen_egg_rate = self.growth.queen_eggs_per_day * honeydew_penalty * polygyne_factor / ticks_per_day;
-        let adult_food_consumption =
-            self.growth.food_per_adult_per_day / ticks_per_day;
+        let queen_egg_rate =
+            self.growth.queen_eggs_per_day * honeydew_penalty * polygyne_factor / ticks_per_day;
+        let adult_food_consumption = self.growth.food_per_adult_per_day / ticks_per_day;
         // Postmortem fix #5: stochastic worker mortality. Convert
         // species TOML `worker_lifespan_months` to ticks at this
         // env's time scale. Pre-fix the field was unread; workers
@@ -472,9 +479,7 @@ impl Species {
 }
 
 /// Load every `*.toml` under a directory as a species. Sorted by `id` for stable ordering.
-pub fn load_species_dir<P: AsRef<std::path::Path>>(
-    dir: P,
-) -> Result<Vec<Species>, SimError> {
+pub fn load_species_dir<P: AsRef<std::path::Path>>(dir: P) -> Result<Vec<Species>, SimError> {
     let dir = dir.as_ref();
     let mut out = Vec::new();
     let entries = std::fs::read_dir(dir)?;
@@ -502,8 +507,7 @@ pub fn load_species_dir<P: AsRef<std::path::Path>>(
     // pool. Log a warning if the host is missing — colonies of the
     // parasitic species will still spawn (sim is degraded gracefully)
     // but the founding sequence is biologically incomplete.
-    let loaded_ids: std::collections::HashSet<&str> =
-        out.iter().map(|s| s.id.as_str()).collect();
+    let loaded_ids: std::collections::HashSet<&str> = out.iter().map(|s| s.id.as_str()).collect();
     for sp in &out {
         for host in &sp.diet_extended.host_species_required {
             if !loaded_ids.contains(host.as_str()) {
@@ -584,13 +588,19 @@ keeper_notes = "Docile, hardy, forgiving."
         let baseline = evaporation_rate_from_half_life_seconds(60); // ~similar to default
         let lasius = evaporation_rate_from_half_life_seconds(2820); // Beckers 1992
         let very_short = evaporation_rate_from_half_life_seconds(10);
-        assert!(very_short > baseline, "shorter half-life ⇒ higher decay rate");
+        assert!(
+            very_short > baseline,
+            "shorter half-life ⇒ higher decay rate"
+        );
         assert!(baseline > lasius, "Lasius long half-life ⇒ low decay rate");
         // Half-life formula sanity: ~0.5 of pheromone left after `H/2`
         // substeps when rate matches.
         let r = evaporation_rate_from_half_life_seconds(20); // 10 substeps to half-life
         let after = (1.0_f32 - r).powi(10);
-        assert!((after - 0.5).abs() < 0.01, "after H/SUBSTEP substeps should be ~0.5, got {after}");
+        assert!(
+            (after - 0.5).abs() < 0.01,
+            "after H/SUBSTEP substeps should be ~0.5, got {after}"
+        );
     }
 
     #[test]
@@ -617,7 +627,9 @@ keeper_notes = "Docile, hardy, forgiving."
         // Mass > Group > TandemRun > Individual.
         assert!(recruitment_deposit_scalar(RS::Mass) > recruitment_deposit_scalar(RS::Group));
         assert!(recruitment_deposit_scalar(RS::Group) > recruitment_deposit_scalar(RS::TandemRun));
-        assert!(recruitment_deposit_scalar(RS::TandemRun) > recruitment_deposit_scalar(RS::Individual));
+        assert!(
+            recruitment_deposit_scalar(RS::TandemRun) > recruitment_deposit_scalar(RS::Individual)
+        );
         // Individual is no-trail.
         assert_eq!(recruitment_deposit_scalar(RS::Individual), 0.0);
     }
@@ -645,9 +657,7 @@ keeper_notes = "Docile, hardy, forgiving."
             cfg_mass.pheromone.deposit_food_trail,
             cfg_tandem.pheromone.deposit_food_trail,
         );
-        assert!(
-            cfg_mass.pheromone.deposit_home_trail > cfg_tandem.pheromone.deposit_home_trail,
-        );
+        assert!(cfg_mass.pheromone.deposit_home_trail > cfg_tandem.pheromone.deposit_home_trail,);
     }
 
     #[test]
@@ -683,8 +693,8 @@ keeper_notes = "Docile, hardy, forgiving."
             .join("..")
             .join("assets")
             .join("species");
-        let species = load_species_dir(&dir)
-            .unwrap_or_else(|e| panic!("load_species_dir failed: {e}"));
+        let species =
+            load_species_dir(&dir).unwrap_or_else(|e| panic!("load_species_dir failed: {e}"));
         assert_eq!(
             species.len(),
             10,
@@ -789,8 +799,7 @@ keeper_notes = "Docile, hardy, forgiving."
 
         // 1) The real on-disk TOML for P. occidentalis declares
         //    food_storage_cap = 300000.0 inside [diet_extended].
-        let toml_str =
-            include_str!("../../../assets/species/pogonomyrmex_occidentalis.toml");
+        let toml_str = include_str!("../../../assets/species/pogonomyrmex_occidentalis.toml");
         let species: Species =
             Species::load_from_str(toml_str).expect("parse pogonomyrmex_occidentalis.toml");
         assert_eq!(

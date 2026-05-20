@@ -8,12 +8,12 @@
 //!   within a finite tick budget (no perpetual stalemate on the
 //!   default arena)
 
-use antcolony_sim::{
-    AiBrain, HeuristicBrain, MatchStatus, RandomBrain, Simulation, Topology,
-};
+use antcolony_sim::{AiBrain, HeuristicBrain, MatchStatus, RandomBrain, Simulation, Topology};
 
 fn small_two_colony_sim() -> Simulation {
-    use antcolony_sim::{AntConfig, ColonyConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig};
+    use antcolony_sim::{
+        AntConfig, ColonyConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig,
+    };
     let cfg = SimConfig {
         world: WorldConfig {
             width: 32,
@@ -37,8 +37,14 @@ fn small_two_colony_sim() -> Simulation {
 fn ai_vs_ai_constructor_flips_both_colonies_to_ai() {
     let sim = small_two_colony_sim();
     assert_eq!(sim.colonies.len(), 2);
-    assert!(sim.colonies[0].is_ai_controlled, "colony 0 (black) should be AI in AI-vs-AI mode");
-    assert!(sim.colonies[1].is_ai_controlled, "colony 1 (red) should still be AI");
+    assert!(
+        sim.colonies[0].is_ai_controlled,
+        "colony 0 (black) should be AI in AI-vs-AI mode"
+    );
+    assert!(
+        sim.colonies[1].is_ai_controlled,
+        "colony 1 (red) should still be AI"
+    );
 }
 
 #[test]
@@ -52,7 +58,8 @@ fn match_status_detects_winner_when_one_colony_loses_queens() {
     let mut sim = small_two_colony_sim();
     use antcolony_sim::AntCaste;
     // Surgically remove all queens of colony 1 + drop adult population to 0.
-    sim.ants.retain(|a| !(a.colony_id == 1 && matches!(a.caste, AntCaste::Queen)));
+    sim.ants
+        .retain(|a| !(a.colony_id == 1 && matches!(a.caste, AntCaste::Queen)));
     sim.colonies[1].population.workers = 0;
     sim.colonies[1].population.soldiers = 0;
     sim.colonies[1].population.breeders = 0;
@@ -71,8 +78,14 @@ fn colony_ai_state_extracts_sane_features() {
     let sim = small_two_colony_sim();
     let s0 = sim.colony_ai_state(0).expect("colony 0 state");
     let s1 = sim.colony_ai_state(1).expect("colony 1 state");
-    assert!(s0.queens_alive >= 1, "colony 0 should have at least 1 queen at start");
-    assert!(s1.queens_alive >= 1, "colony 1 should have at least 1 queen at start");
+    assert!(
+        s0.queens_alive >= 1,
+        "colony 0 should have at least 1 queen at start"
+    );
+    assert!(
+        s1.queens_alive >= 1,
+        "colony 1 should have at least 1 queen at start"
+    );
     // Each colony sees the OTHER colony's adults as enemies. Both
     // start with `initial_count = 8` workers + 1 queen.
     assert_eq!(s0.enemy_worker_count, 8);

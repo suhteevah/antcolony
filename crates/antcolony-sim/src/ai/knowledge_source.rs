@@ -37,9 +37,5 @@ pub trait KnowledgeSource: Send + Sync {
 
     /// Read the sim + the current blackboard snapshot, return any
     /// new facts to append. Pure: doesn't mutate sim or blackboard.
-    fn observe(
-        &self,
-        sim: &Simulation,
-        blackboard: &BlackboardSnapshot,
-    ) -> Vec<Contribution>;
+    fn observe(&self, sim: &Simulation, blackboard: &BlackboardSnapshot) -> Vec<Contribution>;
 }

@@ -2,9 +2,7 @@
 //! losses_this_tick. Emits Threat facts that other KS (Strategist)
 //! consume.
 
-use crate::ai::blackboard::{
-    BlackboardSnapshot, Fact, KsId, ThreatRef,
-};
+use crate::ai::blackboard::{BlackboardSnapshot, Fact, KsId, ThreatRef};
 use crate::ai::knowledge_source::{Cadence, Contribution, KnowledgeSource, KsName};
 use crate::simulation::Simulation;
 
@@ -24,11 +22,7 @@ impl KnowledgeSource for CombatKs {
         Cadence::EveryNSubsteps(15)
     }
 
-    fn observe(
-        &self,
-        sim: &Simulation,
-        bb: &BlackboardSnapshot,
-    ) -> Vec<Contribution> {
+    fn observe(&self, sim: &Simulation, bb: &BlackboardSnapshot) -> Vec<Contribution> {
         let Some(colony) = sim.colonies.iter().find(|c| c.id == bb.colony_id) else {
             return Vec::new();
         };
@@ -43,7 +37,9 @@ impl KnowledgeSource for CombatKs {
                 let severity = (colony.combat_losses_this_tick as f32 / 5.0).min(1.0);
                 out.push(Contribution {
                     fact: Fact::Threat {
-                        entity: ThreatRef::EnemyColony { colony_id: other.id },
+                        entity: ThreatRef::EnemyColony {
+                            colony_id: other.id,
+                        },
                         severity,
                         expires_tick: bb.current_tick + 600,
                         source: KS_ID,

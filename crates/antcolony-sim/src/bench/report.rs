@@ -105,11 +105,7 @@ pub fn render_markdown(result: &BenchResult) -> String {
         &ALL_METRICS[2],
         result.score.brood_pipeline_health,
     );
-    write_metric_row(
-        &mut out,
-        &ALL_METRICS[3],
-        result.score.population_stability,
-    );
+    write_metric_row(&mut out, &ALL_METRICS[3], result.score.population_stability);
     write_metric_row(&mut out, &ALL_METRICS[4], result.score.food_economy);
     write_metric_row(
         &mut out,
@@ -156,11 +152,7 @@ fn write_metric_row(out: &mut String, def: &MetricDefinition, value: Option<f64>
     writeln!(out).ok();
 }
 
-fn write_expectations_section(
-    out: &mut String,
-    exp: &SpeciesExpectations,
-    samples: &[TickSample],
-) {
+fn write_expectations_section(out: &mut String, exp: &SpeciesExpectations, samples: &[TickSample]) {
     writeln!(out, "## Literature Expectations").ok();
     writeln!(out).ok();
     writeln!(
@@ -185,12 +177,17 @@ fn write_expectations_section(
 
     let observed_year_5_workers = sample_at_year(samples, 5).map(|s| s.workers as f64);
     let observed_brood = sample_at_year(samples, 5).map(|s| (s.eggs + s.larvae + s.pupae) as f64);
-    let observed_queen_alive = sample_at_year(samples, 5)
-        .map(|s| if s.queens_alive > 0 { 1.0 } else { 0.0 });
+    let observed_queen_alive =
+        sample_at_year(samples, 5).map(|s| if s.queens_alive > 0 { 1.0 } else { 0.0 });
     let observed_first_egg_day = first_egg_day(samples).map(|d| d as f64);
     let observed_food_year_5 = food_returned_in_year(samples, 5);
 
-    write_expectation_row(out, "year_5_workers", &exp.year_5_workers, observed_year_5_workers);
+    write_expectation_row(
+        out,
+        "year_5_workers",
+        &exp.year_5_workers,
+        observed_year_5_workers,
+    );
     write_expectation_row(
         out,
         "year_5_brood_present",
@@ -328,10 +325,7 @@ fn first_egg_day(samples: &[TickSample]) -> Option<u32> {
 }
 
 fn food_returned_in_year(samples: &[TickSample], year: u32) -> Option<f64> {
-    let in_year: Vec<&TickSample> = samples
-        .iter()
-        .filter(|s| s.in_game_year == year)
-        .collect();
+    let in_year: Vec<&TickSample> = samples.iter().filter(|s| s.in_game_year == year).collect();
     if in_year.len() < 2 {
         return None;
     }

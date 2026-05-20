@@ -58,9 +58,9 @@ impl SpatialHash {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::Rng;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use rand::Rng;
 
     #[test]
     fn test_spatial_hash() {

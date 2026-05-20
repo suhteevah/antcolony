@@ -31,12 +31,18 @@ pub enum PredatorState {
     Patrol,
     /// Chasing a specific ant by id; if the target is gone, predator
     /// falls back to Patrol.
-    Hunt { target_ant_id: u32 },
+    Hunt {
+        target_ant_id: u32,
+    },
     /// Currently consuming a kill; blocks all other behavior for the
     /// configured duration.
-    Eat { remaining_ticks: u32 },
+    Eat {
+        remaining_ticks: u32,
+    },
     /// Spider is dead — waiting to respawn. Antlions don't use this.
-    Dead { respawn_in_ticks: u32 },
+    Dead {
+        respawn_in_ticks: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -104,9 +104,15 @@ pub struct WorldConfig {
     pub forage_peak_doy_end: u32,
 }
 
-fn default_dearth_multiplier() -> f32 { 0.1 }
-fn default_peak_doy_start() -> u32 { 105 }   // mid-April default
-fn default_peak_doy_end() -> u32 { 274 }     // end of September default
+fn default_dearth_multiplier() -> f32 {
+    0.1
+}
+fn default_peak_doy_start() -> u32 {
+    105
+} // mid-April default
+fn default_peak_doy_end() -> u32 {
+    274
+} // end of September default
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -200,7 +206,9 @@ pub struct AntConfig {
     pub species_dig_multiplier: f32,
 }
 
-fn default_species_dig_multiplier() -> f32 { 1.0 }
+fn default_species_dig_multiplier() -> f32 {
+    1.0
+}
 
 fn default_min_diapause_days() -> u32 {
     60
@@ -393,7 +401,7 @@ impl Default for ColonyConfig {
             larva_stage_ticks: 300,
             pupa_stage_ticks: 200,
             adult_food_consumption: 0.01,
-            soldier_food_multiplier: 1.2,  // bumped down from 1.5 (combat balance pass 2026-05-03) — soldiers no longer choke colony economy
+            soldier_food_multiplier: 1.2, // bumped down from 1.5 (combat balance pass 2026-05-03) — soldiers no longer choke colony economy
             queen_egg_rate: 0.05,
             target_population: 5_000,
             worker_lifespan_ticks: 3_888_000, // 3 months @ Seasonal

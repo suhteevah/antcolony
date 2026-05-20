@@ -213,20 +213,14 @@ impl Topology {
     /// the outworld via their own tube. Module ids: 0 = black nest,
     /// 1 = shared outworld, 2 = red nest. Tube ids: 0 = black↔outworld,
     /// 1 = red↔outworld.
-    pub fn two_colony_arena(
-        nest_dim: (usize, usize),
-        outworld_dim: (usize, usize),
-    ) -> Self {
+    pub fn two_colony_arena(nest_dim: (usize, usize), outworld_dim: (usize, usize)) -> Self {
         let (nest_w, nest_h) = nest_dim;
         let (out_w, out_h) = outworld_dim;
         let gap = 24.0;
 
         let black_origin = Vec2::ZERO;
         let outworld_origin = Vec2::new(nest_w as f32 + gap, 0.0);
-        let red_origin = Vec2::new(
-            outworld_origin.x + out_w as f32 + gap,
-            0.0,
-        );
+        let red_origin = Vec2::new(outworld_origin.x + out_w as f32 + gap, 0.0);
 
         let black = Module::new(
             0,
@@ -264,16 +258,28 @@ impl Topology {
 
         let tube_black = Tube {
             id: 0,
-            from: TubeEnd { module: 0, port: black_port },
-            to: TubeEnd { module: 1, port: out_port_w },
+            from: TubeEnd {
+                module: 0,
+                port: black_port,
+            },
+            to: TubeEnd {
+                module: 1,
+                port: out_port_w,
+            },
             length_ticks: 30,
             bore_width_mm: 8.0,
             pheromones: vec![0.0; 30 * 4],
         };
         let tube_red = Tube {
             id: 1,
-            from: TubeEnd { module: 2, port: red_port },
-            to: TubeEnd { module: 1, port: out_port_e },
+            from: TubeEnd {
+                module: 2,
+                port: red_port,
+            },
+            to: TubeEnd {
+                module: 1,
+                port: out_port_e,
+            },
             length_ticks: 30,
             bore_width_mm: 8.0,
             pheromones: vec![0.0; 30 * 4],
@@ -353,13 +359,13 @@ impl Topology {
         // Shallow tunnel connecting queen chamber to nursery and the
         // storage/waste chambers so ants can path between rooms from
         // day one.
-        module.world.carve_tunnel(
-            (cx, top.saturating_sub(1)),
-            (cx, top.saturating_sub(5)),
-        );
         module
             .world
-            .carve_tunnel((cx, top.saturating_sub(5)), (cx.saturating_sub(w / 4), h / 2));
+            .carve_tunnel((cx, top.saturating_sub(1)), (cx, top.saturating_sub(5)));
+        module.world.carve_tunnel(
+            (cx, top.saturating_sub(5)),
+            (cx.saturating_sub(w / 4), h / 2),
+        );
         module
             .world
             .carve_tunnel((cx, top.saturating_sub(5)), (cx + w / 4, h / 2));

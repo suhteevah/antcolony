@@ -22,11 +22,7 @@ impl KnowledgeSource for ForagerKs {
         Cadence::EveryNSubsteps(30)
     }
 
-    fn observe(
-        &self,
-        sim: &Simulation,
-        bb: &BlackboardSnapshot,
-    ) -> Vec<Contribution> {
+    fn observe(&self, sim: &Simulation, bb: &BlackboardSnapshot) -> Vec<Contribution> {
         let Some(colony) = sim.colonies.iter().find(|c| c.id == bb.colony_id) else {
             return Vec::new();
         };

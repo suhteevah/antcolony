@@ -203,17 +203,13 @@ mod tests {
         save_snapshot(&sim, "test.species", &env, &path).expect("save");
 
         let snap = load_snapshot(&path).expect("load");
-        let restored = Simulation::from_snapshot_raw(snap, cfg_for_reconstruction()).expect("restore");
+        let restored =
+            Simulation::from_snapshot_raw(snap, cfg_for_reconstruction()).expect("restore");
 
         assert_eq!(restored.tick, sim.tick, "tick preserved");
+        assert_eq!(restored.ants.len(), sim.ants.len(), "ant count preserved");
         assert_eq!(
-            restored.ants.len(),
-            sim.ants.len(),
-            "ant count preserved"
-        );
-        assert_eq!(
-            restored.colonies[0].food_returned,
-            sim.colonies[0].food_returned,
+            restored.colonies[0].food_returned, sim.colonies[0].food_returned,
             "food_returned preserved"
         );
         assert_eq!(

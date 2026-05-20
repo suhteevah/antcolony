@@ -400,7 +400,10 @@ dig_speed_multiplier = 0.7
 mound_construction = "none"
 "#;
         let s: Substrate = toml::from_str(toml_str).unwrap();
-        assert_eq!(s.preferred, vec![SubstrateType::Wood, SubstrateType::LeafLitter]);
+        assert_eq!(
+            s.preferred,
+            vec![SubstrateType::Wood, SubstrateType::LeafLitter]
+        );
         assert_eq!(s.incompatible, vec![SubstrateType::Sand]);
         assert!((s.dig_speed_multiplier - 0.7).abs() < f32::EPSILON);
         assert_eq!(s.mound_construction, MoundConstruction::None);

@@ -23,8 +23,8 @@ use crate::persist::Snapshot;
 use crate::pheromone::{PheromoneGrid, PheromoneLayer};
 use crate::topology::Topology;
 use crate::tube::{TubeId, TubeTransit};
-use rayon::prelude::*;
 use crate::world::{Terrain, WorldGrid};
+use rayon::prelude::*;
 
 /// Fraction of per-layer pheromone that equilibrates across a tube each tick.
 /// 0.0 = isolated modules (no scent leaks). 1.0 = instant average.
@@ -95,7 +95,11 @@ impl Simulation {
     /// Callers that want a multi-module formicarium should use
     /// [`Simulation::new_with_topology`].
     pub fn new(config: SimConfig, seed: u64) -> Self {
-        let topology = Topology::single(ModuleKind::Outworld, config.world.width, config.world.height);
+        let topology = Topology::single(
+            ModuleKind::Outworld,
+            config.world.width,
+            config.world.height,
+        );
         Self::new_with_topology(config, topology, seed)
     }
 
@@ -145,10 +149,7 @@ impl Simulation {
         );
 
         // Place nest entrance on module 0.
-        topology
-            .module_mut(0)
-            .world
-            .place_nest(pw / 2, ph / 2, 0);
+        topology.module_mut(0).world.place_nest(pw / 2, ph / 2, 0);
 
         let next_ant_id = ants.len() as u32;
         Self {
@@ -195,9 +196,15 @@ impl Simulation {
         // C3: per-species food storage cap.
         c_black.food_storage_cap_override = config.colony.food_storage_cap;
 
-        let dist = CasteRatio { worker: 1.0, soldier: 0.0, breeder: 0.0 };
+        let dist = CasteRatio {
+            worker: 1.0,
+            soldier: 0.0,
+            breeder: 0.0,
+        };
         let mut black_ants = spawn_initial_ants(&config, &mut rng, black_nest, 0, dist, 0);
-        for a in black_ants.iter_mut() { a.module_id = nest_black_module; }
+        for a in black_ants.iter_mut() {
+            a.module_id = nest_black_module;
+        }
 
         // Red colony (AI).
         let red_mod = topology.module(nest_red_module);
@@ -208,17 +215,27 @@ impl Simulation {
         c_red.food_storage_cap_override = config.colony.food_storage_cap;
         c_red.is_ai_controlled = true;
         // Red colonies lean defensive — more soldiers by default.
-        c_red.caste_ratio = CasteRatio { worker: 0.65, soldier: 0.3, breeder: 0.05 };
+        c_red.caste_ratio = CasteRatio {
+            worker: 0.65,
+            soldier: 0.3,
+            breeder: 0.05,
+        };
 
         let id_offset = black_ants.len() as u32;
         let mut red_ants = spawn_initial_ants(&config, &mut rng, red_nest, 1, dist, id_offset);
-        for a in red_ants.iter_mut() { a.module_id = nest_red_module; }
+        for a in red_ants.iter_mut() {
+            a.module_id = nest_red_module;
+        }
 
         let mut ants = black_ants;
         ants.append(&mut red_ants);
 
         for a in &ants {
-            let colony = if a.colony_id == 0 { &mut c_black } else { &mut c_red };
+            let colony = if a.colony_id == 0 {
+                &mut c_black
+            } else {
+                &mut c_red
+            };
             match a.caste {
                 AntCaste::Worker => colony.population.workers += 1,
                 AntCaste::Soldier => colony.population.soldiers += 1,
@@ -394,8 +411,7 @@ impl Simulation {
         c.caste_ratio.worker = decision.caste_ratio_worker / csum;
         c.caste_ratio.soldier = decision.caste_ratio_soldier / csum;
         c.caste_ratio.breeder = decision.caste_ratio_breeder / csum;
-        let wsum =
-            (decision.forage_weight + decision.dig_weight + decision.nurse_weight).max(1e-6);
+        let wsum = (decision.forage_weight + decision.dig_weight + decision.nurse_weight).max(1e-6);
         c.behavior_weights.forage = decision.forage_weight / wsum;
         c.behavior_weights.dig = decision.dig_weight / wsum;
         c.behavior_weights.nurse = decision.nurse_weight / wsum;
@@ -433,14 +449,23 @@ impl Simulation {
             c0.is_ai_controlled = true;
             // Match colony 1's defensive lean so neither side has a
             // structural caste-ratio advantage at start.
-            c0.caste_ratio = CasteRatio { worker: 0.65, soldier: 0.30, breeder: 0.05 };
+            c0.caste_ratio = CasteRatio {
+                worker: 0.65,
+                soldier: 0.30,
+                breeder: 0.05,
+            };
         }
         // Mirror the avenger promotion on the black side too.
-        if let Some(idx) = sim.ants.iter().position(|a| {
-            a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen)
-        }) {
+        if let Some(idx) = sim
+            .ants
+            .iter()
+            .position(|a| a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen))
+        {
             sim.ants[idx].is_avenger = true;
-            tracing::info!(ant = sim.ants[idx].id, "avenger assigned (black colony, AI vs AI mode)");
+            tracing::info!(
+                ant = sim.ants[idx].id,
+                "avenger assigned (black colony, AI vs AI mode)"
+            );
         }
         tracing::info!("AI vs AI mode enabled — both colonies under heuristic control");
         sim
@@ -462,12 +487,7 @@ impl Simulation {
     /// given world position on the given module. Clears any prior
     /// `is_player` flag first. Returns the possessed ant's id, or
     /// `None` if no candidate exists.
-    pub fn possess_nearest(
-        &mut self,
-        colony_id: u8,
-        module: ModuleId,
-        pos: Vec2,
-    ) -> Option<u32> {
+    pub fn possess_nearest(&mut self, colony_id: u8, module: ModuleId, pos: Vec2) -> Option<u32> {
         // Clear any current avatar.
         for a in self.ants.iter_mut() {
             a.is_player = false;
@@ -799,11 +819,7 @@ impl Simulation {
     /// Bases the decision on colony 0's population + in-game days elapsed.
     pub fn module_kind_unlocked(&self, kind: ModuleKind) -> bool {
         let days = self.in_game_total_days();
-        let pop = self
-            .colonies
-            .first()
-            .map(|c| c.adult_total())
-            .unwrap_or(0);
+        let pop = self.colonies.first().map(|c| c.adult_total()).unwrap_or(0);
         crate::unlocks::module_kind_unlocked(kind, days, pop)
     }
 
@@ -973,7 +989,10 @@ impl Simulation {
     }
 
     pub fn spawn_food_cluster(&mut self, cx: i64, cy: i64, radius: i64, units: u32) -> u32 {
-        self.topology.module_mut(0).world.place_food_cluster(cx, cy, radius, units)
+        self.topology
+            .module_mut(0)
+            .world
+            .place_food_cluster(cx, cy, radius, units)
     }
 
     /// Like `spawn_food_cluster` but on a specific module.
@@ -985,7 +1004,10 @@ impl Simulation {
         radius: i64,
         units: u32,
     ) -> u32 {
-        self.topology.module_mut(module).world.place_food_cluster(cx, cy, radius, units)
+        self.topology
+            .module_mut(module)
+            .world
+            .place_food_cluster(cx, cy, radius, units)
     }
 
     /// Test/bench helper — clears every `Terrain::Food` cell on a module
@@ -1105,12 +1127,8 @@ impl Simulation {
             return 0;
         }
         let before = self.ants.len();
-        self.ants.retain(|a| {
-            a.transit
-                .as_ref()
-                .map(|t| t.tube != id)
-                .unwrap_or(true)
-        });
+        self.ants
+            .retain(|a| a.transit.as_ref().map(|t| t.tube != id).unwrap_or(true));
         let killed = before - self.ants.len();
         self.rebuild_population_counts();
         tracing::info!(tube_id = id, killed, "Simulation::remove_tube");
@@ -1297,15 +1315,21 @@ impl Simulation {
                 }
                 let mut local_rng = ChaCha8Rng::seed_from_u64(seed);
                 let mut h = choose_direction(ant, &module.pheromones, &cfg.ant, &mut local_rng);
-                if let Some(alarm_h) =
-                    alarm_response_heading(ant, module, &cfg.ant, &cfg.pheromone)
+                if let Some(alarm_h) = alarm_response_heading(ant, module, &cfg.ant, &cfg.pheromone)
                 {
                     h = alarm_h;
                 }
                 let forage_prob = forage_by_colony[ant.colony_id as usize];
                 let nurse_prob = nurse_by_colony[ant.colony_id as usize];
                 let next = decide_next_state(
-                    ant, &module.world, &module.pheromones, cfg, is_daytime, forage_prob, nurse_prob, &mut local_rng,
+                    ant,
+                    &module.world,
+                    &module.pheromones,
+                    cfg,
+                    is_daytime,
+                    forage_prob,
+                    nurse_prob,
+                    &mut local_rng,
                 );
                 (h, next)
             })
@@ -1389,7 +1413,8 @@ impl Simulation {
                 || (!transit.going_forward && new_progress <= 0.0)
             {
                 // Emerge.
-                let (exit_mod_id, exit_port) = topology.tube_exit(transit.tube, transit.going_forward);
+                let (exit_mod_id, exit_port) =
+                    topology.tube_exit(transit.tube, transit.going_forward);
                 let exit_module = topology.module(exit_mod_id);
                 let emerge_pos = exit_port.to_vec2();
                 let emerge_heading = exit_module.port_interior_heading(exit_port);
@@ -1444,8 +1469,7 @@ impl Simulation {
                 // Detect port entry when the ant is within half a cell of the port
                 // AND moving in the direction the port faces.
                 if (tx - px).abs() <= 1 && (ty - py).abs() <= 1 {
-                    if let Some((tid, going_forward)) =
-                        topology.tube_at_port(ant.module_id, *port)
+                    if let Some((tid, going_forward)) = topology.tube_at_port(ant.module_id, *port)
                     {
                         // K2.2 bore-width gate: ants that are too big can't fit.
                         let tube = topology.tube(tid);
@@ -1558,7 +1582,9 @@ impl Simulation {
             let (ux, uy) = (gx as usize, gy as usize);
             let layered = match ant.state {
                 AntState::Diapause => None,
-                AntState::ReturningHome => Some((PheromoneLayer::FoodTrail, pcfg.deposit_food_trail)),
+                AntState::ReturningHome => {
+                    Some((PheromoneLayer::FoodTrail, pcfg.deposit_food_trail))
+                }
                 AntState::Exploring | AntState::FollowingTrail => {
                     Some((PheromoneLayer::HomeTrail, pcfg.deposit_home_trail))
                 }
@@ -1575,16 +1601,22 @@ impl Simulation {
             }
         }
         for d in deposits {
-            self.topology
-                .module_mut(d.module)
-                .pheromones
-                .deposit(d.x, d.y, d.layer, d.amount, pcfg.max_intensity);
+            self.topology.module_mut(d.module).pheromones.deposit(
+                d.x,
+                d.y,
+                d.layer,
+                d.amount,
+                pcfg.max_intensity,
+            );
         }
         // Apply tube deposits — collected from transit ants above.
         for (tube_id, cell_idx, layer_idx, amount) in tube_deposits {
-            self.topology
-                .tube_mut(tube_id)
-                .deposit(cell_idx, layer_idx, amount, pcfg.max_intensity);
+            self.topology.tube_mut(tube_id).deposit(
+                cell_idx,
+                layer_idx,
+                amount,
+                pcfg.max_intensity,
+            );
         }
 
         // 2) Food pickup + nest drop-off. Iterate ants mutably.
@@ -1651,8 +1683,14 @@ impl Simulation {
                 let mix = (a + b) * 0.5;
                 let new_a = a + (mix - a) * rate;
                 let new_b = b + (mix - b) * rate;
-                self.topology.module_mut(ma).pheromones.set_cell(ax, ay, layer, new_a);
-                self.topology.module_mut(mb).pheromones.set_cell(bx, by, layer, new_b);
+                self.topology
+                    .module_mut(ma)
+                    .pheromones
+                    .set_cell(ax, ay, layer, new_a);
+                self.topology
+                    .module_mut(mb)
+                    .pheromones
+                    .set_cell(bx, by, layer, new_b);
             }
         }
     }
@@ -1701,7 +1739,9 @@ impl Simulation {
             if matches!(ant.caste, AntCaste::Queen) {
                 continue; // queens don't melee
             }
-            let Some(hash) = buckets.get(&ant.module_id) else { continue };
+            let Some(hash) = buckets.get(&ant.module_id) else {
+                continue;
+            };
             let candidates = hash.query_radius(ant.position, radius);
             let base_attack = match ant.caste {
                 AntCaste::Soldier => cfg.soldier_attack,
@@ -1776,10 +1816,18 @@ impl Simulation {
                     c.combat_losses += 1;
                     c.combat_losses_this_tick += 1;
                     match self.ants[d.idx].caste {
-                        AntCaste::Worker => c.population.workers = c.population.workers.saturating_sub(1),
-                        AntCaste::Soldier => c.population.soldiers = c.population.soldiers.saturating_sub(1),
-                        AntCaste::Breeder => c.population.breeders = c.population.breeders.saturating_sub(1),
-                        AntCaste::Queen => { c.queen_health = 0.0; }
+                        AntCaste::Worker => {
+                            c.population.workers = c.population.workers.saturating_sub(1)
+                        }
+                        AntCaste::Soldier => {
+                            c.population.soldiers = c.population.soldiers.saturating_sub(1)
+                        }
+                        AntCaste::Breeder => {
+                            c.population.breeders = c.population.breeders.saturating_sub(1)
+                        }
+                        AntCaste::Queen => {
+                            c.queen_health = 0.0;
+                        }
                     }
                 }
                 if Some(c.id) == d.killer_colony {
@@ -1795,7 +1843,9 @@ impl Simulation {
             if module.world.in_bounds(gx, gy) {
                 let (ux, uy) = (gx as usize, gy as usize);
                 if module.world.get(ux, uy) == Terrain::Empty && cfg.corpse_food_units > 0 {
-                    module.world.set(ux, uy, Terrain::Food(cfg.corpse_food_units));
+                    module
+                        .world
+                        .set(ux, uy, Terrain::Food(cfg.corpse_food_units));
                 }
                 module.pheromones.deposit(
                     ux,
@@ -1807,11 +1857,7 @@ impl Simulation {
             }
         }
 
-        tracing::info!(
-            tick = self.tick,
-            deaths = deaths.len(),
-            "combat resolved"
-        );
+        tracing::info!(tick = self.tick, deaths = deaths.len(), "combat resolved");
 
         // Remove dead ants. Indices collected ascending; iterate descending
         // for swap_remove so later indices stay valid.
@@ -1950,7 +1996,9 @@ impl Simulation {
                 if module.world.in_bounds(gx, gy) {
                     let (ux, uy) = (gx as usize, gy as usize);
                     if module.world.get(ux, uy) == Terrain::Empty && combat.corpse_food_units > 0 {
-                        module.world.set(ux, uy, Terrain::Food(combat.corpse_food_units));
+                        module
+                            .world
+                            .set(ux, uy, Terrain::Food(combat.corpse_food_units));
                     }
                     module.pheromones.deposit(
                         ux,
@@ -1966,9 +2014,15 @@ impl Simulation {
                 for c in self.colonies.iter_mut() {
                     if c.id == cid {
                         match caste {
-                            AntCaste::Worker => c.population.workers = c.population.workers.saturating_sub(1),
-                            AntCaste::Soldier => c.population.soldiers = c.population.soldiers.saturating_sub(1),
-                            AntCaste::Breeder => c.population.breeders = c.population.breeders.saturating_sub(1),
+                            AntCaste::Worker => {
+                                c.population.workers = c.population.workers.saturating_sub(1)
+                            }
+                            AntCaste::Soldier => {
+                                c.population.soldiers = c.population.soldiers.saturating_sub(1)
+                            }
+                            AntCaste::Breeder => {
+                                c.population.breeders = c.population.breeders.saturating_sub(1)
+                            }
                             AntCaste::Queen => c.queen_health = 0.0,
                         }
                     }
@@ -1986,7 +2040,9 @@ impl Simulation {
         for p in self.predators.iter_mut() {
             if let PredatorState::Dead { respawn_in_ticks } = p.state {
                 if respawn_in_ticks > 0 {
-                    p.state = PredatorState::Dead { respawn_in_ticks: respawn_in_ticks - 1 };
+                    p.state = PredatorState::Dead {
+                        respawn_in_ticks: respawn_in_ticks - 1,
+                    };
                 } else if cfg.spider_respawn_ticks > 0 {
                     p.state = PredatorState::Patrol;
                     p.health = cfg.spider_health;
@@ -2118,7 +2174,9 @@ impl Simulation {
             self.predators[idx].state = if next == 0 {
                 PredatorState::Patrol
             } else {
-                PredatorState::Eat { remaining_ticks: next }
+                PredatorState::Eat {
+                    remaining_ticks: next,
+                }
             };
             return;
         }
@@ -2209,8 +2267,8 @@ impl Simulation {
                     new_state = PredatorState::Patrol;
                 }
                 let step = cfg.spider_speed * 0.5;
-                new_pos = predator.position
-                    + Vec2::new(new_heading.cos(), new_heading.sin()) * step;
+                new_pos =
+                    predator.position + Vec2::new(new_heading.cos(), new_heading.sin()) * step;
             }
         }
 
@@ -2238,11 +2296,7 @@ impl Simulation {
             }
             if (ant.position - pos).length() <= 0.75 {
                 killed.push(ai);
-                tracing::info!(
-                    antlion = p.id,
-                    ant_id = ant.id,
-                    "antlion claimed an ant"
-                );
+                tracing::info!(antlion = p.id, ant_id = ant.id, "antlion claimed an ant");
             }
         }
     }
@@ -2251,10 +2305,10 @@ impl Simulation {
     fn weather_tick(&mut self, cfg: &crate::config::HazardConfig) {
         // --- Rain ---
         if cfg.rain_period_ticks > 0 {
-            let time_to_rain = self.tick
-                .saturating_sub(self.weather.last_rain_start_tick)
+            let time_to_rain = self.tick.saturating_sub(self.weather.last_rain_start_tick)
                 >= cfg.rain_period_ticks;
-            let no_rain_yet = self.weather.last_rain_start_tick == 0 && self.weather.total_rain_events == 0;
+            let no_rain_yet =
+                self.weather.last_rain_start_tick == 0 && self.weather.total_rain_events == 0;
             let should_start = self.weather.rain_ticks_remaining == 0
                 && cfg.rain_duration_ticks > 0
                 && (time_to_rain || no_rain_yet);
@@ -2308,10 +2362,7 @@ impl Simulation {
             let period = cfg.lawnmower_period_ticks;
             let active = self.weather.lawnmower_warning_remaining > 0
                 || self.weather.lawnmower_sweep_remaining > 0;
-            if !active
-                && self.tick > 0
-                && self.tick % period == 0
-            {
+            if !active && self.tick > 0 && self.tick % period == 0 {
                 // Pick a surface module with at least one port.
                 let surface_mods: Vec<ModuleId> = self
                     .topology
@@ -2351,11 +2402,7 @@ impl Simulation {
                     };
                     self.weather.lawnmower_sweep_remaining = sweep_ticks;
                     self.weather.lawnmower_y = 0.0;
-                    tracing::warn!(
-                        module = mid,
-                        sweep_ticks,
-                        "lawnmower sweep started"
-                    );
+                    tracing::warn!(module = mid, sweep_ticks, "lawnmower sweep started");
                 }
             } else if self.weather.lawnmower_sweep_remaining > 0 {
                 // Advance blade + kill any surface ant under it.
@@ -2407,12 +2454,20 @@ impl Simulation {
         let mut entrance_pairs: Vec<(u8, ModuleId, Vec2, ModuleId, Vec2)> = Vec::new();
         for c in &self.colonies {
             let cid = c.id;
-            let Some(surf_mod) = self.topology.surface_nest_for_colony(cid) else { continue };
-            let Some(ug_mod) = self.topology.underground_for_colony(cid) else { continue };
+            let Some(surf_mod) = self.topology.surface_nest_for_colony(cid) else {
+                continue;
+            };
+            let Some(ug_mod) = self.topology.underground_for_colony(cid) else {
+                continue;
+            };
             let surf = self.topology.module(surf_mod);
-            let Some((sx, sy)) = surf.world.find_nest_entrance(cid) else { continue };
+            let Some((sx, sy)) = surf.world.find_nest_entrance(cid) else {
+                continue;
+            };
             let ug = self.topology.module(ug_mod);
-            let Some((ux, uy)) = ug.world.find_nest_entrance(cid) else { continue };
+            let Some((ux, uy)) = ug.world.find_nest_entrance(cid) else {
+                continue;
+            };
             // Center the teleport position on the cell.
             let surf_pos = Vec2::new(sx as f32 + 0.5, sy as f32 + 0.5);
             let ug_pos = Vec2::new(ux as f32 + 0.5, uy as f32 + 0.5);
@@ -2432,7 +2487,9 @@ impl Simulation {
             if ant.caste == AntCaste::Queen {
                 continue;
             }
-            let Some(pair) = entrance_pairs.iter().find(|p| p.0 == ant.colony_id) else { continue };
+            let Some(pair) = entrance_pairs.iter().find(|p| p.0 == ant.colony_id) else {
+                continue;
+            };
             let (_, surf_mod, surf_pos, ug_mod, ug_pos) = *pair;
             // Only fire the teleport when the ant arrives on the
             // entrance cell — a state_timer-based debounce is overkill;
@@ -2448,7 +2505,11 @@ impl Simulation {
             // Underground→surface only when ant.carrying_soil is true
             // (it MUST surface to dump the pellet).
             if ant.module_id == surf_mod {
-                let (gx, gy) = self.topology.module(surf_mod).world.world_to_grid(ant.position);
+                let (gx, gy) = self
+                    .topology
+                    .module(surf_mod)
+                    .world
+                    .world_to_grid(ant.position);
                 if (gx, gy) == (surf_pos.x as i64, surf_pos.y as i64)
                     && ant.state == AntState::Digging
                 {
@@ -2460,7 +2521,11 @@ impl Simulation {
                 }
             }
             if ant.module_id == ug_mod {
-                let (gx, gy) = self.topology.module(ug_mod).world.world_to_grid(ant.position);
+                let (gx, gy) = self
+                    .topology
+                    .module(ug_mod)
+                    .world
+                    .world_to_grid(ant.position);
                 if (gx, gy) == (ug_pos.x as i64, ug_pos.y as i64) {
                     // Existing rule: pellet-carrying digger MUST surface to dump.
                     if ant.carrying_soil {
@@ -2500,8 +2565,11 @@ impl Simulation {
         // one Solid cell — those are the only modules where promotion
         // makes sense (no point promoting an ant on an outworld where
         // there's nothing to dig).
-        let mut dig_weight_by_colony: Vec<(u8, f32)> =
-            self.colonies.iter().map(|c| (c.id, c.behavior_weights.dig)).collect();
+        let mut dig_weight_by_colony: Vec<(u8, f32)> = self
+            .colonies
+            .iter()
+            .map(|c| (c.id, c.behavior_weights.dig))
+            .collect();
 
         // Only promote on modules that have Solid cells (the underground
         // nests). Cheap precomputed bitmap: module_id → has_solid.
@@ -2509,7 +2577,12 @@ impl Simulation {
             .topology
             .modules
             .iter()
-            .map(|m| (m.id, m.world.cells.iter().any(|c| matches!(c, Terrain::Solid))))
+            .map(|m| {
+                (
+                    m.id,
+                    m.world.cells.iter().any(|c| matches!(c, Terrain::Solid)),
+                )
+            })
             .collect();
 
         for ant in self.ants.iter_mut() {
@@ -2521,8 +2594,12 @@ impl Simulation {
             if !matches!(ant.state, AntState::Idle | AntState::Exploring) {
                 continue;
             }
-            let Some((_, w)) = dig_weight_by_colony.iter().find(|p| p.0 == ant.colony_id) else { continue };
-            let Some((_, on_solid_module)) = has_solid.iter().find(|p| p.0 == ant.module_id) else { continue };
+            let Some((_, w)) = dig_weight_by_colony.iter().find(|p| p.0 == ant.colony_id) else {
+                continue;
+            };
+            let Some((_, on_solid_module)) = has_solid.iter().find(|p| p.0 == ant.module_id) else {
+                continue;
+            };
             if !*on_solid_module {
                 continue;
             }
@@ -2627,7 +2704,10 @@ impl Simulation {
             let current_tick = self.tick;
             for (ant_idx, mid, x, y) in &flips {
                 // Flip the tile.
-                self.topology.module_mut(*mid).world.set(*x, *y, Terrain::Empty);
+                self.topology
+                    .module_mut(*mid)
+                    .world
+                    .set(*x, *y, Terrain::Empty);
                 let ant = &mut self.ants[*ant_idx];
                 ant.carrying_soil = true;
                 ant.dig_progress = 0;
@@ -2639,7 +2719,8 @@ impl Simulation {
                 // pulse at this cell. Capped at 256 entries — drop
                 // oldest when full so the renderer always has fresh
                 // pulses without unbounded memory growth.
-                self.excavation_events.push((*mid, *x as u16, *y as u16, current_tick));
+                self.excavation_events
+                    .push((*mid, *x as u16, *y as u16, current_tick));
                 if self.excavation_events.len() > 256 {
                     self.excavation_events.remove(0);
                 }
@@ -2729,13 +2810,10 @@ impl Simulation {
                 continue;
             }
             let (ux, uy) = (gx as usize, gy as usize);
-            self.topology.module_mut(ant.module_id).pheromones.deposit_territory(
-                ux,
-                uy,
-                ant.colony_id,
-                DEPOSIT_AMOUNT,
-                cap,
-            );
+            self.topology
+                .module_mut(ant.module_id)
+                .pheromones
+                .deposit_territory(ux, uy, ant.colony_id, DEPOSIT_AMOUNT, cap);
         }
     }
 
@@ -3148,10 +3226,7 @@ impl Simulation {
                 // by then we've had a full year to accumulate diapause
                 // days against the threshold.
                 let partial_first_year = self.climate.starting_day_of_year != 0;
-                if colony.last_year_evaluated == 0
-                    && current_year == 1
-                    && partial_first_year
-                {
+                if colony.last_year_evaluated == 0 && current_year == 1 && partial_first_year {
                     tracing::info!(
                         colony_id = colony.id,
                         diapause_days = colony.days_in_diapause_this_year,
@@ -3365,8 +3440,7 @@ impl Simulation {
                     let cost = ccfg.adult_food_consumption.max(1e-6);
                     let raw = (deficit / cost).ceil() as u32;
                     const STARVATION_PER_TICK: f32 = 1.0 / 43_200.0 / 100.0; // 1%/day
-                    colony.starvation_accumulator +=
-                        adult_total as f32 * STARVATION_PER_TICK;
+                    colony.starvation_accumulator += adult_total as f32 * STARVATION_PER_TICK;
                     let smooth_cap = colony.starvation_accumulator.floor() as u32;
                     let mut deaths = raw.min(smooth_cap);
                     if deaths > adult_total {
@@ -3489,7 +3563,10 @@ impl Simulation {
                     // queens reduce egg size under stress (Bourke & Franks
                     // 1995). Floor cost at 10% of egg_cost to avoid free
                     // eggs at food = epsilon.
-                    let actual_cost = ccfg.egg_cost.min(colony.food_stored).max(ccfg.egg_cost * 0.1);
+                    let actual_cost = ccfg
+                        .egg_cost
+                        .min(colony.food_stored)
+                        .max(ccfg.egg_cost * 0.1);
                     if colony.food_stored < actual_cost {
                         break;
                     }
@@ -3501,11 +3578,7 @@ impl Simulation {
                     laid_this_tick += 1;
                     if !colony.has_laid_egg {
                         colony.has_laid_egg = true;
-                        tracing::info!(
-                            colony_id = colony.id,
-                            tick = self.tick,
-                            "first egg laid"
-                        );
+                        tracing::info!(colony_id = colony.id, tick = self.tick, "first egg laid");
                     }
                 }
             }
@@ -3515,39 +3588,39 @@ impl Simulation {
                 // Brood development pauses entirely during colony diapause.
                 // Ages stay frozen until thaw.
             } else {
-            for (idx, b) in colony.brood.iter_mut().enumerate() {
-                b.age = b.age.saturating_add(1);
-                match b.stage {
-                    BroodStage::Egg => {
-                        // Egg stage: age until it matures into a larva.
-                        if b.age >= ccfg.egg_stage_ticks {
-                            b.stage = BroodStage::Larva;
-                            b.age = 0;
-                            if colony.eggs > 0 {
-                                colony.eggs -= 1;
+                for (idx, b) in colony.brood.iter_mut().enumerate() {
+                    b.age = b.age.saturating_add(1);
+                    match b.stage {
+                        BroodStage::Egg => {
+                            // Egg stage: age until it matures into a larva.
+                            if b.age >= ccfg.egg_stage_ticks {
+                                b.stage = BroodStage::Larva;
+                                b.age = 0;
+                                if colony.eggs > 0 {
+                                    colony.eggs -= 1;
+                                }
+                                colony.larvae += 1;
                             }
-                            colony.larvae += 1;
                         }
-                    }
-                    BroodStage::Larva => {
-                        // Larva stage: age until it matures into a pupa.
-                        if b.age >= ccfg.larva_stage_ticks {
-                            b.stage = BroodStage::Pupa;
-                            b.age = 0;
-                            if colony.larvae > 0 {
-                                colony.larvae -= 1;
+                        BroodStage::Larva => {
+                            // Larva stage: age until it matures into a pupa.
+                            if b.age >= ccfg.larva_stage_ticks {
+                                b.stage = BroodStage::Pupa;
+                                b.age = 0;
+                                if colony.larvae > 0 {
+                                    colony.larvae -= 1;
+                                }
+                                colony.pupae += 1;
                             }
-                            colony.pupae += 1;
                         }
-                    }
-                    BroodStage::Pupa => {
-                        // Pupa stage: age until it ecloses into an adult.
-                        if b.age >= ccfg.pupa_stage_ticks {
-                            matured_indices.push(idx);
+                        BroodStage::Pupa => {
+                            // Pupa stage: age until it ecloses into an adult.
+                            if b.age >= ccfg.pupa_stage_ticks {
+                                matured_indices.push(idx);
+                            }
                         }
                     }
                 }
-            }
             }
 
             if !matured_indices.is_empty() {
@@ -3559,9 +3632,7 @@ impl Simulation {
                     let pos = if colony.nest_entrance_positions.is_empty() {
                         Vec2::ZERO
                     } else {
-                        let i = self
-                            .rng
-                            .gen_range(0..colony.nest_entrance_positions.len());
+                        let i = self.rng.gen_range(0..colony.nest_entrance_positions.len());
                         colony.nest_entrance_positions[i]
                     };
                     to_spawn.push((colony.id, b.caste, pos));
@@ -4098,7 +4169,11 @@ mod tests {
         let initial_ants = sim.ants.len();
         sim.run(1000);
         let new_ants = &sim.ants[initial_ants..];
-        assert!(new_ants.len() >= 5, "not enough new adults: {}", new_ants.len());
+        assert!(
+            new_ants.len() >= 5,
+            "not enough new adults: {}",
+            new_ants.len()
+        );
         for a in new_ants {
             assert_eq!(
                 a.caste,
@@ -4137,7 +4212,10 @@ mod tests {
         // 20 workers + 1 queen spawned at the nest.
         assert_eq!(sim.ants.len(), 21);
         assert_eq!(
-            sim.ants.iter().filter(|a| a.caste == AntCaste::Queen).count(),
+            sim.ants
+                .iter()
+                .filter(|a| a.caste == AntCaste::Queen)
+                .count(),
             1,
             "exactly one queen at spawn"
         );
@@ -4458,12 +4536,16 @@ mod tests {
             sim.port_bleed();
         }
 
-        let leaked = sim
-            .topology
-            .module(1)
-            .pheromones
-            .read(out_port.x as usize, out_port.y as usize, PheromoneLayer::FoodTrail);
-        assert!(leaked > 0.5, "pheromone did not bleed across tube: {}", leaked);
+        let leaked = sim.topology.module(1).pheromones.read(
+            out_port.x as usize,
+            out_port.y as usize,
+            PheromoneLayer::FoodTrail,
+        );
+        assert!(
+            leaked > 0.5,
+            "pheromone did not bleed across tube: {}",
+            leaked
+        );
     }
 
     // ---- K3 thermoregulation + hibernation tests ----
@@ -4658,7 +4740,11 @@ mod tests {
             "Test Hydration",
         );
         assert_eq!(sim.topology.modules.len(), 3);
-        assert_eq!(sim.topology.module(new_id).ports.len(), 4, "auto-seeded 4 ports");
+        assert_eq!(
+            sim.topology.module(new_id).ports.len(),
+            4,
+            "auto-seeded 4 ports"
+        );
 
         // Place an ant on the new module, then remove it. Ant must be killed.
         let ants_before = sim.ants.len();
@@ -4672,13 +4758,8 @@ mod tests {
             8.0,
         );
         // Put an ant directly on the new module.
-        sim.ants.push(Ant::new_worker(
-            9_999,
-            0,
-            Vec2::new(5.0, 5.0),
-            0.0,
-            10.0,
-        ));
+        sim.ants
+            .push(Ant::new_worker(9_999, 0, Vec2::new(5.0, 5.0), 0.0, 10.0));
         let idx = sim.ants.len() - 1;
         sim.ants[idx].module_id = new_id;
 
@@ -4687,7 +4768,10 @@ mod tests {
         assert_eq!(sim.ants.len(), ants_before);
         assert_eq!(sim.topology.modules.len(), 2);
         assert!(
-            sim.topology.tubes.iter().all(|t| t.from.module != new_id && t.to.module != new_id),
+            sim.topology
+                .tubes
+                .iter()
+                .all(|t| t.from.module != new_id && t.to.module != new_id),
             "tube touching removed module still present"
         );
     }
@@ -4752,7 +4836,10 @@ mod tests {
             .iter()
             .filter(|m| m.kind == MilestoneKind::PopulationTen)
             .count();
-        assert_eq!(count_pop10, 1, "pop10 should only fire once across oscillation");
+        assert_eq!(
+            count_pop10, 1,
+            "pop10 should only fire once across oscillation"
+        );
     }
 
     #[test]
@@ -4798,9 +4885,7 @@ mod tests {
             sim.tick();
         }
         assert!(
-            sim.ants
-                .iter()
-                .all(|a| a.state != AntState::NuptialFlight),
+            sim.ants.iter().all(|a| a.state != AntState::NuptialFlight),
             "no breeders should still be airborne after 20 ticks"
         );
         assert_eq!(
@@ -4850,9 +4935,7 @@ mod tests {
         }
         // Below threshold: no one flies.
         assert!(
-            sim.ants
-                .iter()
-                .all(|a| a.state != AntState::NuptialFlight),
+            sim.ants.iter().all(|a| a.state != AntState::NuptialFlight),
             "below threshold — no launch"
         );
         assert_eq!(sim.colonies[0].nuptial_launches, 0);
@@ -4899,9 +4982,30 @@ mod tests {
         let initial = sim.ants.len();
 
         // Two black workers vs one red soldier, standing toe-to-toe.
-        place_combatant(&mut sim, 9001, 0, Vec2::new(16.0, 16.0), AntCaste::Worker, 5.0);
-        place_combatant(&mut sim, 9002, 0, Vec2::new(16.5, 16.0), AntCaste::Worker, 5.0);
-        place_combatant(&mut sim, 9003, 1, Vec2::new(16.25, 16.25), AntCaste::Soldier, 25.0);
+        place_combatant(
+            &mut sim,
+            9001,
+            0,
+            Vec2::new(16.0, 16.0),
+            AntCaste::Worker,
+            5.0,
+        );
+        place_combatant(
+            &mut sim,
+            9002,
+            0,
+            Vec2::new(16.5, 16.0),
+            AntCaste::Worker,
+            5.0,
+        );
+        place_combatant(
+            &mut sim,
+            9003,
+            1,
+            Vec2::new(16.25, 16.25),
+            AntCaste::Soldier,
+            25.0,
+        );
 
         // Combat tick directly — bypass FSM/movement.
         for _ in 0..6 {
@@ -4920,8 +5024,22 @@ mod tests {
     #[test]
     fn combat_death_drops_food_and_alarm() {
         let mut sim = two_colony_sim_for_combat();
-        place_combatant(&mut sim, 9101, 0, Vec2::new(10.0, 10.0), AntCaste::Worker, 1.0);
-        place_combatant(&mut sim, 9102, 1, Vec2::new(10.0, 10.0), AntCaste::Soldier, 25.0);
+        place_combatant(
+            &mut sim,
+            9101,
+            0,
+            Vec2::new(10.0, 10.0),
+            AntCaste::Worker,
+            1.0,
+        );
+        place_combatant(
+            &mut sim,
+            9102,
+            1,
+            Vec2::new(10.0, 10.0),
+            AntCaste::Soldier,
+            25.0,
+        );
 
         sim.combat_tick();
         sim.combat_tick();
@@ -4943,7 +5061,11 @@ mod tests {
         let alarm = module
             .pheromones
             .read(gx as usize, gy as usize, PheromoneLayer::Alarm);
-        assert!(alarm > 0.0, "alarm pheromone should be deposited, got {}", alarm);
+        assert!(
+            alarm > 0.0,
+            "alarm pheromone should be deposited, got {}",
+            alarm
+        );
     }
 
     #[test]
@@ -4961,7 +5083,8 @@ mod tests {
         assert!(
             after > before,
             "AI should escalate soldier ratio: before={} after={}",
-            before, after
+            before,
+            after
         );
         assert!(after <= 0.5, "cap at 0.5 (got {})", after);
         // And the tick-local counter is cleared.
@@ -4972,14 +5095,8 @@ mod tests {
     fn soldier_steers_toward_alarm_worker_steers_away() {
         use crate::ant::AntCaste;
         let cfg = small_config();
-        let mut module = crate::module::Module::new(
-            0,
-            ModuleKind::Outworld,
-            40,
-            40,
-            Vec2::ZERO,
-            "Test",
-        );
+        let mut module =
+            crate::module::Module::new(0, ModuleKind::Outworld, 40, 40, Vec2::ZERO, "Test");
         // Lay down a strong alarm blob to the east of the ant's cell.
         for dx in 0..3 {
             module.pheromones.deposit(
@@ -4999,14 +5116,7 @@ mod tests {
             25.0,
             AntCaste::Soldier,
         );
-        let worker = Ant::new_with_caste(
-            2,
-            0,
-            Vec2::new(10.5, 10.5),
-            0.0,
-            10.0,
-            AntCaste::Worker,
-        );
+        let worker = Ant::new_with_caste(2, 0, Vec2::new(10.5, 10.5), 0.0, 10.0, AntCaste::Worker);
 
         let sh = alarm_response_heading(&soldier, &module, &cfg.ant, &cfg.pheromone)
             .expect("soldier should respond to strong alarm");
@@ -5015,8 +5125,16 @@ mod tests {
 
         // Alarm is east → soldier heads roughly east (cos > 0),
         // worker heads roughly west (cos < 0).
-        assert!(sh.cos() > 0.3, "soldier heading should face east, got {}", sh);
-        assert!(wh.cos() < -0.3, "worker heading should face west, got {}", wh);
+        assert!(
+            sh.cos() > 0.3,
+            "soldier heading should face east, got {}",
+            sh
+        );
+        assert!(
+            wh.cos() < -0.3,
+            "worker heading should face west, got {}",
+            wh
+        );
     }
 
     // ===================== Biology-grounded tests =====================
@@ -5149,7 +5267,10 @@ mod tests {
         let eggs_before = sim.colonies[0].eggs;
         sim.colony_economy_tick();
         // Without the tech, brood is untouched — adults starve directly.
-        assert_eq!(sim.colonies[0].eggs, eggs_before, "brood must survive without the tech");
+        assert_eq!(
+            sim.colonies[0].eggs, eggs_before,
+            "brood must survive without the tech"
+        );
     }
 
     // ===================== Phase 7 player-interaction tests =====================
@@ -5166,14 +5287,8 @@ mod tests {
         let mut b = Ant::new_worker(7302, 0, Vec2::new(20.0, 20.0), 0.0, 10.0);
         b.module_id = 0;
         sim.ants.push(b);
-        let mut q = Ant::new_with_caste(
-            7303,
-            0,
-            Vec2::new(11.0, 11.0),
-            0.0,
-            100.0,
-            AntCaste::Queen,
-        );
+        let mut q =
+            Ant::new_with_caste(7303, 0, Vec2::new(11.0, 11.0), 0.0, 100.0, AntCaste::Queen);
         q.module_id = 0;
         sim.ants.push(q);
 
@@ -5234,7 +5349,11 @@ mod tests {
 
         let got = sim.recruit_nearby(7501, 5.0, 3);
         assert_eq!(got, 3, "should recruit max_count=3");
-        let bonded = sim.ants.iter().filter(|a| a.follow_leader == Some(7501)).count();
+        let bonded = sim
+            .ants
+            .iter()
+            .filter(|a| a.follow_leader == Some(7501))
+            .count();
         assert_eq!(bonded, 3);
 
         // After follower_steering, the bonded workers face east (toward leader).
@@ -5247,7 +5366,11 @@ mod tests {
             .collect();
         // All 3 should face roughly west (leader is west of them) — cos < 0.
         for h in heads {
-            assert!(h.cos() < 0.0, "recruit should turn toward leader (west), got {}", h);
+            assert!(
+                h.cos() < 0.0,
+                "recruit should turn toward leader (west), got {}",
+                h
+            );
         }
     }
 
@@ -5277,7 +5400,10 @@ mod tests {
         assert!(alarm > 0.0, "alarm should be > 0 after beacon ticks");
         // Third tick — beacon should be gone.
         sim.beacon_tick();
-        assert!(sim.beacons.iter().find(|b| b.id == bid).is_none(), "beacon expired");
+        assert!(
+            sim.beacons.iter().find(|b| b.id == bid).is_none(),
+            "beacon expired"
+        );
     }
 
     // ===================== Phase 6 hazards tests =====================
@@ -5356,11 +5482,11 @@ mod tests {
             .module_mut(ug)
             .pheromones
             .deposit(5, 5, PheromoneLayer::FoodTrail, 5.0, 10.0);
-        let underground_before = sim
-            .topology
-            .module(ug)
-            .pheromones
-            .read(5, 5, PheromoneLayer::FoodTrail);
+        let underground_before =
+            sim.topology
+                .module(ug)
+                .pheromones
+                .read(5, 5, PheromoneLayer::FoodTrail);
         assert!(underground_before > 0.0);
 
         // Run ticks past the rain trigger (period=5). Use sim.tick() so
@@ -5374,12 +5500,16 @@ mod tests {
             .module(0)
             .pheromones
             .read(5, 5, PheromoneLayer::FoodTrail);
-        let underground_after = sim
-            .topology
-            .module(ug)
-            .pheromones
-            .read(5, 5, PheromoneLayer::FoodTrail);
-        assert!(surface_after.abs() < 0.01, "surface should be wiped, got {}", surface_after);
+        let underground_after =
+            sim.topology
+                .module(ug)
+                .pheromones
+                .read(5, 5, PheromoneLayer::FoodTrail);
+        assert!(
+            surface_after.abs() < 0.01,
+            "surface should be wiped, got {}",
+            surface_after
+        );
         assert!(
             underground_after > 0.0,
             "underground should be untouched by rain, got {}",
@@ -5433,7 +5563,9 @@ mod tests {
 
         // Force the spider dead.
         if let Some(p) = sim.predators.iter_mut().find(|p| p.id == sid) {
-            p.state = PredatorState::Dead { respawn_in_ticks: 3 };
+            p.state = PredatorState::Dead {
+                respawn_in_ticks: 3,
+            };
             p.health = 0.0;
         }
         for _ in 0..5 {
@@ -5476,7 +5608,10 @@ mod tests {
                 }
             }
         }
-        assert!(queen > 0 && brood > 0 && store > 0 && waste > 0, "all 4 chambers present");
+        assert!(
+            queen > 0 && brood > 0 && store > 0 && waste > 0,
+            "all 4 chambers present"
+        );
         assert!(
             solid as f32 > 0.5 * (m.world.width * m.world.height) as f32,
             "underground should be mostly Solid at start"
@@ -5540,9 +5675,15 @@ mod tests {
         // when the tile flipped). sim.ants[0] is the auto-spawned queen;
         // the digger we pushed is the last ant.
         let digger = sim.ants.last().expect("digger present");
-        assert!(digger.carrying_soil, "digger should carry a soil pellet after excavation");
-        assert_eq!(digger.state, AntState::ReturningHome,
-            "digger should transition to ReturningHome after extracting the pellet");
+        assert!(
+            digger.carrying_soil,
+            "digger should carry a soil pellet after excavation"
+        );
+        assert_eq!(
+            digger.state,
+            AntState::ReturningHome,
+            "digger should transition to ReturningHome after extracting the pellet"
+        );
     }
 
     #[test]
@@ -5575,13 +5716,7 @@ mod tests {
 
         // Spawn 50 adult workers + drain food storage.
         for i in 0..50u32 {
-            let mut a = Ant::new_worker(
-                10_000 + i,
-                0,
-                Vec2::new(5.0, 5.0),
-                0.0,
-                10.0,
-            );
+            let mut a = Ant::new_worker(10_000 + i, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
             sim.ants.push(a);
             sim.colonies[0].population.workers += 1;
         }
@@ -5649,11 +5784,17 @@ mod tests {
         assert!(
             died >= 1 && died <= 50,
             "expected ~7-8 stochastic age-deaths over 1000 ticks at 3-day lifespan; got {} (initial {}, after {})",
-            died, initial, after
+            died,
+            initial,
+            after
         );
 
         // Population counter must match remaining ants — no orphans.
-        let live_workers = sim.ants.iter().filter(|a| matches!(a.caste, AntCaste::Worker)).count() as u32;
+        let live_workers = sim
+            .ants
+            .iter()
+            .filter(|a| matches!(a.caste, AntCaste::Worker))
+            .count() as u32;
         assert_eq!(
             after, live_workers,
             "colony.population.workers ({}) must equal live worker ant count ({})",
@@ -5703,7 +5844,9 @@ mod tests {
         assert!(
             (4..=7).contains(&lost),
             "expected ~5 deaths/day (1% of 500) under smooth-starvation cap; got {} in 43200 ticks (initial {}, after {})",
-            lost, initial, after
+            lost,
+            initial,
+            after
         );
     }
 
@@ -5810,8 +5953,14 @@ mod tests {
         let mut sim = Simulation::new_with_topology(cfg, topology, 1);
 
         // Find the surface nest entrance position.
-        let surf_mod = sim.topology.surface_nest_for_colony(0).expect("surface nest");
-        let ug_mod = sim.topology.underground_for_colony(0).expect("underground nest");
+        let surf_mod = sim
+            .topology
+            .surface_nest_for_colony(0)
+            .expect("surface nest");
+        let ug_mod = sim
+            .topology
+            .underground_for_colony(0)
+            .expect("underground nest");
         let (sx, sy) = sim
             .topology
             .module(surf_mod)
@@ -5851,8 +6000,14 @@ mod tests {
         cfg.ant.initial_count = 0;
         let mut sim = Simulation::new_with_topology(cfg, topology, 1);
 
-        let surf_mod = sim.topology.surface_nest_for_colony(0).expect("surface nest");
-        let ug_mod = sim.topology.underground_for_colony(0).expect("underground nest");
+        let surf_mod = sim
+            .topology
+            .surface_nest_for_colony(0)
+            .expect("surface nest");
+        let ug_mod = sim
+            .topology
+            .underground_for_colony(0)
+            .expect("underground nest");
         let (ux, uy) = sim
             .topology
             .module(ug_mod)
@@ -5891,14 +6046,21 @@ mod tests {
     #[test]
     fn idle_or_exploring_worker_at_ug_entrance_surfaces() {
         use crate::ant::AntCaste;
-        for state in [AntState::Idle, AntState::Exploring, AntState::FollowingTrail] {
+        for state in [
+            AntState::Idle,
+            AntState::Exploring,
+            AntState::FollowingTrail,
+        ] {
             let mut topology = Topology::starter_formicarium((32, 24), (48, 48));
             let _ug = topology.attach_underground(0, 0, 40, 24);
             let mut cfg = small_config();
             cfg.ant.initial_count = 0;
             let mut sim = Simulation::new_with_topology(cfg, topology, 1);
 
-            let surf_mod = sim.topology.surface_nest_for_colony(0).expect("surface nest");
+            let surf_mod = sim
+                .topology
+                .surface_nest_for_colony(0)
+                .expect("surface nest");
             let ug_mod = sim.topology.underground_for_colony(0).expect("ug nest");
             let (ux, uy) = sim
                 .topology
@@ -5957,8 +6119,15 @@ mod tests {
         cfg.ant.nocturnal = true;
         let next_day = decide_next_state(&ant, &world, &pher, &cfg, true, 1.0, 0.0, &mut rng);
         let next_night = decide_next_state(&ant, &world, &pher, &cfg, false, 1.0, 0.0, &mut rng);
-        assert_eq!(next_day, None, "nocturnal Idle worker should not transition during day");
-        assert_eq!(next_night, Some(AntState::Exploring), "nocturnal worker emerges at night");
+        assert_eq!(
+            next_day, None,
+            "nocturnal Idle worker should not transition during day"
+        );
+        assert_eq!(
+            next_night,
+            Some(AntState::Exploring),
+            "nocturnal worker emerges at night"
+        );
     }
 
     /// Phase B brain hook — forage_weight on the colony actually
@@ -5977,7 +6146,10 @@ mod tests {
         // forage_prob = 0, nurse_prob = 0 → 100 trials, all should return None.
         for _ in 0..100 {
             let next = decide_next_state(&ant, &world, &pher, &cfg, true, 0.0, 0.0, &mut rng);
-            assert_eq!(next, None, "forage_prob=0,nurse_prob=0 should never promote Idle");
+            assert_eq!(
+                next, None,
+                "forage_prob=0,nurse_prob=0 should never promote Idle"
+            );
         }
         // forage_prob = 1 → always promotes.
         let next = decide_next_state(&ant, &world, &pher, &cfg, true, 1.0, 0.0, &mut rng);
@@ -6040,14 +6212,8 @@ mod tests {
 
         // Place a worker on the outworld (module 1) at a known cell.
         let outworld_id = 1;
-        let mut ant = Ant::new_with_caste(
-            7777,
-            0,
-            Vec2::new(10.0, 10.0),
-            0.0,
-            10.0,
-            AntCaste::Worker,
-        );
+        let mut ant =
+            Ant::new_with_caste(7777, 0, Vec2::new(10.0, 10.0), 0.0, 10.0, AntCaste::Worker);
         ant.module_id = outworld_id;
         sim.ants.push(ant);
 
@@ -6075,7 +6241,10 @@ mod tests {
             "spider HP must drop after biting a stinging ant ({initial_hp} -> {after_hp})",
         );
         // Sting damage = 3.0 * 3.0 = 9.0; spider should be at 21 HP.
-        assert!((after_hp - 21.0).abs() < 0.01, "expected ~21 HP, got {after_hp}");
+        assert!(
+            (after_hp - 21.0).abs() < 0.01,
+            "expected ~21 HP, got {after_hp}"
+        );
     }
 
     /// Negative case: a mandible-only worker (sting_potency=0) leaves
@@ -6094,14 +6263,8 @@ mod tests {
         let mut sim = Simulation::new_with_topology(cfg.clone(), topology, 1);
 
         let outworld_id = 1;
-        let mut ant = Ant::new_with_caste(
-            7777,
-            0,
-            Vec2::new(10.0, 10.0),
-            0.0,
-            10.0,
-            AntCaste::Worker,
-        );
+        let mut ant =
+            Ant::new_with_caste(7777, 0, Vec2::new(10.0, 10.0), 0.0, 10.0, AntCaste::Worker);
         ant.module_id = outworld_id;
         sim.ants.push(ant);
 
@@ -6210,9 +6373,23 @@ mod tests {
     fn territory_deposits_signed_by_colony() {
         let mut sim = two_colony_sim_for_combat();
         // Stand a black worker on module 1 (outworld), cell (5,5).
-        place_combatant(&mut sim, 9701, 0, Vec2::new(5.5, 5.5), AntCaste::Worker, 10.0);
+        place_combatant(
+            &mut sim,
+            9701,
+            0,
+            Vec2::new(5.5, 5.5),
+            AntCaste::Worker,
+            10.0,
+        );
         // Stand a red worker on module 1, cell (20, 20).
-        place_combatant(&mut sim, 9702, 1, Vec2::new(20.5, 20.5), AntCaste::Worker, 10.0);
+        place_combatant(
+            &mut sim,
+            9702,
+            1,
+            Vec2::new(20.5, 20.5),
+            AntCaste::Worker,
+            10.0,
+        );
 
         for _ in 0..40 {
             sim.territory_deposit_tick();
@@ -6255,7 +6432,11 @@ mod tests {
         );
         sim.avenger_tick();
         let h = sim.ants[av_idx].heading;
-        assert!(h.cos() > 0.7, "avenger heading should point east, got {}", h);
+        assert!(
+            h.cos() > 0.7,
+            "avenger heading should point east, got {}",
+            h
+        );
     }
 
     #[test]
@@ -6282,8 +6463,22 @@ mod tests {
     #[test]
     fn same_colony_ants_never_attack_each_other() {
         let mut sim = two_colony_sim_for_combat();
-        place_combatant(&mut sim, 9201, 0, Vec2::new(8.0, 8.0), AntCaste::Soldier, 25.0);
-        place_combatant(&mut sim, 9202, 0, Vec2::new(8.2, 8.0), AntCaste::Worker, 5.0);
+        place_combatant(
+            &mut sim,
+            9201,
+            0,
+            Vec2::new(8.0, 8.0),
+            AntCaste::Soldier,
+            25.0,
+        );
+        place_combatant(
+            &mut sim,
+            9202,
+            0,
+            Vec2::new(8.2, 8.0),
+            AntCaste::Worker,
+            5.0,
+        );
         let before_losses = sim.colonies[0].combat_losses;
 
         for _ in 0..20 {
@@ -6391,7 +6586,7 @@ mod tests {
         let mut sim = Simulation::new(cfg, 1);
 
         // Set sustained low-food state: small reserve, no inflow.
-        sim.colonies[0].food_stored = 2.0;        // BELOW egg_cost
+        sim.colonies[0].food_stored = 2.0; // BELOW egg_cost
         sim.colonies[0].food_inflow_recent = 0.0; // throttle to floor
 
         let eggs_before = sim.colonies[0].eggs;

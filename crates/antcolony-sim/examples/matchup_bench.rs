@@ -32,10 +32,14 @@
 use std::path::PathBuf;
 
 use antcolony_sim::{
-    AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BreederBrain, ColonyAiState,
-    ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain,
-    BrainArchetype, MatchStatus, MixedBrain, MlpBrain, RandomBrain, Simulation, SpeciesBrain, Topology, TunedBrain,
-    config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
+    AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BrainArchetype, BreederBrain,
+    ColonyAiState, ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain,
+    HeuristicBrain, MatchStatus, MixedBrain, MlpBrain, RandomBrain, Simulation, SpeciesBrain,
+    Topology, TunedBrain,
+    config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    },
 };
 use serde::Serialize;
 
@@ -135,18 +139,66 @@ fn parse_args() -> anyhow::Result<CliArgs> {
     let mut i = 0;
     while i < raw.len() {
         match raw[i].as_str() {
-            "--left" => { a.left = raw.get(i + 1).cloned().unwrap_or(a.left); i += 2; }
-            "--right" => { a.right = raw.get(i + 1).cloned().unwrap_or(a.right); i += 2; }
-            "--left-seed" => { a.left_seed = raw.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(a.left_seed); i += 2; }
-            "--right-seed" => { a.right_seed = raw.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(a.right_seed); i += 2; }
-            "--matches" => { a.matches = raw.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(a.matches); i += 2; }
-            "--max-ticks" => { a.max_ticks = raw.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(a.max_ticks); i += 2; }
-            "--out" => { a.out_dir = raw.get(i + 1).map(PathBuf::from); i += 2; }
-            "--dump-trajectories" => { a.dump_trajectories = raw.get(i + 1).map(PathBuf::from); i += 2; }
-            "--arena-size" => { a.arena_size = raw.get(i + 1).and_then(|s| s.parse().ok()); i += 2; }
-            "--initial-ants" => { a.initial_ants = raw.get(i + 1).and_then(|s| s.parse().ok()); i += 2; }
-            "--frame-replay-dir" => { a.frame_replay_dir = raw.get(i + 1).map(PathBuf::from); i += 2; }
-            "--help" | "-h" => { print_help(); std::process::exit(0); }
+            "--left" => {
+                a.left = raw.get(i + 1).cloned().unwrap_or(a.left);
+                i += 2;
+            }
+            "--right" => {
+                a.right = raw.get(i + 1).cloned().unwrap_or(a.right);
+                i += 2;
+            }
+            "--left-seed" => {
+                a.left_seed = raw
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(a.left_seed);
+                i += 2;
+            }
+            "--right-seed" => {
+                a.right_seed = raw
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(a.right_seed);
+                i += 2;
+            }
+            "--matches" => {
+                a.matches = raw
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(a.matches);
+                i += 2;
+            }
+            "--max-ticks" => {
+                a.max_ticks = raw
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(a.max_ticks);
+                i += 2;
+            }
+            "--out" => {
+                a.out_dir = raw.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--dump-trajectories" => {
+                a.dump_trajectories = raw.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--arena-size" => {
+                a.arena_size = raw.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "--initial-ants" => {
+                a.initial_ants = raw.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "--frame-replay-dir" => {
+                a.frame_replay_dir = raw.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
             other => anyhow::bail!("unknown arg `{other}` — try --help"),
         }
     }
@@ -188,9 +240,14 @@ fn build_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
         let mut parts = rest.rsplitn(2, ':');
         let std_s = parts.next().expect("noisy_mlp spec missing std value");
         let path = parts.next().expect("noisy_mlp spec missing path");
-        let std: f32 = std_s.parse().unwrap_or_else(|e| panic!("noisy_mlp: bad std `{std_s}`: {e}"));
+        let std: f32 = std_s
+            .parse()
+            .unwrap_or_else(|e| panic!("noisy_mlp: bad std `{std_s}`: {e}"));
         return match MlpBrain::load(path, format!("noisy_mlp-{seed}")) {
-            Ok(mut b) => { b.set_explore_std(std); Box::new(b) }
+            Ok(mut b) => {
+                b.set_explore_std(std);
+                Box::new(b)
+            }
             Err(e) => panic!("failed to load MlpBrain weights from `{path}`: {e}"),
         };
     }
@@ -221,16 +278,24 @@ fn build_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
         // Format: tuned:<label>:w,s,b,f,d,n,lr,fr,ft  (9 floats)
         let mut parts = rest.splitn(2, ':');
         let label = parts.next().expect("tuned spec missing label");
-        let nums = parts.next().expect("tuned spec missing 9 floats after label");
-        let vals: Vec<f32> = nums.split(',')
-            .map(|s| s.parse::<f32>().unwrap_or_else(|e| panic!("tuned: bad float `{s}`: {e}")))
+        let nums = parts
+            .next()
+            .expect("tuned spec missing 9 floats after label");
+        let vals: Vec<f32> = nums
+            .split(',')
+            .map(|s| {
+                s.parse::<f32>()
+                    .unwrap_or_else(|e| panic!("tuned: bad float `{s}`: {e}"))
+            })
             .collect();
-        assert_eq!(vals.len(), 9, "tuned: expected 9 floats (w,s,b,f,d,n,lr,fr,ft), got {}", vals.len());
+        assert_eq!(
+            vals.len(),
+            9,
+            "tuned: expected 9 floats (w,s,b,f,d,n,lr,fr,ft), got {}",
+            vals.len()
+        );
         return Box::new(TunedBrain::new(
-            label,
-            vals[0], vals[1], vals[2],
-            vals[3], vals[4], vals[5],
-            vals[6], vals[7], vals[8],
+            label, vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7], vals[8],
         ));
     }
     match spec {
@@ -255,9 +320,16 @@ fn small_two_colony_config() -> SimConfig {
 
 fn two_colony_config(arena_size: u32, initial_ants: u32) -> SimConfig {
     SimConfig {
-        world: WorldConfig { width: arena_size as usize, height: arena_size as usize, ..WorldConfig::default() },
+        world: WorldConfig {
+            width: arena_size as usize,
+            height: arena_size as usize,
+            ..WorldConfig::default()
+        },
         pheromone: PheromoneConfig::default(),
-        ant: AntConfig { initial_count: initial_ants as usize, ..AntConfig::default() },
+        ant: AntConfig {
+            initial_count: initial_ants as usize,
+            ..AntConfig::default()
+        },
         colony: ColonyConfig::default(),
         combat: CombatConfig::default(),
         hazards: HazardConfig::default(),
@@ -337,18 +409,30 @@ fn main() -> anyhow::Result<()> {
         let mut trajectories: Vec<Trajectory> = Vec::new();
         let mut combat_events: Vec<CombatEvent> = Vec::new();
         let mut snapshots: Vec<Snapshot> = Vec::new();
-        let mut frames: Vec<Frame> = if args.frame_replay_dir.is_some() { Vec::new() } else { Vec::new() };
+        let mut frames: Vec<Frame> = if args.frame_replay_dir.is_some() {
+            Vec::new()
+        } else {
+            Vec::new()
+        };
         let mut final_status = MatchStatus::InProgress;
 
         // Pre-tick population snapshot, used to detect deaths.
         let mut prev_pop: [(u32, u32, u32, f32, u32); 2] = [(0, 0, 0, 0.0, 0); 2];
         for cid in 0..2u8 {
             if let Some(c) = sim.colonies.get(cid as usize) {
-                let queens_alive = sim.ants.iter().filter(|a|
-                    a.colony_id == cid && matches!(a.caste, antcolony_sim::AntCaste::Queen)).count() as u32;
+                let queens_alive = sim
+                    .ants
+                    .iter()
+                    .filter(|a| {
+                        a.colony_id == cid && matches!(a.caste, antcolony_sim::AntCaste::Queen)
+                    })
+                    .count() as u32;
                 prev_pop[cid as usize] = (
-                    c.population.workers, c.population.soldiers, c.population.breeders,
-                    c.queen_health, queens_alive,
+                    c.population.workers,
+                    c.population.soldiers,
+                    c.population.breeders,
+                    c.queen_health,
+                    queens_alive,
                 );
             }
         }
@@ -389,17 +473,25 @@ fn main() -> anyhow::Result<()> {
             // Per-tick combat-event detection: pop deltas + queen status.
             for cid in 0..2u8 {
                 if let Some(c) = sim.colonies.get(cid as usize) {
-                    let queens_alive_now = sim.ants.iter().filter(|a|
-                        a.colony_id == cid && matches!(a.caste, antcolony_sim::AntCaste::Queen)).count() as u32;
+                    let queens_alive_now = sim
+                        .ants
+                        .iter()
+                        .filter(|a| {
+                            a.colony_id == cid && matches!(a.caste, antcolony_sim::AntCaste::Queen)
+                        })
+                        .count() as u32;
                     let prev = prev_pop[cid as usize];
                     let workers_lost = prev.0 as i32 - c.population.workers as i32;
                     let soldiers_lost = prev.1 as i32 - c.population.soldiers as i32;
                     let breeders_lost = prev.2 as i32 - c.population.breeders as i32;
                     let queen_died = prev.4 > 0 && queens_alive_now == 0;
-                    let any_loss = workers_lost > 0 || soldiers_lost > 0 || breeders_lost > 0 || queen_died;
+                    let any_loss =
+                        workers_lost > 0 || soldiers_lost > 0 || breeders_lost > 0 || queen_died;
                     if any_loss {
                         combat_events.push(CombatEvent {
-                            match_id: m, tick: sim.tick, colony: cid,
+                            match_id: m,
+                            tick: sim.tick,
+                            colony: cid,
                             workers_lost: workers_lost.max(0),
                             soldiers_lost: soldiers_lost.max(0),
                             breeders_lost: breeders_lost.max(0),
@@ -408,8 +500,11 @@ fn main() -> anyhow::Result<()> {
                         });
                     }
                     prev_pop[cid as usize] = (
-                        c.population.workers, c.population.soldiers, c.population.breeders,
-                        c.queen_health, queens_alive_now,
+                        c.population.workers,
+                        c.population.soldiers,
+                        c.population.breeders,
+                        c.queen_health,
+                        queens_alive_now,
                     );
                 }
             }
@@ -418,10 +513,18 @@ fn main() -> anyhow::Result<()> {
             if sim.tick > 0 && sim.tick % SNAPSHOT_INTERVAL == 0 {
                 for cid in 0..2u8 {
                     if let Some(c) = sim.colonies.get(cid as usize) {
-                        let queens_alive_now = sim.ants.iter().filter(|a|
-                            a.colony_id == cid && matches!(a.caste, antcolony_sim::AntCaste::Queen)).count() as u32;
+                        let queens_alive_now = sim
+                            .ants
+                            .iter()
+                            .filter(|a| {
+                                a.colony_id == cid
+                                    && matches!(a.caste, antcolony_sim::AntCaste::Queen)
+                            })
+                            .count() as u32;
                         snapshots.push(Snapshot {
-                            match_id: m, tick: sim.tick, colony: cid,
+                            match_id: m,
+                            tick: sim.tick,
+                            colony: cid,
                             workers: c.population.workers,
                             soldiers: c.population.soldiers,
                             breeders: c.population.breeders,
@@ -438,15 +541,24 @@ fn main() -> anyhow::Result<()> {
 
             // Frame replay (opt-in, expensive): per-tick full ant snapshot.
             if args.frame_replay_dir.is_some() {
-                let ants: Vec<FrameAnt> = sim.ants.iter().enumerate().map(|(i, a)| FrameAnt {
-                    id: i as u32,
-                    colony: a.colony_id,
-                    caste: format!("{:?}", a.caste),
-                    pos_x: a.position.x,
-                    pos_y: a.position.y,
-                    state: format!("{:?}", a.state),
-                }).collect();
-                frames.push(Frame { match_id: m, tick: sim.tick, ants });
+                let ants: Vec<FrameAnt> = sim
+                    .ants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| FrameAnt {
+                        id: i as u32,
+                        colony: a.colony_id,
+                        caste: format!("{:?}", a.caste),
+                        pos_x: a.position.x,
+                        pos_y: a.position.y,
+                        state: format!("{:?}", a.state),
+                    })
+                    .collect();
+                frames.push(Frame {
+                    match_id: m,
+                    tick: sim.tick,
+                    ants,
+                });
             }
 
             final_status = sim.match_status();
@@ -464,7 +576,12 @@ fn main() -> anyhow::Result<()> {
             for fr in &frames {
                 writeln!(f, "{}", serde_json::to_string(fr)?)?;
             }
-            println!("    [frame-replay] match {} -> {} ({} ticks)", m, path.display(), frames.len());
+            println!(
+                "    [frame-replay] match {} -> {} ({} ticks)",
+                m,
+                path.display(),
+                frames.len()
+            );
         }
         all_combat_events.extend(combat_events);
         all_snapshots.extend(snapshots);
@@ -482,8 +599,16 @@ fn main() -> anyhow::Result<()> {
             MatchStatus::Draw { .. } => ("draw".to_string(), None),
             MatchStatus::InProgress => ("timeout".to_string(), None),
         };
-        let workers_left = sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0);
-        let workers_right = sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0);
+        let workers_left = sim
+            .colonies
+            .get(0)
+            .map(|c| c.population.workers)
+            .unwrap_or(0);
+        let workers_right = sim
+            .colonies
+            .get(1)
+            .map(|c| c.population.workers)
+            .unwrap_or(0);
         let total_workers = (workers_left + workers_right).max(1) as f32;
         let timeout_outcome_left = workers_left as f32 / total_workers;
         for t in &mut trajectories {
@@ -492,8 +617,11 @@ fn main() -> anyhow::Result<()> {
                 Some(_) => 0.0,
                 None => {
                     // Graded by end-state worker share for this colony.
-                    if t.colony == 0 { timeout_outcome_left }
-                    else { 1.0 - timeout_outcome_left }
+                    if t.colony == 0 {
+                        timeout_outcome_left
+                    } else {
+                        1.0 - timeout_outcome_left
+                    }
                 }
             };
         }
@@ -511,14 +639,27 @@ fn main() -> anyhow::Result<()> {
             end_tick: sim.tick,
             status: status_str.clone(),
             winner,
-            final_workers_left: sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0),
-            final_workers_right: sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0),
+            final_workers_left: sim
+                .colonies
+                .get(0)
+                .map(|c| c.population.workers)
+                .unwrap_or(0),
+            final_workers_right: sim
+                .colonies
+                .get(1)
+                .map(|c| c.population.workers)
+                .unwrap_or(0),
             final_food_left: sim.colonies.get(0).map(|c| c.food_stored).unwrap_or(0.0),
             final_food_right: sim.colonies.get(1).map(|c| c.food_stored).unwrap_or(0.0),
         };
         println!(
             "  match {:>3}: tick={:>5} {} winner={:?} workers L/R={}/{}",
-            m, sim.tick, status_str, winner, summary.final_workers_left, summary.final_workers_right,
+            m,
+            sim.tick,
+            status_str,
+            winner,
+            summary.final_workers_left,
+            summary.final_workers_right,
         );
         summaries.push(summary);
         all_trajectories.extend(trajectories);
@@ -528,8 +669,20 @@ fn main() -> anyhow::Result<()> {
     let n = args.matches as f32;
     println!();
     println!("=== AGGREGATE ===");
-    println!("left  ({}) wins:  {}/{}  ({:.1}%)", args.left, left_wins, args.matches, 100.0 * left_wins as f32 / n);
-    println!("right ({}) wins:  {}/{}  ({:.1}%)", args.right, right_wins, args.matches, 100.0 * right_wins as f32 / n);
+    println!(
+        "left  ({}) wins:  {}/{}  ({:.1}%)",
+        args.left,
+        left_wins,
+        args.matches,
+        100.0 * left_wins as f32 / n
+    );
+    println!(
+        "right ({}) wins:  {}/{}  ({:.1}%)",
+        args.right,
+        right_wins,
+        args.matches,
+        100.0 * right_wins as f32 / n
+    );
     println!("draws:                  {}/{}", draws, args.matches);
     println!("timeouts (no winner):   {}/{}", timeouts, args.matches);
     let avg_end_tick: f32 = summaries.iter().map(|s| s.end_tick as f32).sum::<f32>() / n;
@@ -537,13 +690,19 @@ fn main() -> anyhow::Result<()> {
 
     // ---- Outputs ----
     if let Some(dir) = &args.out_dir {
-        write_summary_md(dir, &args, &summaries, left_wins, right_wins, draws, timeouts)?;
+        write_summary_md(
+            dir, &args, &summaries, left_wins, right_wins, draws, timeouts,
+        )?;
         println!();
         println!("wrote SUMMARY.md to {}", dir.display());
     }
     if let Some(path) = &args.dump_trajectories {
         write_trajectories_jsonl(path, &all_trajectories)?;
-        println!("wrote {} trajectory records to {}", all_trajectories.len(), path.display());
+        println!(
+            "wrote {} trajectory records to {}",
+            all_trajectories.len(),
+            path.display()
+        );
     }
     if let Some(dir) = &args.out_dir {
         // Always emit combat-events + snapshots when --out is set.
@@ -553,14 +712,22 @@ fn main() -> anyhow::Result<()> {
         for ev in &all_combat_events {
             writeln!(f, "{}", serde_json::to_string(ev)?)?;
         }
-        println!("wrote {} combat events to {}", all_combat_events.len(), ce_path.display());
+        println!(
+            "wrote {} combat events to {}",
+            all_combat_events.len(),
+            ce_path.display()
+        );
 
         let sn_path = dir.join("snapshots.jsonl");
         let mut f = std::fs::File::create(&sn_path)?;
         for sn in &all_snapshots {
             writeln!(f, "{}", serde_json::to_string(sn)?)?;
         }
-        println!("wrote {} snapshots to {}", all_snapshots.len(), sn_path.display());
+        println!(
+            "wrote {} snapshots to {}",
+            all_snapshots.len(),
+            sn_path.display()
+        );
     }
     if let Some(dir) = &args.frame_replay_dir {
         println!("frame-replay JSONL files written to {}", dir.display());
@@ -581,32 +748,88 @@ fn write_summary_md(
     let mut out = String::new();
     writeln!(out, "# Matchup Bench Summary").ok();
     writeln!(out).ok();
-    writeln!(out, "**Left (colony 0):** `{}` (seed {})", args.left, args.left_seed).ok();
-    writeln!(out, "**Right (colony 1):** `{}` (seed {})", args.right, args.right_seed).ok();
-    writeln!(out, "**Matches:** {} (max-ticks each: {})", args.matches, args.max_ticks).ok();
+    writeln!(
+        out,
+        "**Left (colony 0):** `{}` (seed {})",
+        args.left, args.left_seed
+    )
+    .ok();
+    writeln!(
+        out,
+        "**Right (colony 1):** `{}` (seed {})",
+        args.right, args.right_seed
+    )
+    .ok();
+    writeln!(
+        out,
+        "**Matches:** {} (max-ticks each: {})",
+        args.matches, args.max_ticks
+    )
+    .ok();
     writeln!(out).ok();
     writeln!(out, "## Win record").ok();
     writeln!(out).ok();
     writeln!(out, "| Side | Brain | Wins | Win Rate |").ok();
     writeln!(out, "|------|-------|-----:|---------:|").ok();
     let n = args.matches as f32;
-    writeln!(out, "| Left  | `{}` | {} | {:.1}% |", args.left, left_wins, 100.0 * left_wins as f32 / n).ok();
-    writeln!(out, "| Right | `{}` | {} | {:.1}% |", args.right, right_wins, 100.0 * right_wins as f32 / n).ok();
-    writeln!(out, "| Draw  | — | {} | {:.1}% |", draws, 100.0 * draws as f32 / n).ok();
-    writeln!(out, "| Timeout | — | {} | {:.1}% |", timeouts, 100.0 * timeouts as f32 / n).ok();
+    writeln!(
+        out,
+        "| Left  | `{}` | {} | {:.1}% |",
+        args.left,
+        left_wins,
+        100.0 * left_wins as f32 / n
+    )
+    .ok();
+    writeln!(
+        out,
+        "| Right | `{}` | {} | {:.1}% |",
+        args.right,
+        right_wins,
+        100.0 * right_wins as f32 / n
+    )
+    .ok();
+    writeln!(
+        out,
+        "| Draw  | — | {} | {:.1}% |",
+        draws,
+        100.0 * draws as f32 / n
+    )
+    .ok();
+    writeln!(
+        out,
+        "| Timeout | — | {} | {:.1}% |",
+        timeouts,
+        100.0 * timeouts as f32 / n
+    )
+    .ok();
     writeln!(out).ok();
     writeln!(out, "## Per-match results").ok();
     writeln!(out).ok();
-    writeln!(out, "| # | seed | end_tick | status | winner | workers L/R | food L/R |").ok();
-    writeln!(out, "|--:|-----:|---------:|--------|-------:|------------:|---------:|").ok();
+    writeln!(
+        out,
+        "| # | seed | end_tick | status | winner | workers L/R | food L/R |"
+    )
+    .ok();
+    writeln!(
+        out,
+        "|--:|-----:|---------:|--------|-------:|------------:|---------:|"
+    )
+    .ok();
     for s in summaries {
         writeln!(
             out,
             "| {} | {} | {} | {} | {:?} | {}/{} | {:.1}/{:.1} |",
-            s.match_id, s.seed, s.end_tick, s.status, s.winner,
-            s.final_workers_left, s.final_workers_right,
-            s.final_food_left, s.final_food_right,
-        ).ok();
+            s.match_id,
+            s.seed,
+            s.end_tick,
+            s.status,
+            s.winner,
+            s.final_workers_left,
+            s.final_workers_right,
+            s.final_food_left,
+            s.final_food_right,
+        )
+        .ok();
     }
     std::fs::write(dir.join("SUMMARY.md"), out)?;
     Ok(())

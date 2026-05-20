@@ -5,7 +5,7 @@
 
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
-use wide::{f32x8, CmpGt, CmpLt};
+use wide::{CmpGt, CmpLt, f32x8};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PheromoneLayer {
@@ -300,8 +300,7 @@ fn evaporate_slice_simd(slice: &mut [f32], k: f32, threshold: f32) {
 
     for chunk in slice.chunks_exact_mut(8) {
         let mut v = f32x8::new([
-            chunk[0], chunk[1], chunk[2], chunk[3],
-            chunk[4], chunk[5], chunk[6], chunk[7],
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
         ]);
         // Multiply by k.
         v = v * k_v;
@@ -313,8 +312,14 @@ fn evaporate_slice_simd(slice: &mut [f32], k: f32, threshold: f32) {
         let in_band = below_pos & above_neg;
         v = in_band.blend(zero_v, v);
         let arr = v.to_array();
-        chunk[0] = arr[0]; chunk[1] = arr[1]; chunk[2] = arr[2]; chunk[3] = arr[3];
-        chunk[4] = arr[4]; chunk[5] = arr[5]; chunk[6] = arr[6]; chunk[7] = arr[7];
+        chunk[0] = arr[0];
+        chunk[1] = arr[1];
+        chunk[2] = arr[2];
+        chunk[3] = arr[3];
+        chunk[4] = arr[4];
+        chunk[5] = arr[5];
+        chunk[6] = arr[6];
+        chunk[7] = arr[7];
     }
 
     // Scalar tail for the remainder cells.

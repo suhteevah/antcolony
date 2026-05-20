@@ -50,8 +50,9 @@ fn parse_args() -> anyhow::Result<CliArgs> {
     let mut years = 10.0f32;
     let mut seed = 42u64;
     let mut out_dir = PathBuf::from("bench/smoke-10yr-ai");
-    let mut weights_path: Option<PathBuf> =
-        Some(PathBuf::from("bench/iterative-fsp/round_1/mlp_weights_v1.json"));
+    let mut weights_path: Option<PathBuf> = Some(PathBuf::from(
+        "bench/iterative-fsp/round_1/mlp_weights_v1.json",
+    ));
     let mut species_filter: Option<String> = None;
     let mut i = 0;
     while i < raw.len() {
@@ -96,7 +97,13 @@ fn parse_args() -> anyhow::Result<CliArgs> {
             other => anyhow::bail!("unknown arg `{other}` — try --help"),
         }
     }
-    Ok(CliArgs { years, seed, out_dir, weights_path, species_filter })
+    Ok(CliArgs {
+        years,
+        seed,
+        out_dir,
+        weights_path,
+        species_filter,
+    })
 }
 
 fn make_brain(weights_path: Option<&Path>, label: &str) -> Box<dyn AiBrain> {
@@ -128,11 +135,7 @@ struct SpeciesRun {
     survived: bool,
 }
 
-fn run_species(
-    species: Species,
-    args: &CliArgs,
-    out_root: &Path,
-) -> anyhow::Result<SpeciesRun> {
+fn run_species(species: Species, args: &CliArgs, out_root: &Path) -> anyhow::Result<SpeciesRun> {
     let species_id = species.id.clone();
     let species_dir = out_root.join(&species_id);
     std::fs::create_dir_all(&species_dir)?;
@@ -167,9 +170,7 @@ fn run_species(
     sim.spawn_food_cluster_on(1, ow - ow / 5, oh - oh / 5, 4, 40);
     sim.spawn_food_cluster_on(1, ow - ow / 5, oh / 5, 3, 30);
 
-    let target_ticks = (args.years as f64
-        * 31_536_000.0
-        * env.tick_rate_hz as f64
+    let target_ticks = (args.years as f64 * 31_536_000.0 * env.tick_rate_hz as f64
         / TimeScale::Seasonal.multiplier() as f64) as u64;
     let ticks_per_day = env.in_game_seconds_to_ticks(86_400).max(1) as u64;
 
@@ -361,7 +362,11 @@ fn log_daily<W: Write>(w: &mut W, sim: &Simulation) -> std::io::Result<()> {
             inflow = c.food_inflow_recent,
         )
     } else {
-        writeln!(w, "{},{day},{year},{doy},{temp:.2},0,0,0,0,0,0,0,0.0,0.0", sim.tick)
+        writeln!(
+            w,
+            "{},{day},{year},{doy},{temp:.2},0,0,0,0,0,0,0,0.0,0.0",
+            sim.tick
+        )
     }
 }
 
@@ -404,11 +409,13 @@ fn write_top_summary(out_dir: &Path, runs: &[SpeciesRun]) -> std::io::Result<()>
     writeln!(
         s,
         "| species | survived | workers | soldiers | breeders | queens | food | decisions | ticks |"
-    ).ok();
+    )
+    .ok();
     writeln!(
         s,
         "|---------|----------|--------:|---------:|---------:|-------:|-----:|----------:|------:|"
-    ).ok();
+    )
+    .ok();
     for r in runs {
         writeln!(
             s,
@@ -423,7 +430,8 @@ fn write_top_summary(out_dir: &Path, runs: &[SpeciesRun]) -> std::io::Result<()>
             d = r.decisions_logged,
             t = r.final_tick,
             tt = r.target_ticks,
-        ).ok();
+        )
+        .ok();
     }
     std::fs::write(out_dir.join("SUMMARY.md"), s)
 }
@@ -431,8 +439,8 @@ fn write_top_summary(out_dir: &Path, runs: &[SpeciesRun]) -> std::io::Result<()>
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            std::env::var("RUST_LOG").unwrap_or_else(|_|
-                "antcolony_sim=warn,smoke_10yr_ai=info".into()),
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "antcolony_sim=warn,smoke_10yr_ai=info".into()),
         )
         .with_target(false)
         .init();
@@ -471,7 +479,11 @@ fn main() -> anyhow::Result<()> {
         let dt = t0.elapsed();
         eprintln!(
             "  {id}: survived={} workers={} food={:.1} decisions={} ({:.1}s)",
-            r.survived, r.final_workers, r.final_food, r.decisions_logged, dt.as_secs_f32(),
+            r.survived,
+            r.final_workers,
+            r.final_food,
+            r.decisions_logged,
+            dt.as_secs_f32(),
         );
         runs.push(r);
         write_top_summary(&args.out_dir, &runs)?;

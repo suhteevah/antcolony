@@ -37,8 +37,7 @@
 use std::path::PathBuf;
 
 use antcolony_sim::{
-    Environment, Simulation, Species, TimeScale, Topology,
-    bench::expected,
+    Environment, Simulation, Species, TimeScale, Topology, bench::expected,
     species_extended::CURRENT_SCHEMA_VERSION,
 };
 
@@ -85,9 +84,17 @@ fn main() {
         // eprintln (stderr) is line-buffered even when piped, unlike stdout.
         eprintln!("  >>>>  starting {} ...", path.display());
         match validate_one(path) {
-            Ok(()) => println!("  PASS  {} ({:.1}s)", path.display(), started.elapsed().as_secs_f64()),
+            Ok(()) => println!(
+                "  PASS  {} ({:.1}s)",
+                path.display(),
+                started.elapsed().as_secs_f64()
+            ),
             Err(failure) => {
-                println!("  FAIL  {} ({:.1}s)", path.display(), started.elapsed().as_secs_f64());
+                println!(
+                    "  FAIL  {} ({:.1}s)",
+                    path.display(),
+                    started.elapsed().as_secs_f64()
+                );
                 for reason in &failure.reasons {
                     println!("        - {reason}");
                 }
@@ -116,7 +123,6 @@ fn main() {
         std::process::exit(1);
     }
 }
-
 
 fn validate_one(path: &PathBuf) -> Result<(), ValidationFailure> {
     let mut reasons: Vec<String> = Vec::new();

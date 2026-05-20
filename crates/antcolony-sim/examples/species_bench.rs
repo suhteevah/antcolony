@@ -28,7 +28,10 @@
 use std::path::PathBuf;
 
 use antcolony_sim::{
-    Species, TimeScale, bench::report, bench::run::{self, BenchResult}, load_species_dir,
+    Species, TimeScale,
+    bench::report,
+    bench::run::{self, BenchResult},
+    load_species_dir,
 };
 
 fn parse_scale(s: &str) -> Option<TimeScale> {
@@ -72,16 +75,15 @@ fn parse_args() -> anyhow::Result<CliArgs> {
                 i += 1;
             }
             "--years" => {
-                years = raw
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(5.0);
+                years = raw.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(5.0);
                 i += 2;
             }
             "--scale" => {
                 let s = raw.get(i + 1).cloned().unwrap_or_default();
                 scale = parse_scale(&s).ok_or_else(|| {
-                    anyhow::anyhow!("unknown --scale `{s}` (expected realtime|brisk|seasonal|timelapse)")
+                    anyhow::anyhow!(
+                        "unknown --scale `{s}` (expected realtime|brisk|seasonal|timelapse)"
+                    )
                 })?;
                 i += 2;
             }
@@ -94,10 +96,7 @@ fn parse_args() -> anyhow::Result<CliArgs> {
                 i += 2;
             }
             "--sample-every-days" => {
-                sample_every_days = raw
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(1);
+                sample_every_days = raw.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(1);
                 i += 2;
             }
             "--help" | "-h" => {

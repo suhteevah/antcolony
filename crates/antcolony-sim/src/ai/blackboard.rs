@@ -146,7 +146,11 @@ impl Blackboard {
     /// Return all current Goals (unarbitrated suggestions).
     pub fn goals(&self) -> impl Iterator<Item = (&Directive, f32, KsId)> {
         self.facts.iter().filter_map(|f| match f {
-            Fact::Goal { directive, priority, source } => Some((directive, *priority, *source)),
+            Fact::Goal {
+                directive,
+                priority,
+                source,
+            } => Some((directive, *priority, *source)),
             _ => None,
         })
     }
@@ -154,7 +158,9 @@ impl Blackboard {
     /// Return all current Threats.
     pub fn threats(&self) -> impl Iterator<Item = (&ThreatRef, f32)> {
         self.facts.iter().filter_map(|f| match f {
-            Fact::Threat { entity, severity, .. } => Some((entity, *severity)),
+            Fact::Threat {
+                entity, severity, ..
+            } => Some((entity, *severity)),
             _ => None,
         })
     }

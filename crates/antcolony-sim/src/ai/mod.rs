@@ -16,21 +16,21 @@
 //! NOT YET wired into `Simulation::tick` — that happens in a follow-up
 //! commit once the v2 validation sweep clears the binary lock.
 
+pub mod arbiter;
 pub mod blackboard;
 pub mod brain;
-pub mod knowledge_source;
-pub mod strategist;
-pub mod forager;
 pub mod combat;
-pub mod arbiter;
+pub mod forager;
+pub mod knowledge_source;
 pub mod observation;
+pub mod strategist;
 
 pub use arbiter::Arbiter;
 pub use blackboard::{Blackboard, BlackboardSnapshot, Directive, Fact, FactRef};
 pub use brain::{
-    AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BreederBrain, ColonyAiState,
-    ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain, HeuristicBrain,
-    BrainArchetype, MatchStatus, MixedBrain, MlpBrain, RandomBrain, SpeciesBrain, TunedBrain,
+    AetherLmBrain, AggressorBrain, AiBrain, AiDecision, BrainArchetype, BreederBrain,
+    ColonyAiState, ConservativeBuilderBrain, DefenderBrain, EconomistBrain, ForagerBrain,
+    HeuristicBrain, MatchStatus, MixedBrain, MlpBrain, RandomBrain, SpeciesBrain, TunedBrain,
 };
 pub use combat::CombatKs;
 pub use forager::ForagerKs;

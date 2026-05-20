@@ -23,9 +23,7 @@
 
 use crate::bench::expected::{self, SpeciesExpectations};
 use crate::bench::metrics::{self, SpeciesScore, TickSample};
-use crate::{
-    AntCaste, Environment, Simulation, Species, TimeScale, Topology,
-};
+use crate::{AntCaste, Environment, Simulation, Species, TimeScale, Topology};
 
 /// Configuration for one bench run.
 #[derive(Debug, Clone)]
@@ -106,10 +104,7 @@ pub fn run_one(cfg: BenchRunConfig) -> BenchResult {
     }
     let scale_mult = cfg.time_scale.multiplier();
     if !scale_mult.is_finite() || scale_mult <= 0.0 {
-        return invalid_config_result(
-            &cfg,
-            format!("Invalid time-scale multiplier {scale_mult}."),
-        );
+        return invalid_config_result(&cfg, format!("Invalid time-scale multiplier {scale_mult}."));
     }
 
     if !matches!(cfg.time_scale, TimeScale::Seasonal) {
@@ -161,18 +156,15 @@ pub fn run_one(cfg: BenchRunConfig) -> BenchResult {
     sim.spawn_food_cluster_on(1, ow - ow / 5, oh / 5, 3, 30);
 
     // Compute target ticks the same way colony_diag does.
-    let target_ticks = (cfg.years as f64
-        * 31_536_000.0
-        * env.tick_rate_hz as f64
+    let target_ticks = (cfg.years as f64 * 31_536_000.0 * env.tick_rate_hz as f64
         / cfg.time_scale.multiplier() as f64) as u64;
 
     // Precompute sample interval in ticks.
     let ticks_per_in_game_day = env.in_game_seconds_to_ticks(86_400).max(1) as u64;
     let sample_interval_ticks = ticks_per_in_game_day * cfg.sample_every_days as u64;
 
-    let mut samples: Vec<TickSample> = Vec::with_capacity(
-        (target_ticks / sample_interval_ticks.max(1)) as usize + 8,
-    );
+    let mut samples: Vec<TickSample> =
+        Vec::with_capacity((target_ticks / sample_interval_ticks.max(1)) as usize + 8);
 
     // Track starvation deaths cumulatively. ColonyState only exposes
     // `pending_starvation_deaths` (the per-tick draw-down), so we
@@ -441,9 +433,7 @@ fn compute_food_economy(cfg: &BenchRunConfig, samples: &[TickSample]) -> Option<
     // first sample of `final_year` as the start, the last sample as the
     // end. Any prior off-by-2× window (using `final_year - 1`) inflated
     // sustainability ~2×.
-    let year_start = samples
-        .iter()
-        .find(|s| s.in_game_year == final_year)?;
+    let year_start = samples.iter().find(|s| s.in_game_year == final_year)?;
     let year_end = samples.last()?;
 
     let returned_in_year = year_end
@@ -593,10 +583,7 @@ mod tests {
         assert!(result.samples.is_empty(), "rejected config should not run");
         assert!(result.score.composite_0_to_100().is_none());
         assert!(
-            result
-                .caveats
-                .iter()
-                .any(|c| c.contains("CONFIG REJECTED")),
+            result.caveats.iter().any(|c| c.contains("CONFIG REJECTED")),
             "invalid years should produce CONFIG REJECTED caveat",
         );
     }
@@ -613,12 +600,7 @@ mod tests {
         };
         let result = run_one(cfg);
         assert!(result.samples.is_empty());
-        assert!(
-            result
-                .caveats
-                .iter()
-                .any(|c| c.contains("CONFIG REJECTED")),
-        );
+        assert!(result.caveats.iter().any(|c| c.contains("CONFIG REJECTED")),);
     }
 
     #[test]
@@ -633,12 +615,7 @@ mod tests {
         };
         let result = run_one(cfg);
         assert!(result.samples.is_empty());
-        assert!(
-            result
-                .caveats
-                .iter()
-                .any(|c| c.contains("CONFIG REJECTED")),
-        );
+        assert!(result.caveats.iter().any(|c| c.contains("CONFIG REJECTED")),);
     }
 
     fn load_test_species(id: &str) -> Species {

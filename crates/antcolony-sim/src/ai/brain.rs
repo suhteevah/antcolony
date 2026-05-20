@@ -103,7 +103,10 @@ impl AiDecision {
             self.caste_ratio_breeder,
         ];
         let weights = [self.forage_weight, self.dig_weight, self.nurse_weight];
-        castes.iter().chain(weights.iter()).all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        castes
+            .iter()
+            .chain(weights.iter())
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
     }
 }
 
@@ -189,8 +192,7 @@ impl AiBrain for HeuristicBrain {
             let target = (self.state.caste_ratio_soldier + shift).min(0.5);
             let delta = target - self.state.caste_ratio_soldier;
             self.state.caste_ratio_soldier = target;
-            self.state.caste_ratio_worker =
-                (self.state.caste_ratio_worker - delta).max(0.05);
+            self.state.caste_ratio_worker = (self.state.caste_ratio_worker - delta).max(0.05);
         }
 
         // Rule 2: food low → forage-everything.
@@ -266,18 +268,32 @@ fn archetype_decide(
 
 /// Defender — fortified turtle. High soldier baseline + nurse-heavy.
 /// Mild reaction to losses (already prepared); slow to shift.
-pub struct DefenderBrain { state: BrainInternalState }
+pub struct DefenderBrain {
+    state: BrainInternalState,
+}
 impl DefenderBrain {
     pub fn new() -> Self {
-        Self { state: BrainInternalState {
-            caste_ratio_worker: 0.50, caste_ratio_soldier: 0.45, caste_ratio_breeder: 0.05,
-            forage_weight: 0.20, dig_weight: 0.10, nurse_weight: 0.70,
-        } }
+        Self {
+            state: BrainInternalState {
+                caste_ratio_worker: 0.50,
+                caste_ratio_soldier: 0.45,
+                caste_ratio_breeder: 0.05,
+                forage_weight: 0.20,
+                dig_weight: 0.10,
+                nurse_weight: 0.70,
+            },
+        }
     }
 }
-impl Default for DefenderBrain { fn default() -> Self { Self::new() } }
+impl Default for DefenderBrain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl AiBrain for DefenderBrain {
-    fn name(&self) -> &str { "defender" }
+    fn name(&self) -> &str {
+        "defender"
+    }
     fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
         archetype_decide(&mut self.state, s, 0.3, 0.5, 20.0)
     }
@@ -285,18 +301,32 @@ impl AiBrain for DefenderBrain {
 
 /// Aggressor — pushes the fight. Soldier-heavy, forage-heavy, fast
 /// escalation on combat losses, all-hands-foraging when food drops.
-pub struct AggressorBrain { state: BrainInternalState }
+pub struct AggressorBrain {
+    state: BrainInternalState,
+}
 impl AggressorBrain {
     pub fn new() -> Self {
-        Self { state: BrainInternalState {
-            caste_ratio_worker: 0.30, caste_ratio_soldier: 0.65, caste_ratio_breeder: 0.05,
-            forage_weight: 0.70, dig_weight: 0.10, nurse_weight: 0.20,
-        } }
+        Self {
+            state: BrainInternalState {
+                caste_ratio_worker: 0.30,
+                caste_ratio_soldier: 0.65,
+                caste_ratio_breeder: 0.05,
+                forage_weight: 0.70,
+                dig_weight: 0.10,
+                nurse_weight: 0.20,
+            },
+        }
     }
 }
-impl Default for AggressorBrain { fn default() -> Self { Self::new() } }
+impl Default for AggressorBrain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl AiBrain for AggressorBrain {
-    fn name(&self) -> &str { "aggressor" }
+    fn name(&self) -> &str {
+        "aggressor"
+    }
     fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
         archetype_decide(&mut self.state, s, 1.5, 1.0, 30.0)
     }
@@ -304,18 +334,32 @@ impl AiBrain for AggressorBrain {
 
 /// Economist — worker monoculture. Maximize food + worker count first,
 /// late-tier soldier ramp only when actively invaded.
-pub struct EconomistBrain { state: BrainInternalState }
+pub struct EconomistBrain {
+    state: BrainInternalState,
+}
 impl EconomistBrain {
     pub fn new() -> Self {
-        Self { state: BrainInternalState {
-            caste_ratio_worker: 0.85, caste_ratio_soldier: 0.05, caste_ratio_breeder: 0.10,
-            forage_weight: 0.85, dig_weight: 0.05, nurse_weight: 0.10,
-        } }
+        Self {
+            state: BrainInternalState {
+                caste_ratio_worker: 0.85,
+                caste_ratio_soldier: 0.05,
+                caste_ratio_breeder: 0.10,
+                forage_weight: 0.85,
+                dig_weight: 0.05,
+                nurse_weight: 0.10,
+            },
+        }
     }
 }
-impl Default for EconomistBrain { fn default() -> Self { Self::new() } }
+impl Default for EconomistBrain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl AiBrain for EconomistBrain {
-    fn name(&self) -> &str { "economist" }
+    fn name(&self) -> &str {
+        "economist"
+    }
     fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
         // Ignore early losses; only react when enemies are visible adjacent.
         let losses_resp = if s.enemy_distance_min < 5.0 { 1.5 } else { 0.0 };
@@ -324,18 +368,32 @@ impl AiBrain for EconomistBrain {
 }
 
 /// Breeder — alate factory, founds far-flung daughters. High breeder share.
-pub struct BreederBrain { state: BrainInternalState }
+pub struct BreederBrain {
+    state: BrainInternalState,
+}
 impl BreederBrain {
     pub fn new() -> Self {
-        Self { state: BrainInternalState {
-            caste_ratio_worker: 0.55, caste_ratio_soldier: 0.05, caste_ratio_breeder: 0.40,
-            forage_weight: 0.50, dig_weight: 0.20, nurse_weight: 0.30,
-        } }
+        Self {
+            state: BrainInternalState {
+                caste_ratio_worker: 0.55,
+                caste_ratio_soldier: 0.05,
+                caste_ratio_breeder: 0.40,
+                forage_weight: 0.50,
+                dig_weight: 0.20,
+                nurse_weight: 0.30,
+            },
+        }
     }
 }
-impl Default for BreederBrain { fn default() -> Self { Self::new() } }
+impl Default for BreederBrain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl AiBrain for BreederBrain {
-    fn name(&self) -> &str { "breeder" }
+    fn name(&self) -> &str {
+        "breeder"
+    }
     fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
         archetype_decide(&mut self.state, s, 0.5, 0.7, 25.0)
     }
@@ -344,18 +402,32 @@ impl AiBrain for BreederBrain {
 /// Forager — pure pacifist economy. No soldiers ever. Maximum food
 /// throughput. Loses to anything that fights but produces a clean
 /// "what foraging looks like" signal in the training corpus.
-pub struct ForagerBrain { state: BrainInternalState }
+pub struct ForagerBrain {
+    state: BrainInternalState,
+}
 impl ForagerBrain {
     pub fn new() -> Self {
-        Self { state: BrainInternalState {
-            caste_ratio_worker: 0.95, caste_ratio_soldier: 0.00, caste_ratio_breeder: 0.05,
-            forage_weight: 0.90, dig_weight: 0.05, nurse_weight: 0.05,
-        } }
+        Self {
+            state: BrainInternalState {
+                caste_ratio_worker: 0.95,
+                caste_ratio_soldier: 0.00,
+                caste_ratio_breeder: 0.05,
+                forage_weight: 0.90,
+                dig_weight: 0.05,
+                nurse_weight: 0.05,
+            },
+        }
     }
 }
-impl Default for ForagerBrain { fn default() -> Self { Self::new() } }
+impl Default for ForagerBrain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl AiBrain for ForagerBrain {
-    fn name(&self) -> &str { "forager" }
+    fn name(&self) -> &str {
+        "forager"
+    }
     fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
         // Even under attack, forager refuses to make soldiers.
         archetype_decide(&mut self.state, s, 0.0, 1.0, 30.0)
@@ -364,18 +436,32 @@ impl AiBrain for ForagerBrain {
 
 /// Conservative Builder — infrastructure first, slow reaction.
 /// Heavy on dig + nurse, modest forage + soldier baseline.
-pub struct ConservativeBuilderBrain { state: BrainInternalState }
+pub struct ConservativeBuilderBrain {
+    state: BrainInternalState,
+}
 impl ConservativeBuilderBrain {
     pub fn new() -> Self {
-        Self { state: BrainInternalState {
-            caste_ratio_worker: 0.70, caste_ratio_soldier: 0.20, caste_ratio_breeder: 0.10,
-            forage_weight: 0.30, dig_weight: 0.30, nurse_weight: 0.40,
-        } }
+        Self {
+            state: BrainInternalState {
+                caste_ratio_worker: 0.70,
+                caste_ratio_soldier: 0.20,
+                caste_ratio_breeder: 0.10,
+                forage_weight: 0.30,
+                dig_weight: 0.30,
+                nurse_weight: 0.40,
+            },
+        }
     }
 }
-impl Default for ConservativeBuilderBrain { fn default() -> Self { Self::new() } }
+impl Default for ConservativeBuilderBrain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl AiBrain for ConservativeBuilderBrain {
-    fn name(&self) -> &str { "conservative" }
+    fn name(&self) -> &str {
+        "conservative"
+    }
     fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
         archetype_decide(&mut self.state, s, 0.3, 0.4, 15.0)
     }
@@ -398,9 +484,15 @@ impl TunedBrain {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         label: impl Into<String>,
-        worker: f32, soldier: f32, breeder: f32,
-        forage: f32, dig: f32, nurse: f32,
-        losses_response: f32, food_response: f32, food_threshold: f32,
+        worker: f32,
+        soldier: f32,
+        breeder: f32,
+        forage: f32,
+        dig: f32,
+        nurse: f32,
+        losses_response: f32,
+        food_response: f32,
+        food_threshold: f32,
     ) -> Self {
         Self {
             label: label.into(),
@@ -420,9 +512,17 @@ impl TunedBrain {
 }
 
 impl AiBrain for TunedBrain {
-    fn name(&self) -> &str { &self.label }
+    fn name(&self) -> &str {
+        &self.label
+    }
     fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
-        archetype_decide(&mut self.state, s, self.losses_response, self.food_response, self.food_threshold)
+        archetype_decide(
+            &mut self.state,
+            s,
+            self.losses_response,
+            self.food_response,
+            self.food_threshold,
+        )
     }
 }
 
@@ -458,12 +558,12 @@ impl BrainArchetype {
     /// (caste W/S/B + behavior F/D/N + losses_response + food_response + food_threshold).
     fn params(self) -> [f32; 9] {
         match self {
-            Self::Heuristic    => [0.65, 0.30, 0.05, 0.55, 0.20, 0.25, 1.0, 1.0, 20.0],
-            Self::Defender     => [0.50, 0.45, 0.05, 0.20, 0.10, 0.70, 0.3, 0.5, 20.0],
-            Self::Aggressor    => [0.30, 0.65, 0.05, 0.70, 0.10, 0.20, 1.5, 1.0, 30.0],
-            Self::Economist    => [0.85, 0.05, 0.10, 0.85, 0.05, 0.10, 0.0, 0.3, 10.0],
-            Self::Breeder      => [0.55, 0.05, 0.40, 0.50, 0.20, 0.30, 0.5, 0.7, 25.0],
-            Self::Forager      => [0.95, 0.00, 0.05, 0.90, 0.05, 0.05, 0.0, 1.0, 30.0],
+            Self::Heuristic => [0.65, 0.30, 0.05, 0.55, 0.20, 0.25, 1.0, 1.0, 20.0],
+            Self::Defender => [0.50, 0.45, 0.05, 0.20, 0.10, 0.70, 0.3, 0.5, 20.0],
+            Self::Aggressor => [0.30, 0.65, 0.05, 0.70, 0.10, 0.20, 1.5, 1.0, 30.0],
+            Self::Economist => [0.85, 0.05, 0.10, 0.85, 0.05, 0.10, 0.0, 0.3, 10.0],
+            Self::Breeder => [0.55, 0.05, 0.40, 0.50, 0.20, 0.30, 0.5, 0.7, 25.0],
+            Self::Forager => [0.95, 0.00, 0.05, 0.90, 0.05, 0.05, 0.0, 1.0, 30.0],
             Self::Conservative => [0.70, 0.20, 0.10, 0.30, 0.30, 0.40, 0.3, 0.4, 15.0],
         }
     }
@@ -490,7 +590,11 @@ pub struct SpeciesBrain {
 }
 
 impl SpeciesBrain {
-    pub fn from_species(species: &crate::species::Species, archetype: BrainArchetype, blend: f32) -> Self {
+    pub fn from_species(
+        species: &crate::species::Species,
+        archetype: BrainArchetype,
+        blend: f32,
+    ) -> Self {
         let baseline = species_baseline_params(species);
         let overlay = archetype.params();
         let alpha = blend.clamp(0.0, 1.0);
@@ -502,8 +606,12 @@ impl SpeciesBrain {
         // each sums to 1.0 — sim invariant.
         let (cw, cs, cb) = renormalize_triple(p[0], p[1], p[2]);
         let (bf, bd, bn) = renormalize_triple(p[3], p[4], p[5]);
-        p[0] = cw; p[1] = cs; p[2] = cb;
-        p[3] = bf; p[4] = bd; p[5] = bn;
+        p[0] = cw;
+        p[1] = cs;
+        p[2] = cb;
+        p[3] = bf;
+        p[4] = bd;
+        p[5] = bn;
         let label = format!("{}__{:?}", species.id, archetype);
         Self {
             inner: TunedBrain::new(label, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8]),
@@ -511,7 +619,9 @@ impl SpeciesBrain {
     }
 
     pub fn from_toml_path<P: AsRef<std::path::Path>>(
-        path: P, archetype: BrainArchetype, blend: f32,
+        path: P,
+        archetype: BrainArchetype,
+        blend: f32,
     ) -> Result<Self, crate::error::SimError> {
         let species = crate::species::Species::load_from_file(path)?;
         Ok(Self::from_species(&species, archetype, blend))
@@ -519,8 +629,12 @@ impl SpeciesBrain {
 }
 
 impl AiBrain for SpeciesBrain {
-    fn name(&self) -> &str { self.inner.name() }
-    fn decide(&mut self, s: &ColonyAiState) -> AiDecision { self.inner.decide(s) }
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn decide(&mut self, s: &ColonyAiState) -> AiDecision {
+        self.inner.decide(s)
+    }
 }
 
 /// Derive a 9-tuple baseline from a species' cited biological fields.
@@ -567,25 +681,38 @@ fn species_baseline_params(sp: &crate::species::Species) -> [f32; 9] {
         _ => 0.20,
     };
     // Egg-lay rate → nurse commitment (high lay rate needs more nurses).
-    let nurse_raw = if eggs >= 40.0 { 0.45 }
-                    else if eggs >= 25.0 { 0.30 }
-                    else if eggs >= 15.0 { 0.22 }
-                    else { 0.18 };
+    let nurse_raw = if eggs >= 40.0 {
+        0.45
+    } else if eggs >= 25.0 {
+        0.30
+    } else if eggs >= 15.0 {
+        0.22
+    } else {
+        0.18
+    };
     let total = forage_raw + dig_raw + nurse_raw;
     let (f, d, n) = (forage_raw / total, dig_raw / total, nurse_raw / total);
 
     [
-        cr.worker, cr.soldier, cr.breeder,
-        f, d, n,
-        (aggression * 2.0 * invasive_bias).min(3.0),  // losses_response: 2× cited aggression × invasive bias
-        (1.0 - aggression).max(0.1),  // food_response: low-aggression species relocate sooner
-        20.0,                          // food_threshold: legacy egg_cost × 4
+        cr.worker,
+        cr.soldier,
+        cr.breeder,
+        f,
+        d,
+        n,
+        (aggression * 2.0 * invasive_bias).min(3.0), // losses_response: 2× cited aggression × invasive bias
+        (1.0 - aggression).max(0.1), // food_response: low-aggression species relocate sooner
+        20.0,                        // food_threshold: legacy egg_cost × 4
     ]
 }
 
 fn renormalize_triple(a: f32, b: f32, c: f32) -> (f32, f32, f32) {
     let s = a + b + c;
-    if s > 0.0 { (a / s, b / s, c / s) } else { (1.0/3.0, 1.0/3.0, 1.0/3.0) }
+    if s > 0.0 {
+        (a / s, b / s, c / s)
+    } else {
+        (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+    }
 }
 
 // ============================================================
@@ -670,9 +797,12 @@ pub struct MlpBrain {
     pub label: String,
     input_mean: Vec<f32>,
     input_std: Vec<f32>,
-    w1: Vec<Vec<f32>>, b1: Vec<f32>,
-    w2: Vec<Vec<f32>>, b2: Vec<f32>,
-    w3: Vec<Vec<f32>>, b3: Vec<f32>,
+    w1: Vec<Vec<f32>>,
+    b1: Vec<f32>,
+    w2: Vec<Vec<f32>>,
+    b2: Vec<f32>,
+    w3: Vec<Vec<f32>>,
+    b3: Vec<f32>,
     /// Training-time exploration noise (sigma for additive Gaussian).
     /// Default 0.0 (deterministic). Set via set_explore_std() or the
     /// `noisy_mlp:<path>:<std>` matchup_bench spec.
@@ -682,19 +812,28 @@ pub struct MlpBrain {
 
 #[derive(serde::Deserialize)]
 struct MlpWeightsFile {
-    #[allow(dead_code)] input_dim: usize,
-    #[allow(dead_code)] hidden_dim: usize,
-    #[allow(dead_code)] output_dim: usize,
+    #[allow(dead_code)]
+    input_dim: usize,
+    #[allow(dead_code)]
+    hidden_dim: usize,
+    #[allow(dead_code)]
+    output_dim: usize,
     input_mean: Vec<f32>,
     input_std: Vec<f32>,
-    w1: Vec<Vec<f32>>, b1: Vec<f32>,
-    w2: Vec<Vec<f32>>, b2: Vec<f32>,
-    w3: Vec<Vec<f32>>, b3: Vec<f32>,
+    w1: Vec<Vec<f32>>,
+    b1: Vec<f32>,
+    w2: Vec<Vec<f32>>,
+    b2: Vec<f32>,
+    w3: Vec<Vec<f32>>,
+    b3: Vec<f32>,
 }
 
 impl MlpBrain {
     /// Load from a JSON weights file produced by `train_mlp_brain.py`.
-    pub fn load(path: impl AsRef<std::path::Path>, label: impl Into<String>) -> std::io::Result<Self> {
+    pub fn load(
+        path: impl AsRef<std::path::Path>,
+        label: impl Into<String>,
+    ) -> std::io::Result<Self> {
         let path = path.as_ref();
         let raw = std::fs::read_to_string(path)?;
         let parsed: MlpWeightsFile = serde_json::from_str(&raw)
@@ -704,9 +843,12 @@ impl MlpBrain {
             label: label.into(),
             input_mean: parsed.input_mean,
             input_std: parsed.input_std,
-            w1: parsed.w1, b1: parsed.b1,
-            w2: parsed.w2, b2: parsed.b2,
-            w3: parsed.w3, b3: parsed.b3,
+            w1: parsed.w1,
+            b1: parsed.b1,
+            w2: parsed.w2,
+            b2: parsed.b2,
+            w3: parsed.w3,
+            b3: parsed.b3,
             explore_std: 0.0,
             rng: rand_chacha::ChaCha8Rng::seed_from_u64(0xfeed),
         })
@@ -745,12 +887,21 @@ fn state_to_features(s: &ColonyAiState) -> Vec<f32> {
         1e6
     };
     vec![
-        s.food_stored, s.food_inflow_recent,
-        s.worker_count as f32, s.soldier_count as f32, s.breeder_count as f32,
-        s.brood_egg as f32, s.brood_larva as f32, s.brood_pupa as f32,
-        s.queens_alive as f32, s.combat_losses_recent as f32,
-        ed, s.enemy_worker_count as f32, s.enemy_soldier_count as f32,
-        s.day_of_year as f32, s.ambient_temp_c,
+        s.food_stored,
+        s.food_inflow_recent,
+        s.worker_count as f32,
+        s.soldier_count as f32,
+        s.breeder_count as f32,
+        s.brood_egg as f32,
+        s.brood_larva as f32,
+        s.brood_pupa as f32,
+        s.queens_alive as f32,
+        s.combat_losses_recent as f32,
+        ed,
+        s.enemy_worker_count as f32,
+        s.enemy_soldier_count as f32,
+        s.day_of_year as f32,
+        s.ambient_temp_c,
         if s.diapause_active { 1.0 } else { 0.0 },
         if s.is_daytime { 1.0 } else { 0.0 },
     ]
@@ -790,7 +941,7 @@ impl AiBrain for MlpBrain {
         if self.explore_std > 0.0 {
             use rand::Rng;
             for x in out.iter_mut() {
-                let z: f32 = self.rng.r#gen::<f32>() * 2.0 - 1.0;  // uniform [-1, 1]
+                let z: f32 = self.rng.r#gen::<f32>() * 2.0 - 1.0; // uniform [-1, 1]
                 let noise = z * self.explore_std;
                 *x = (*x + noise).clamp(0.0, 1.0);
             }
@@ -890,12 +1041,23 @@ pub fn state_to_prompt(s: &ColonyAiState) -> String {
         "state food={:.1} inflow={:.2} workers={} soldiers={} breeders={} \
          eggs={} larvae={} pupae={} queens={} losses={} ed={} ew={} es={} \
          doy={} t={:.1} dia={} day={} action=",
-        s.food_stored, s.food_inflow_recent,
-        s.worker_count, s.soldier_count, s.breeder_count,
-        s.brood_egg, s.brood_larva, s.brood_pupa, s.queens_alive,
-        s.combat_losses_recent, ed, s.enemy_worker_count, s.enemy_soldier_count,
-        s.day_of_year, s.ambient_temp_c,
-        s.diapause_active as u8, s.is_daytime as u8,
+        s.food_stored,
+        s.food_inflow_recent,
+        s.worker_count,
+        s.soldier_count,
+        s.breeder_count,
+        s.brood_egg,
+        s.brood_larva,
+        s.brood_pupa,
+        s.queens_alive,
+        s.combat_losses_recent,
+        ed,
+        s.enemy_worker_count,
+        s.enemy_soldier_count,
+        s.day_of_year,
+        s.ambient_temp_c,
+        s.diapause_active as u8,
+        s.is_daytime as u8,
     )
 }
 
@@ -909,7 +1071,9 @@ pub fn completion_to_decision(completion: &str) -> Option<AiDecision> {
     let mut d = None;
     let mut n = None;
     for tok in completion.split_whitespace() {
-        let Some((k, v)) = tok.split_once(':') else { continue };
+        let Some((k, v)) = tok.split_once(':') else {
+            continue;
+        };
         let parsed: Option<f32> = v.parse().ok();
         match (k, parsed) {
             ("w", Some(x)) => w = Some(x),
@@ -1018,9 +1182,12 @@ impl AiBrain for AetherLmBrain {
             .unwrap_or(self.checkpoint_path.clone());
         let output = match std::process::Command::new(&exe_canon)
             .current_dir(&aether_root)
-            .arg("--ckpt").arg(&ckpt_rel)
-            .arg("--prompt").arg(&prompt)
-            .arg("--max-new").arg(self.max_new_tokens.to_string())
+            .arg("--ckpt")
+            .arg(&ckpt_rel)
+            .arg("--prompt")
+            .arg(&prompt)
+            .arg("--max-new")
+            .arg(self.max_new_tokens.to_string())
             .output()
         {
             Ok(o) => o,
@@ -1088,11 +1255,18 @@ impl MixedBrain {
     /// Build from a list of (brain, weight) pairs. Weights need not
     /// sum to 1 — the sampler normalizes. `label` surfaces in logs +
     /// bench reports.
-    pub fn new(label: impl Into<String>, components: Vec<(Box<dyn AiBrain>, f32)>, seed: u64) -> Self {
+    pub fn new(
+        label: impl Into<String>,
+        components: Vec<(Box<dyn AiBrain>, f32)>,
+        seed: u64,
+    ) -> Self {
         use rand::SeedableRng;
         assert!(!components.is_empty(), "MixedBrain: empty component list");
         let total_weight: f32 = components.iter().map(|(_, w)| *w).sum();
-        assert!(total_weight > 0.0, "MixedBrain: all weights zero or negative");
+        assert!(
+            total_weight > 0.0,
+            "MixedBrain: all weights zero or negative"
+        );
         let mut cumulative = Vec::with_capacity(components.len());
         let mut acc = 0.0;
         for (_, w) in &components {
@@ -1117,17 +1291,24 @@ impl MixedBrain {
         let mut label_parts: Vec<String> = Vec::new();
         for part in spec.split(',') {
             let part = part.trim();
-            if part.is_empty() { continue; }
+            if part.is_empty() {
+                continue;
+            }
             let (name, weight) = match part.split_once('=') {
                 Some((n, w)) => {
-                    let w: f32 = w.trim().parse().map_err(|e| format!("bad weight `{w}`: {e}"))?;
+                    let w: f32 = w
+                        .trim()
+                        .parse()
+                        .map_err(|e| format!("bad weight `{w}`: {e}"))?;
                     (n.trim(), w)
                 }
                 None => (part, 1.0),
             };
             let brain: Box<dyn AiBrain> = match name {
                 "heuristic" => Box::new(HeuristicBrain::new(5.0)),
-                "random" => Box::new(RandomBrain::new(seed.wrapping_add(label_parts.len() as u64))),
+                "random" => Box::new(RandomBrain::new(
+                    seed.wrapping_add(label_parts.len() as u64),
+                )),
                 "defender" => Box::new(DefenderBrain::new()),
                 "aggressor" => Box::new(AggressorBrain::new()),
                 "economist" => Box::new(EconomistBrain::new()),
@@ -1136,7 +1317,11 @@ impl MixedBrain {
                 "conservative" => Box::new(ConservativeBuilderBrain::new()),
                 other => return Err(format!("MixedBrain: unknown archetype `{other}`")),
             };
-            label_parts.push(if (weight - 1.0).abs() < 1e-6 { name.to_string() } else { format!("{name}={weight}") });
+            label_parts.push(if (weight - 1.0).abs() < 1e-6 {
+                name.to_string()
+            } else {
+                format!("{name}={weight}")
+            });
             components.push((brain, weight));
         }
         if components.is_empty() {
@@ -1148,14 +1333,19 @@ impl MixedBrain {
 }
 
 impl AiBrain for MixedBrain {
-    fn name(&self) -> &str { &self.label }
+    fn name(&self) -> &str {
+        &self.label
+    }
 
     fn decide(&mut self, state: &ColonyAiState) -> AiDecision {
         use rand::Rng;
         let x: f32 = self.rng.r#gen::<f32>() * self.total_weight;
         let mut idx = self.cumulative.len() - 1;
         for (i, c) in self.cumulative.iter().enumerate() {
-            if x <= *c { idx = i; break; }
+            if x <= *c {
+                idx = i;
+                break;
+            }
         }
         self.components[idx].0.decide(state)
     }
@@ -1174,7 +1364,11 @@ pub enum MatchStatus {
     /// adult ant of any caste.
     InProgress,
     /// Exactly one colony lost (queens=0 OR adults=0). The survivor wins.
-    Won { winner: u8, loser: u8, ended_at_tick: u64 },
+    Won {
+        winner: u8,
+        loser: u8,
+        ended_at_tick: u64,
+    },
     /// Both colonies died on the same tick (rare; only happens with
     /// simultaneous queen kills or environmental sweeps).
     Draw { ended_at_tick: u64 },
@@ -1222,7 +1416,10 @@ mod tests {
         let mut state = neutral_state();
         state.combat_losses_recent = 5;
         let after = b.decide(&state).caste_ratio_soldier;
-        assert!(after > initial, "soldier ratio should rise after losses ({initial} → {after})");
+        assert!(
+            after > initial,
+            "soldier ratio should rise after losses ({initial} → {after})"
+        );
     }
 
     #[test]
@@ -1232,7 +1429,10 @@ mod tests {
         let mut state = neutral_state();
         state.food_stored = 2.0; // well below low_food_threshold (= 5.0 * 4 = 20)
         let after = b.decide(&state).forage_weight;
-        assert!(after > initial, "forage weight should rise when food low ({initial} → {after})");
+        assert!(
+            after > initial,
+            "forage weight should rise when food low ({initial} → {after})"
+        );
     }
 
     #[test]
@@ -1240,7 +1440,10 @@ mod tests {
         let mut b = RandomBrain::new(42);
         for _ in 0..100 {
             let d = b.decide(&neutral_state());
-            assert!(d.is_valid(), "RandomBrain produced out-of-band decision: {d:?}");
+            assert!(
+                d.is_valid(),
+                "RandomBrain produced out-of-band decision: {d:?}"
+            );
         }
     }
 
@@ -1261,7 +1464,10 @@ mod tests {
     fn aether_brain_stub_returns_safe_default() {
         let mut b = AetherLmBrain::new("nonexistent/checkpoint", "aether-test");
         let d = b.decide(&neutral_state());
-        assert!(d.is_valid(), "missing exe/ckpt must return a valid safe-default decision");
+        assert!(
+            d.is_valid(),
+            "missing exe/ckpt must return a valid safe-default decision"
+        );
         assert_eq!(b.name(), "aether-test");
     }
 
@@ -1271,9 +1477,15 @@ mod tests {
         // Spot-check a handful of fields show up in the right format.
         assert!(p.starts_with("state food="), "prompt: {p}");
         assert!(p.ends_with("action="), "prompt should cue completion: {p}");
-        assert!(p.contains("workers=30"), "prompt missing workers field: {p}");
+        assert!(
+            p.contains("workers=30"),
+            "prompt missing workers field: {p}"
+        );
         assert!(p.contains("queens=1"), "prompt missing queens field: {p}");
-        assert!(p.contains("ed=inf"), "prompt should encode infinite enemy distance as 'inf'");
+        assert!(
+            p.contains("ed=inf"),
+            "prompt should encode infinite enemy distance as 'inf'"
+        );
     }
 
     #[test]
@@ -1324,8 +1536,12 @@ mod tests {
             "w3": vec![vec![0.0_f32; 2]; 6],
             "b3": vec![0.0_f32; 6],
         });
-        let tmp = std::env::temp_dir().join(format!("antcolony-mlp-test-{}.json", std::process::id()));
-        std::fs::File::create(&tmp).unwrap().write_all(weights.to_string().as_bytes()).unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("antcolony-mlp-test-{}.json", std::process::id()));
+        std::fs::File::create(&tmp)
+            .unwrap()
+            .write_all(weights.to_string().as_bytes())
+            .unwrap();
 
         let mut brain = MlpBrain::load(&tmp, "mlp-test").expect("load");
         let s = neutral_state();
@@ -1334,8 +1550,14 @@ mod tests {
         // Determinism check.
         assert_eq!(d1.caste_ratio_worker, d2.caste_ratio_worker);
         // sigmoid(0) = 0.5 — every output should be ~0.5 with all-zero weights.
-        for v in [d1.caste_ratio_worker, d1.caste_ratio_soldier, d1.caste_ratio_breeder,
-                  d1.forage_weight, d1.dig_weight, d1.nurse_weight] {
+        for v in [
+            d1.caste_ratio_worker,
+            d1.caste_ratio_soldier,
+            d1.caste_ratio_breeder,
+            d1.forage_weight,
+            d1.dig_weight,
+            d1.nurse_weight,
+        ] {
             assert!((v - 0.5).abs() < 1e-5, "sigmoid(0) should be 0.5, got {v}");
         }
         let _ = std::fs::remove_file(&tmp);

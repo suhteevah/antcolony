@@ -156,8 +156,7 @@ pub struct MetricDefinition {
 ///    [`crate::bench::expected`] under the relevant species.
 pub const METRIC_COLONY_SURVIVAL: MetricDefinition = MetricDefinition {
     human_name: "Colony survival",
-    human_definition:
-        "True (1.0) if at least one queen ant is alive and the colony has at least one worker \
+    human_definition: "True (1.0) if at least one queen ant is alive and the colony has at least one worker \
          at the end of the simulation run; false (0.0) otherwise. This is the most basic \
          viability check — a colony that fails this metric has gone extinct in-sim.",
     units: "boolean (0.0 or 1.0)",
@@ -166,8 +165,7 @@ pub const METRIC_COLONY_SURVIVAL: MetricDefinition = MetricDefinition {
 
 pub const METRIC_QUEEN_SURVIVAL: MetricDefinition = MetricDefinition {
     human_name: "Queen survival",
-    human_definition:
-        "True (1.0) if at least one queen is alive in colony 0 at the end of the run. For polygyne \
+    human_definition: "True (1.0) if at least one queen is alive in colony 0 at the end of the run. For polygyne \
          species (Tapinoma, Formica) this only requires ≥1 queen — it does NOT track queen-count \
          trajectory, which would be a separate metric. A 0.0 result means the colony has no \
          reproductive female remaining (irrecoverable).",
@@ -179,8 +177,7 @@ pub const METRIC_QUEEN_SURVIVAL: MetricDefinition = MetricDefinition {
 
 pub const METRIC_BROOD_PIPELINE_HEALTH: MetricDefinition = MetricDefinition {
     human_name: "Brood pipeline health",
-    human_definition:
-        "Fraction of sampled ticks in the final 25% of the run that had ALL THREE brood stages \
+    human_definition: "Fraction of sampled ticks in the final 25% of the run that had ALL THREE brood stages \
          (eggs, larvae, pupae) non-zero simultaneously. A healthy queen-led colony in non-diapause \
          conditions should have all three stages flowing. Persistent gaps indicate a stalled \
          pipeline — possible causes include food shortage or queen failure (the harness does NOT \
@@ -192,8 +189,7 @@ pub const METRIC_BROOD_PIPELINE_HEALTH: MetricDefinition = MetricDefinition {
 
 pub const METRIC_POPULATION_STABILITY: MetricDefinition = MetricDefinition {
     human_name: "Adult population stability",
-    human_definition:
-        "Coefficient of variation (standard deviation / mean) of the worker count across the \
+    human_definition: "Coefficient of variation (standard deviation / mean) of the worker count across the \
          final 25% of the run. Lower is more stable. A value above 0.5 indicates the population \
          is oscillating wildly, which usually signals a foraging-vs-consumption mismatch or \
          broken hibernation logic.",
@@ -203,8 +199,7 @@ pub const METRIC_POPULATION_STABILITY: MetricDefinition = MetricDefinition {
 
 pub const METRIC_FOOD_ECONOMY: MetricDefinition = MetricDefinition {
     human_name: "Food economy ratio",
-    human_definition:
-        "Ratio of food units returned by foragers to food units consumed by adults in the final \
+    human_definition: "Ratio of food units returned by foragers to food units consumed by adults in the final \
          year of the run. >1.0 means the colony brings in more than it consumes (sustainable). \
          <1.0 means the colony is eating into its reserves (will eventually starve). \
          Brood costs are NOT included in the denominator (they are built into egg_cost_food).",
@@ -214,8 +209,7 @@ pub const METRIC_FOOD_ECONOMY: MetricDefinition = MetricDefinition {
 
 pub const METRIC_HIBERNATION_COMPLIANCE: MetricDefinition = MetricDefinition {
     human_name: "Hibernation compliance",
-    human_definition:
-        "For species with hibernation_required=true: fraction of in-game years where the colony \
+    human_definition: "For species with hibernation_required=true: fraction of in-game years where the colony \
          accumulated at least min_diapause_days of cold-period activity suppression. Skipped \
          hibernation in real biology causes queen fertility collapse — we mirror that.",
     units: "fraction of years (0.0 to 1.0)",
@@ -347,7 +341,8 @@ pub fn compute_population_stability(samples: &[TickSample]) -> Option<f64> {
             let d = s.workers as f64 - mean;
             d * d
         })
-        .sum::<f64>() / n;
+        .sum::<f64>()
+        / n;
     let std_dev = variance.sqrt();
     let cv = std_dev / mean;
     if !cv.is_finite() {
@@ -456,7 +451,11 @@ mod tests {
     #[test]
     fn population_stability_known_cv() {
         // 50, 100, 150 → mean=100, var=((50)^2+0+50^2)/3 ≈ 1666.67, std≈40.82, cv≈0.408
-        let samples = vec![sample(50, 0, 0, 0), sample(100, 0, 0, 0), sample(150, 0, 0, 0)];
+        let samples = vec![
+            sample(50, 0, 0, 0),
+            sample(100, 0, 0, 0),
+            sample(150, 0, 0, 0),
+        ];
         let cv = compute_population_stability(&samples).unwrap();
         assert!((cv - 0.408).abs() < 0.01, "cv was {cv}");
     }

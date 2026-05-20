@@ -22,7 +22,12 @@ impl Arbiter {
         let mut force_nuptial = false;
 
         for fact in &blackboard.facts {
-            if let Fact::Goal { directive, priority, .. } = fact {
+            if let Fact::Goal {
+                directive,
+                priority,
+                ..
+            } = fact
+            {
                 match directive {
                     Directive::AdjustCasteRatio(_) => {
                         if best_caste.map(|(_, p)| *priority > p).unwrap_or(true) {

@@ -6,7 +6,6 @@
 pub mod ai;
 pub mod ant;
 pub mod bench;
-pub mod species_extended;
 pub mod colony;
 pub mod config;
 pub mod environment;
@@ -20,6 +19,7 @@ pub mod player;
 pub mod simulation;
 pub mod spatial;
 pub mod species;
+pub mod species_extended;
 pub mod topology;
 pub mod tube;
 pub mod unlocks;
@@ -27,22 +27,27 @@ pub mod world;
 
 pub use ai::{
     AetherLmBrain, AggressorBrain, AiBrain, AiDecision, Arbiter, Blackboard, BlackboardSnapshot,
-    BreederBrain, Cadence, CombatKs, ColonyAiState, ConservativeBuilderBrain, Contribution,
-    DefenderBrain, Directive, EconomistBrain, Fact, FactRef, ForagerBrain, ForagerKs,
-    BrainArchetype, HeuristicBrain, KnowledgeSource, KsName, MatchStatus, MixedBrain, MlpBrain,
-    RandomBrain, SpeciesBrain, StrategistKs, TunedBrain,
+    BrainArchetype, BreederBrain, Cadence, ColonyAiState, CombatKs, ConservativeBuilderBrain,
+    Contribution, DefenderBrain, Directive, EconomistBrain, Fact, FactRef, ForagerBrain, ForagerKs,
+    HeuristicBrain, KnowledgeSource, KsName, MatchStatus, MixedBrain, MlpBrain, RandomBrain,
+    SpeciesBrain, StrategistKs, TunedBrain,
 };
 pub use ant::{Ant, AntCaste, AntState};
-pub use colony::{BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, PopulationCounts, TechUnlock};
-pub use config::{
-    AntConfig, ColonyConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig,
+pub use colony::{
+    BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, PopulationCounts, TechUnlock,
 };
+pub use config::{AntConfig, ColonyConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig};
 pub use environment::{Climate, Environment, Season, TimeScale};
 pub use error::SimError;
 pub use hazards::{Predator, PredatorKind, PredatorState, Weather};
-pub use player::{Beacon, BeaconKind};
+pub use milestones::{Milestone, MilestoneKind};
 pub use module::{Module, ModuleId, ModuleKind, PortPos, SubstrateKind};
+pub use persist::{
+    SNAPSHOT_FORMAT_VERSION, Snapshot, compute_catchup_ticks, load_snapshot, now_unix_secs,
+    save_snapshot,
+};
 pub use pheromone::{PheromoneGrid, PheromoneLayer};
+pub use player::{Beacon, BeaconKind};
 pub use simulation::Simulation;
 pub use spatial::SpatialHash;
 pub use species::{
@@ -50,14 +55,9 @@ pub use species::{
     Species, load_species_dir,
 };
 pub use species_extended::{
-    Behavior, ColonyStructure, CombatExtended, DielActivity, DietExtended, EcologicalRole,
-    InvasiveStatus, MoundConstruction, QueenCount, RecruitmentStyle, Substrate, SubstrateType,
-    Weapon, WorkerSizeBucket, CURRENT_SCHEMA_VERSION,
-};
-pub use milestones::{Milestone, MilestoneKind};
-pub use persist::{
-    Snapshot, compute_catchup_ticks, load_snapshot, now_unix_secs, save_snapshot,
-    SNAPSHOT_FORMAT_VERSION,
+    Behavior, CURRENT_SCHEMA_VERSION, ColonyStructure, CombatExtended, DielActivity, DietExtended,
+    EcologicalRole, InvasiveStatus, MoundConstruction, QueenCount, RecruitmentStyle, Substrate,
+    SubstrateType, Weapon, WorkerSizeBucket,
 };
 pub use topology::Topology;
 pub use tube::{Tube, TubeEnd, TubeId, TubeTransit};

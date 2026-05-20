@@ -80,7 +80,13 @@ impl WorldGrid {
     }
 
     /// Place a food cluster — returns number of cells turned into food.
-    pub fn place_food_cluster(&mut self, cx: i64, cy: i64, radius: i64, units_per_cell: u32) -> u32 {
+    pub fn place_food_cluster(
+        &mut self,
+        cx: i64,
+        cy: i64,
+        radius: i64,
+        units_per_cell: u32,
+    ) -> u32 {
         let mut placed = 0u32;
         for dy in -radius..=radius {
             for dx in -radius..=radius {
@@ -181,7 +187,10 @@ impl WorldGrid {
             let y = (y0 as f32 + t * dy as f32).round() as i64;
             if self.in_bounds(x, y) {
                 let i = self.idx(x as usize, y as usize);
-                if !matches!(self.cells[i], Terrain::NestEntrance(_) | Terrain::Chamber(_)) {
+                if !matches!(
+                    self.cells[i],
+                    Terrain::NestEntrance(_) | Terrain::Chamber(_)
+                ) {
                     self.cells[i] = Terrain::Empty;
                     placed += 1;
                 }
@@ -196,7 +205,11 @@ impl WorldGrid {
         match self.cells[i] {
             Terrain::Food(n) if n > 0 => {
                 let new = n - 1;
-                self.cells[i] = if new == 0 { Terrain::Empty } else { Terrain::Food(new) };
+                self.cells[i] = if new == 0 {
+                    Terrain::Empty
+                } else {
+                    Terrain::Food(new)
+                };
                 1
             }
             _ => 0,

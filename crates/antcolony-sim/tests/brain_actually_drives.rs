@@ -2,14 +2,24 @@
 //! the decision. If this passes but matchup_bench results don't differ
 //! by brain, the bug is downstream (in what the sim consumes).
 
-use antcolony_sim::{AiDecision, RandomBrain, Simulation, Topology, AiBrain};
+use antcolony_sim::{AiBrain, AiDecision, RandomBrain, Simulation, Topology};
 
 fn small_two_colony_sim() -> Simulation {
-    use antcolony_sim::config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig};
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
     let cfg = SimConfig {
-        world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+        world: WorldConfig {
+            width: 32,
+            height: 32,
+            ..WorldConfig::default()
+        },
         pheromone: PheromoneConfig::default(),
-        ant: AntConfig { initial_count: 8, ..AntConfig::default() },
+        ant: AntConfig {
+            initial_count: 8,
+            ..AntConfig::default()
+        },
         colony: ColonyConfig::default(),
         combat: CombatConfig::default(),
         hazards: HazardConfig::default(),
@@ -33,17 +43,33 @@ fn applying_decision_changes_colony_caste_ratio() {
     };
     sim.apply_ai_decision(1, &decision);
     let after = &sim.colonies[1].caste_ratio;
-    assert!(after.soldier > initial.soldier, "soldier should rise: {} -> {}", initial.soldier, after.soldier);
-    assert!((after.soldier - 0.9).abs() < 0.01, "soldier should be ~0.9, got {}", after.soldier);
-    assert!(sim.colonies[1].external_brain, "external_brain flag should be set");
+    assert!(
+        after.soldier > initial.soldier,
+        "soldier should rise: {} -> {}",
+        initial.soldier,
+        after.soldier
+    );
+    assert!(
+        (after.soldier - 0.9).abs() < 0.01,
+        "soldier should be ~0.9, got {}",
+        after.soldier
+    );
+    assert!(
+        sim.colonies[1].external_brain,
+        "external_brain flag should be set"
+    );
 }
 
 #[test]
 fn external_brain_persists_across_ticks() {
     let mut sim = small_two_colony_sim();
     let decision = AiDecision {
-        caste_ratio_worker: 0.05, caste_ratio_soldier: 0.90, caste_ratio_breeder: 0.05,
-        forage_weight: 0.1, dig_weight: 0.1, nurse_weight: 0.8,
+        caste_ratio_worker: 0.05,
+        caste_ratio_soldier: 0.90,
+        caste_ratio_breeder: 0.05,
+        forage_weight: 0.1,
+        dig_weight: 0.1,
+        nurse_weight: 0.8,
         research_choice: None,
     };
     sim.apply_ai_decision(1, &decision);
@@ -56,7 +82,8 @@ fn external_brain_persists_across_ticks() {
     assert!(
         (soldier_after_tick - soldier_after_decision).abs() < 0.01,
         "external_brain should prevent red_ai_tick from overwriting (was {}, now {})",
-        soldier_after_decision, soldier_after_tick,
+        soldier_after_decision,
+        soldier_after_tick,
     );
 }
 

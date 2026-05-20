@@ -4,7 +4,9 @@
 //! Required for ecologist-grade reproducibility.
 
 use antcolony_sim::{
-    Species, TimeScale, bench::run::{BenchRunConfig, run_one}, load_species_dir,
+    Species, TimeScale,
+    bench::run::{BenchRunConfig, run_one},
+    load_species_dir,
 };
 
 fn load_species(id: &str) -> Species {
@@ -78,14 +80,13 @@ fn bench_different_seeds_produce_different_samples() {
     // should differ across the run — RNG controls forager direction
     // and many other choices.
     assert_eq!(r42.samples.len(), r99.samples.len());
-    let any_diff = r42
-        .samples
-        .iter()
-        .zip(r99.samples.iter())
-        .any(|(a, b)| {
-            a.workers != b.workers
-                || a.eggs != b.eggs
-                || a.food_returned_cumulative != b.food_returned_cumulative
-        });
-    assert!(any_diff, "different seeds produced identical telemetry — RNG not in use?");
+    let any_diff = r42.samples.iter().zip(r99.samples.iter()).any(|(a, b)| {
+        a.workers != b.workers
+            || a.eggs != b.eggs
+            || a.food_returned_cumulative != b.food_returned_cumulative
+    });
+    assert!(
+        any_diff,
+        "different seeds produced identical telemetry — RNG not in use?"
+    );
 }

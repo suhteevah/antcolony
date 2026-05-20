@@ -45,7 +45,10 @@ pub enum Citation {
     /// Government / extension service publication (e.g. UF/IFAS, USFS).
     Extension(&'static str),
     /// Multiple sources span a range; we cite both endpoints.
-    LiteratureRange { low: &'static str, high: &'static str },
+    LiteratureRange {
+        low: &'static str,
+        high: &'static str,
+    },
     /// Deliberate sim-pacing choice with no direct biological measurement.
     /// The `&'static str` is the written rationale (NOT a citation).
     GamePacing(&'static str),
@@ -99,7 +102,10 @@ impl Tolerance {
             Tolerance::Strict => (0.9, 1.1),
             Tolerance::Loose => (0.5, 1.5),
             Tolerance::OrderOfMagnitude => (0.1, 10.0),
-            Tolerance::Custom { low_mult, high_mult } => (*low_mult, *high_mult),
+            Tolerance::Custom {
+                low_mult,
+                high_mult,
+            } => (*low_mult, *high_mult),
         }
     }
 
@@ -290,9 +296,7 @@ fn camponotus_pennsylvanicus() -> SpeciesExpectations {
             human_why: "Camponotus queens live 15-25 years. Year-5 mortality is bug-territory.",
             centroid: 1.0,
             tolerance: Tolerance::Strict,
-            citation: Citation::ReferenceWork(
-                "Hansen & Klotz 2005 (queen lifespan 15-25yr)",
-            ),
+            citation: Citation::ReferenceWork("Hansen & Klotz 2005 (queen lifespan 15-25yr)"),
         },
         days_to_first_egg: ExpectedRange {
             human_name: "In-game days from start to first egg laid",
@@ -535,9 +539,7 @@ fn aphaenogaster_rudis() -> SpeciesExpectations {
                        Year 5 should be near or at mature size.",
             centroid: 500.0,
             tolerance: Tolerance::Loose,
-            citation: Citation::PeerReviewed(
-                "Lubertazzi 2012 (mean 266-613, max ~2000)",
-            ),
+            citation: Citation::PeerReviewed("Lubertazzi 2012 (mean 266-613, max ~2000)"),
         },
         year_5_brood_present: ExpectedRange {
             human_name: "Brood items present at end of year 5",
@@ -802,10 +804,7 @@ mod tests {
                 &exp.queen_alive_at_year_5,
                 &exp.days_to_first_egg,
             ] {
-                assert!(
-                    !er.human_name.is_empty(),
-                    "{id}: empty human_name",
-                );
+                assert!(!er.human_name.is_empty(), "{id}: empty human_name",);
                 assert!(
                     !er.human_why.is_empty(),
                     "{id}: empty human_why for {}",
@@ -817,7 +816,11 @@ mod tests {
 
     #[test]
     fn tolerance_band_is_well_formed() {
-        for tol in [Tolerance::Strict, Tolerance::Loose, Tolerance::OrderOfMagnitude] {
+        for tol in [
+            Tolerance::Strict,
+            Tolerance::Loose,
+            Tolerance::OrderOfMagnitude,
+        ] {
             let (lo, hi) = tol.band();
             assert!(lo > 0.0 && lo < hi, "tolerance band malformed: {lo}..{hi}");
         }

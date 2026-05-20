@@ -22,7 +22,10 @@ use std::path::PathBuf;
 
 use antcolony_sim::{
     AggressorBrain, AiBrain, DefenderBrain, Simulation, Topology,
-    config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
+    config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    },
     persist::Snapshot,
 };
 
@@ -57,12 +60,30 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut i = 0;
     while i < raw.len() {
         match raw[i].as_str() {
-            "--out" => { a.out_dir = PathBuf::from(&raw[i+1]); i += 2; }
-            "--ticks" => { a.ticks = raw[i+1].parse()?; i += 2; }
-            "--snapshot-every" => { a.snapshot_every = raw[i+1].parse()?; i += 2; }
-            "--seed" => { a.seed = raw[i+1].parse()?; i += 2; }
-            "--arena" => { a.arena = raw[i+1].parse()?; i += 2; }
-            "--initial-ants" => { a.initial_ants = raw[i+1].parse()?; i += 2; }
+            "--out" => {
+                a.out_dir = PathBuf::from(&raw[i + 1]);
+                i += 2;
+            }
+            "--ticks" => {
+                a.ticks = raw[i + 1].parse()?;
+                i += 2;
+            }
+            "--snapshot-every" => {
+                a.snapshot_every = raw[i + 1].parse()?;
+                i += 2;
+            }
+            "--seed" => {
+                a.seed = raw[i + 1].parse()?;
+                i += 2;
+            }
+            "--arena" => {
+                a.arena = raw[i + 1].parse()?;
+                i += 2;
+            }
+            "--initial-ants" => {
+                a.initial_ants = raw[i + 1].parse()?;
+                i += 2;
+            }
             other => anyhow::bail!("unknown arg `{other}`"),
         }
     }
@@ -72,9 +93,16 @@ fn parse_args() -> anyhow::Result<Args> {
 fn make_sim(args: &Args) -> Simulation {
     let q = args.arena as usize;
     let cfg = SimConfig {
-        world: WorldConfig { width: q, height: q, ..WorldConfig::default() },
+        world: WorldConfig {
+            width: q,
+            height: q,
+            ..WorldConfig::default()
+        },
         pheromone: PheromoneConfig::default(),
-        ant: AntConfig { initial_count: args.initial_ants as usize, ..AntConfig::default() },
+        ant: AntConfig {
+            initial_count: args.initial_ants as usize,
+            ..AntConfig::default()
+        },
         colony: ColonyConfig::default(),
         combat: CombatConfig::default(),
         hazards: HazardConfig::default(),
@@ -131,10 +159,22 @@ fn main() -> anyhow::Result<()> {
 
     // Final summary line — quick sanity check across runs.
     let final_path = args.out_dir.join("FINAL.txt");
-    let last_ant = sim.ants.last().map(|a| format!("id={} pos=({:.4},{:.4}) col={} caste={:?}", a.id, a.position.x, a.position.y, a.colony_id, a.caste)).unwrap_or_else(|| "<none>".into());
+    let last_ant = sim
+        .ants
+        .last()
+        .map(|a| {
+            format!(
+                "id={} pos=({:.4},{:.4}) col={} caste={:?}",
+                a.id, a.position.x, a.position.y, a.colony_id, a.caste
+            )
+        })
+        .unwrap_or_else(|| "<none>".into());
     let summary = format!(
         "ticks={} ants={} colonies={} last_ant={}\n",
-        sim.tick, sim.ants.len(), sim.colonies.len(), last_ant,
+        sim.tick,
+        sim.ants.len(),
+        sim.colonies.len(),
+        last_ant,
     );
     std::fs::write(&final_path, &summary)?;
     tracing::info!(out = %args.out_dir.display(), %summary, "det_check done");

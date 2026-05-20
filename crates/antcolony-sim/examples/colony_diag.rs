@@ -95,9 +95,7 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .find(|s| s.id == species_id)
         .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!("species '{species_id}' not found in assets/species")
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("species '{species_id}' not found in assets/species"))?;
 
     let env = Environment {
         time_scale: scale,
@@ -162,17 +160,41 @@ fn main() -> anyhow::Result<()> {
 
     println!(
         "{:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>7}  {:>8}  {:>9}  {:>6}  {:>6}  {:>6}  {:>6}  {:>8}",
-        "tick", "workers", "soldrs", "breedrs", "queens", "total", "food", "inflow", "eggs", "larva", "pupa", "fret", "state"
+        "tick",
+        "workers",
+        "soldrs",
+        "breedrs",
+        "queens",
+        "total",
+        "food",
+        "inflow",
+        "eggs",
+        "larva",
+        "pupa",
+        "fret",
+        "state"
     );
 
     let mut prev_workers = 0u32;
     let mut dead_worker_log_last = 0u64;
     for t in 0..ticks {
-        let pre_workers = sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0);
+        let pre_workers = sim
+            .colonies
+            .get(0)
+            .map(|c| c.population.workers)
+            .unwrap_or(0);
         sim.tick();
-        let post_workers = sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0);
+        let post_workers = sim
+            .colonies
+            .get(0)
+            .map(|c| c.population.workers)
+            .unwrap_or(0);
         // Transition logging: the tick workers crossed zero.
-        if prev_workers == 0 && post_workers == 0 && pre_workers > 0 && t - dead_worker_log_last > 100 {
+        if prev_workers == 0
+            && post_workers == 0
+            && pre_workers > 0
+            && t - dead_worker_log_last > 100
+        {
             println!("tick={} EVENT: worker population hit 0", t);
             dead_worker_log_last = t;
         }
@@ -211,7 +233,8 @@ fn main() -> anyhow::Result<()> {
 
     let c = &sim.colonies[0];
     println!();
-    println!("final: tick={} ants={} workers={} food={:.2} food_returned={} eggs={} larvae={} pupae={}",
+    println!(
+        "final: tick={} ants={} workers={} food={:.2} food_returned={} eggs={} larvae={} pupae={}",
         sim.tick,
         sim.ants.iter().filter(|a| a.colony_id == 0).count(),
         c.population.workers,
@@ -245,5 +268,8 @@ fn format_state_histogram(sim: &Simulation) -> String {
         }
     }
     // Format: E/F/P/R/S/O
-    format!("{}/{}/{}/{}/{}/{}", explore, follow, pickup, ret, store, other)
+    format!(
+        "{}/{}/{}/{}/{}/{}",
+        explore, follow, pickup, ret, store, other
+    )
 }
