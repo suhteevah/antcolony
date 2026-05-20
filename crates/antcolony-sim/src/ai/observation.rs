@@ -19,20 +19,29 @@ use serde::{Deserialize, Serialize};
 /// produces byte-identical output to the pre-plumbing version.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AntModulators {
-    /// Multiplier on the pheromone-intensity exponent. Clamped [0.1, 5.0]
-    /// at apply time. Default 1.0 (no modulation).
+    /// Multiplier on the pheromone-intensity exponent. Clamped to
+    /// `[0.1, 5.0]` on the **write side** by `Simulation::apply_ant_modulators`
+    /// (trainer-facing contract). `choose_direction` applies a wider
+    /// read-side safety clamp of `[0.1, 10.0]` as defense-in-depth.
+    /// Default 1.0 (no modulation).
     pub alpha_mult: f32,
-    /// Multiplier on the desirability/forward-bias exponent. Clamped
-    /// [0.1, 5.0] at apply time. Default 1.0.
+    /// Multiplier on the desirability/forward-bias exponent. Clamped to
+    /// `[0.1, 5.0]` on the **write side** by `Simulation::apply_ant_modulators`.
+    /// Read-side safety clamp in `choose_direction` is `[0.1, 10.0]`.
+    /// Default 1.0.
     pub beta_mult: f32,
-    /// Additive offset to `AntConfig::exploration_rate`. Clamped [-0.1,
-    /// 0.1] at apply time. Default 0.0.
+    /// Additive offset to `AntConfig::exploration_rate`. Clamped to
+    /// `[-0.1, 0.1]` on the **write side** by `Simulation::apply_ant_modulators`.
+    /// Read-side safety clamp in `choose_direction` is `[0.0, 1.0]`.
+    /// Default 0.0.
     pub exploration_mod: f32,
-    /// Multiplier on pheromone deposit strength. Clamped [0.1, 5.0] at
-    /// apply time. Default 1.0.
+    /// Multiplier on pheromone deposit strength. Clamped to `[0.1, 5.0]`
+    /// on the **write side** by `Simulation::apply_ant_modulators`.
+    /// Default 1.0.
     pub deposit_mult: f32,
-    /// Additive logit bias on FSM transition probabilities. Clamped
-    /// [-2.0, 2.0] at apply time. Default 0.0.
+    /// Additive logit bias on FSM transition probabilities. Clamped to
+    /// `[-2.0, 2.0]` on the **write side** by `Simulation::apply_ant_modulators`.
+    /// Default 0.0.
     pub state_bias: f32,
 }
 

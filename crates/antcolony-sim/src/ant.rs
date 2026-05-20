@@ -203,10 +203,23 @@ impl Ant {
 /// - With probability `exploration_rate`, returns a random heading.
 /// - If no pheromone is sensed, picks a forward-biased random heading.
 ///
-/// Modulator wiring: `alpha_eff = cfg.alpha * mods.alpha_mult` (clamped [0.1, 10.0]),
-/// `beta_eff = cfg.beta * mods.beta_mult` (clamped [0.1, 10.0]),
-/// `explore_eff = cfg.exploration_rate + mods.exploration_mod` (clamped [0.0, 1.0]).
-/// Default modulators (1.0, 1.0, 0.0, ...) reduce to the pre-plumbing formula.
+/// Modulator wiring: `alpha_eff = cfg.alpha * mods.alpha_mult`,
+/// `beta_eff = cfg.beta * mods.beta_mult`,
+/// `explore_eff = cfg.exploration_rate + mods.exploration_mod`.
+///
+/// **Read-side clamps** here ([0.1, 10.0] for alpha/beta, [0.0, 1.0] for explore)
+/// are defense-in-depth — they catch out-of-range values that bypass the
+/// stricter write-side clamps in `Simulation::apply_ant_modulators` ([0.1, 5.0]
+/// for alpha/beta, [-0.1, 0.1] for exploration_mod). The two clamps are
+/// intentionally different: write-side is the trainer-facing contract, read-side
+/// is the "even if something gets through, don't blow up" backstop.
+///
+/// Default modulators (1.0, 1.0, 0.0, ...) reduce to the pre-plumbing formula
+/// EXACTLY for any species with `cfg.alpha` and `cfg.beta` already inside the
+/// read-clamp range (which all current species satisfy: alpha=1.0, beta=2.0).
+/// If a future species sets `cfg.alpha < 0.1` or `cfg.beta < 0.1`, the read
+/// clamp will floor it and the "default = pre-plumbing" guarantee will quietly
+/// break for that species. Verify in `species.rs` / TOML if you're adding one.
 pub fn choose_direction(
     ant: &Ant,
     grid: &PheromoneGrid,
@@ -215,7 +228,7 @@ pub fn choose_direction(
 ) -> f32 {
     let mods = &ant.modulators;
     let alpha_eff = (cfg.alpha * mods.alpha_mult).clamp(0.1, 10.0);
-    let beta_eff  = (cfg.beta  * mods.beta_mult ).clamp(0.1, 10.0);
+    let beta_eff = (cfg.beta * mods.beta_mult).clamp(0.1, 10.0);
     let explore_eff = (cfg.exploration_rate + mods.exploration_mod).clamp(0.0, 1.0);
 
     if rng.r#gen::<f32>() < explore_eff {
@@ -285,7 +298,10 @@ mod tests {
         // wire the field. Identity-correctness of `AntModulators::default()`
         // itself is verified by `ai::observation::tests::modulators_default_is_identity`.
         let a = Ant::new_worker(1, 0, Vec2::new(5.0, 5.0), 0.0, 10.0);
-        assert_eq!(a.modulators, crate::ai::observation::AntModulators::default());
+        assert_eq!(
+            a.modulators,
+            crate::ai::observation::AntModulators::default()
+        );
     }
 
     #[test]
@@ -329,9 +345,15 @@ mod tests {
         let mut eastward = 0;
         for _ in 0..100 {
             let h = choose_direction(&ant, &grid, &cfg, &mut rng);
-            if h.cos() > 0.0 { eastward += 1; }
+            if h.cos() > 0.0 {
+                eastward += 1;
+            }
         }
-        assert!(eastward >= 70, "default modulators should give baseline behavior (≥70/100 eastward), got {}", eastward);
+        assert!(
+            eastward >= 70,
+            "default modulators should give baseline behavior (≥70/100 eastward), got {}",
+            eastward
+        );
     }
 
     #[test]
@@ -339,21 +361,26 @@ mod tests {
         use rand::SeedableRng;
         use rand_chacha::ChaCha8Rng;
 
-        // Build a grid where the east trail is strong (2.0) and a competing
-        // NE trail is weak (0.3). Both are within the ±60° forward cone.
-        // When alpha=1: (2.0+0.01)^1 / (0.31)^1 ≈ 6.5x contrast.
-        // When alpha=5: (2.01)^5 / (0.31)^5 ≈ 33.2^5 / ... ≈ vastly larger contrast.
-        // High alpha concentrates weight on the stronger east cells, making
-        // the ant pick exactly-east headings more often.
-        // The threshold h.cos() > 0.7 (≈ ±45°) separates exactly-east from NE picks.
+        // Build a grid where east (dy=0) and NE (dy=2) trails compete.
+        // Cells at (dx, 2) relative to the ant are at ~34–53° off heading=0,
+        // so `h.cos() > 0.85` (≈ ±32°) will only pass exactly-east returns.
+        //
+        // East intensity 2.5, NE intensity 2.0 gives a 1.25:1 pheromone contrast.
+        // With alpha=1: weight ratio ≈ (2.51)^1 / (2.01)^1 ≈ 1.25 (east mildly preferred).
+        // With alpha=5: weight ratio ≈ (2.51)^5 / (2.01)^5 ≈ 98.8 / 33.1 ≈ 2.98x (east
+        //   strongly preferred), so the ant picks exactly-east much more consistently.
+        //
+        // 200 trials per arm + ≥10-sample margin (5pp) reliably measures alpha
+        // amplification rather than noise. Seeds are re-used so the only variable is alpha.
         let mut grid = PheromoneGrid::new(40, 40);
-        // Strong east trail.
-        for dx in 1..5 {
-            grid.deposit(20 + dx, 20, PheromoneLayer::FoodTrail, 2.0, 10.0);
+        // East trail (dy=0): heading=0 points directly at these.
+        for dx in 1..6 {
+            grid.deposit(20 + dx, 20, PheromoneLayer::FoodTrail, 2.5, 10.0);
         }
-        // Weak NE trail (within ±60° cone): dx=2,dy=1 is ~27° off east.
-        for dx in 1..4 {
-            grid.deposit(20 + dx, 20 + 1, PheromoneLayer::FoodTrail, 0.3, 10.0);
+        // NE trail: cells at dy=2 are ~34–63° off east — far enough outside the
+        // h.cos() > 0.85 filter that NE picks don't inflate the exactly-east count.
+        for dx in 1..5 {
+            grid.deposit(20 + dx, 20 + 2, PheromoneLayer::FoodTrail, 2.0, 10.0);
         }
 
         let mut ant = Ant::new_worker(1, 0, Vec2::new(20.5, 20.5), 0.0, 10.0);
@@ -365,24 +392,32 @@ mod tests {
         let mut exact_east_high = 0;
         for _ in 0..200 {
             let h = choose_direction(&ant, &grid, &cfg, &mut rng);
-            if h.cos() > 0.7 && h.sin().abs() < 0.5 { exact_east_high += 1; }
+            // h.cos() > 0.85 ≈ ±32°: only truly east headings pass.
+            // NE cells at dy=2 are ~34–63° off east so they don't inflate the count.
+            if h.cos() > 0.85 {
+                exact_east_high += 1;
+            }
         }
 
         ant.modulators.alpha_mult = 1.0;
         let mut rng = ChaCha8Rng::seed_from_u64(0x57e1_a17);
-        let mut exact_east_base = 0;
+        let mut eastward_base = 0;
         for _ in 0..200 {
             let h = choose_direction(&ant, &grid, &cfg, &mut rng);
-            if h.cos() > 0.7 && h.sin().abs() < 0.5 { exact_east_base += 1; }
+            if h.cos() > 0.85 {
+                eastward_base += 1;
+            }
         }
 
-        // Renamed to eastward_high / eastward_base to match the assertion message.
-        let eastward_high = exact_east_high;
-        let eastward_base = exact_east_base;
+        // Strict-greater would pass at +1 sample, which could happen by RNG drift
+        // alone. Require a meaningful margin (≥10 / 200 samples = 5pp) so this
+        // genuinely measures alpha amplification, not noise.
         assert!(
-            eastward_high > eastward_base,
-            "alpha_mult=5 should pull east more strongly than alpha_mult=1 with a weak trail (got {} vs {})",
-            eastward_high, eastward_base,
+            exact_east_high >= eastward_base + 10,
+            "alpha_mult=5 should pull east meaningfully more than alpha_mult=1 (got {} vs {}, margin {})",
+            exact_east_high,
+            eastward_base,
+            (exact_east_high as i32) - (eastward_base as i32),
         );
     }
 
@@ -402,7 +437,12 @@ mod tests {
             headings.push(choose_direction(&ant, &grid, &cfg, &mut rng));
         }
         let mean = headings.iter().sum::<f32>() / headings.len() as f32;
-        let variance: f32 = headings.iter().map(|h| (h - mean).powi(2)).sum::<f32>() / headings.len() as f32;
-        assert!(variance > 1.0, "uniform-random heading should have wide variance, got {}", variance);
+        let variance: f32 =
+            headings.iter().map(|h| (h - mean).powi(2)).sum::<f32>() / headings.len() as f32;
+        assert!(
+            variance > 1.0,
+            "uniform-random heading should have wide variance, got {}",
+            variance
+        );
     }
 }
