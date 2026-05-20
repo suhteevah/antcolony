@@ -75,6 +75,8 @@ impl HierarchicalActorCritic {
         let std = self.commander.log_std.exp()?;        // [action_d]
 
         // Box-Muller noise per batch entry, per dim.
+        // TODO(aether-FR): replace with Tensor::randn when native op available
+        // — avoids the host round-trip on this hot path.
         let mut noise = Vec::with_capacity(b * action_d);
         for _ in 0..(b * action_d) {
             let u1: f32 = rng.gen_range(1e-6_f32..1.0);
@@ -91,7 +93,7 @@ impl HierarchicalActorCritic {
         let diff = (&u - &mean)?;
         let std_sq = std.broadcast_mul(&std)?;          // [action_d]
         let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
-        let two_pi_log = 0.918_938_5_f64;               // 0.5 * ln(2π)
+        let two_pi_log = 0.9189385332_f64;              // 0.5 * ln(2π) — matches policy.rs:111
         let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log)?;
         // broadcast_sub: [B, action_d] - [action_d] — candle handles the rank diff.
         let log_pdf = log_pdf_part1.broadcast_sub(&self.commander.log_std)?;
@@ -104,7 +106,7 @@ impl HierarchicalActorCritic {
         let tanh_u = u.tanh()?;
         let one = Tensor::ones_like(&tanh_u)?;
         let one_minus_tanh_sq = (&one - &(&tanh_u * &tanh_u)?)?;
-        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.693_147_2_f64)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
 
         // Sum over action_d → [B] scalar log-prob per batch entry.
         let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;
@@ -121,7 +123,9 @@ impl HierarchicalActorCritic {
 /// Map pre-squash `u: [...]` to post-squash action in `[0, 1]` per dim,
 /// using `0.5 * (tanh(u) + 1)`. Matches the existing `ActorCritic::squash`
 /// (policy.rs:75) so trained weights are deployment-compatible.
-fn squash_tanh_to_unit(u: &Tensor) -> candle_core::Result<Tensor> {
+/// Map pre-squash `u: [...]` to post-squash action in `[0, 1]` per dim.
+/// `pub(crate)` so [`sample_ant`] (Task 9) can reuse without duplicating.
+pub(crate) fn squash_tanh_to_unit(u: &Tensor) -> candle_core::Result<Tensor> {
     let t = u.tanh()?;
     let one = Tensor::ones_like(&t)?;
     (t + one)?.affine(0.5, 0.0)
