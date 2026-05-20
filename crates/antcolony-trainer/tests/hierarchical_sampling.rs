@@ -121,3 +121,26 @@ fn sample_ant_shapes_and_finite() {
     let lp_v: Vec<f32> = s.log_prob.flatten_all().unwrap().to_vec1().unwrap();
     assert!(lp_v.iter().all(|v| v.is_finite()));
 }
+
+#[test]
+fn ant_log_prob_round_trip() {
+    // Use zeros_hac so all network weights are zero → mean=0 for every
+    // modulator dim. Box-Muller noise then produces u well within ±4, so
+    // tanh does not saturate and atanh inverts cleanly within 1e-3.
+    let (hac, device) = zeros_hac();
+    let b = 5usize;
+    let cone = Tensor::randn(0.0f32, 1.0, (b, A1.fixed_cone_d), &device).unwrap();
+    let intern = Tensor::randn(0.0f32, 1.0, (b, A1.fixed_internal_d), &device).unwrap();
+    let intent = Tensor::randn(0.0f32, 1.0, (b, A1.fixed_intent_d), &device).unwrap();
+
+    let mut rng = ChaCha8Rng::seed_from_u64(0xdeed);
+    let s = hac.sample_ant(&cone, &intern, &intent, &mut rng).unwrap();
+    let lp_round = hac.log_prob_of_ant_modulator(&cone, &intern, &intent, &s.modulator).unwrap();
+
+    let lp_sample: Vec<f32> = s.log_prob.flatten_all().unwrap().to_vec1().unwrap();
+    let lp_recompute: Vec<f32> = lp_round.flatten_all().unwrap().to_vec1().unwrap();
+    for (sample, recompute) in lp_sample.iter().zip(lp_recompute.iter()) {
+        assert!((sample - recompute).abs() < 1e-3,
+            "ant log_prob round-trip mismatch: sample={sample}, recompute={recompute}");
+    }
+}

@@ -172,6 +172,41 @@ impl HierarchicalActorCritic {
         })
     }
 
+    /// Recompute the log-prob of a previously-sampled (post-squash) ant
+    /// modulator under the current policy. Used by PPO's importance ratio
+    /// on the ant tier. Mirrors `log_prob_of_commander_action` on the 5-d
+    /// modulator action space.
+    pub fn log_prob_of_ant_modulator(
+        &self,
+        cone: &Tensor,
+        internal: &Tensor,
+        intent: &Tensor,
+        modulator_squashed: &Tensor,
+    ) -> candle_core::Result<Tensor> {
+        let fwd = self.ant.forward(cone, internal, intent)?;
+        let mean = fwd.modulator;
+        let std = self.ant.log_std.exp()?;
+        let two_m = modulator_squashed.affine(2.0, -1.0)?;
+        let clamped = two_m.clamp(-0.999_999_f32, 0.999_999_f32)?;
+        let one = Tensor::ones_like(&clamped)?;
+        let plus = (&one + &clamped)?;
+        let minus = (&one - &clamped)?;
+        let u = (plus / minus)?.log()?.affine(0.5, 0.0)?;
+
+        let diff = (&u - &mean)?;
+        let std_sq = std.broadcast_mul(&std)?;
+        let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
+        let two_pi_log = 0.9189385332_f64;
+        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log)?;
+        let log_pdf = log_pdf_part1.broadcast_sub(&self.ant.log_std)?;
+        let tanh_u = u.tanh()?;
+        let one_t = Tensor::ones_like(&tanh_u)?;
+        let one_minus_tanh_sq = (&one_t - &(&tanh_u * &tanh_u)?)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
+        let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;
+        Ok(log_prob)
+    }
+
     /// Recompute the log-prob of a previously-sampled (post-squash) action
     /// under the current policy. Used by PPO's importance ratio
     /// (`r_θ = exp(log_prob_now - log_prob_old)`). Mirrors
