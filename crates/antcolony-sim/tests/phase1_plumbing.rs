@@ -235,3 +235,36 @@ fn apply_ant_modulators_unknown_id_is_noop() {
     // ant id 0xFFFFFFFF doesn't exist — must not panic.
     sim.apply_ant_modulators(0, &[AntModulators::default()], &[0xFFFFFFFF]);
 }
+
+#[test]
+fn apply_commander_intent_roundtrips_through_rich_observation() {
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig,
+        WorldConfig,
+    };
+    use antcolony_sim::{Simulation, Topology};
+
+    let cfg = SimConfig {
+        world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+        pheromone: PheromoneConfig::default(),
+        ant: AntConfig { initial_count: 3, ..AntConfig::default() },
+        colony: ColonyConfig::default(),
+        combat: CombatConfig::default(),
+        hazards: HazardConfig::default(),
+    };
+    let topology = Topology::two_colony_arena((24, 24), (32, 32));
+    let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, 0xa17, 0, 2);
+
+    let mut intent = [0.0f32; 64];
+    intent[3] = 1.5;
+    intent[42] = -2.7;
+    sim.apply_commander_intent(0, &intent);
+
+    let colony = sim.colonies.get(0).unwrap();
+    assert_eq!(colony.commander_intent[3], 1.5);
+    assert_eq!(colony.commander_intent[42], -2.7);
+    assert_eq!(colony.commander_intent[0], 0.0);
+
+    // Unknown colony — must not panic.
+    sim.apply_commander_intent(99, &intent);
+}

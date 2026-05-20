@@ -579,6 +579,16 @@ impl Simulation {
         }
     }
 
+    /// Store the commander's intent vector for this colony. Ants in the
+    /// colony will see this through their per-ant brain input (Phase 2
+    /// trainer reads `colony.commander_intent` once per decision window).
+    /// Unknown colony_id is a silent no-op.
+    pub fn apply_commander_intent(&mut self, colony_id: u8, intent: &[f32; 64]) {
+        if let Some(colony) = self.colonies.get_mut(colony_id as usize) {
+            colony.commander_intent = *intent;
+        }
+    }
+
     /// AI-vs-AI mode constructor — same as `new_two_colony_with_topology`
     /// but flips both colonies' `is_ai_controlled = true` so the
     /// existing per-tick AI brain (`red_ai_tick`) acts on both sides.
