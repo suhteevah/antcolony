@@ -63,8 +63,8 @@ impl HierarchicalActorCritic {
         self.ant.forward(cone, internal, intent)
     }
 
-    /// Stochastic commander rollout step. Mirrors the Gaussian + tanh-squash
-    /// + Jacobian-corrected log-prob recipe used by the existing flat
+    /// Stochastic commander rollout step. Mirrors the Gaussian + tanh-squash +
+    /// Jacobian-corrected log-prob recipe used by the existing flat
     /// `ActorCritic::sample` (see `crates/antcolony-trainer/src/policy.rs:92`).
     /// Uses the provided RNG so rollouts are reproducible.
     pub fn sample_commander(
@@ -113,7 +113,7 @@ impl HierarchicalActorCritic {
         let tanh_u = u.tanh()?;
         let one = Tensor::ones_like(&tanh_u)?;
         let one_minus_tanh_sq = (&one - &(&tanh_u * &tanh_u)?)?;
-        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -std::f64::consts::LN_2)?;
 
         // Sum over action_d → [B] scalar log-prob per batch entry.
         let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;
@@ -162,7 +162,7 @@ impl HierarchicalActorCritic {
         let tanh_u = u.tanh()?;
         let one = Tensor::ones_like(&tanh_u)?;
         let one_minus_tanh_sq = (&one - &(&tanh_u * &tanh_u)?)?;
-        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -std::f64::consts::LN_2)?;
         let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;
 
         Ok(AntSample {
@@ -202,7 +202,7 @@ impl HierarchicalActorCritic {
         let tanh_u = u.tanh()?;
         let one_t = Tensor::ones_like(&tanh_u)?;
         let one_minus_tanh_sq = (&one_t - &(&tanh_u * &tanh_u)?)?;
-        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -std::f64::consts::LN_2)?;
         let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;
         Ok(log_prob)
     }
@@ -239,7 +239,7 @@ impl HierarchicalActorCritic {
         let tanh_u = u.tanh()?;
         let one_t = Tensor::ones_like(&tanh_u)?;
         let one_minus_tanh_sq = (&one_t - &(&tanh_u * &tanh_u)?)?;
-        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
+        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -std::f64::consts::LN_2)?;
         let log_prob = (log_pdf - log_jac)?.sum(candle_core::D::Minus1)?;
         Ok(log_prob)
     }

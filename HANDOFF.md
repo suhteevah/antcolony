@@ -6,6 +6,40 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## Session 2026-05-20 — Phase 2b-1 PPO primitives + state_bias sim wiring landed
+
+🟢 Project Status: **Phase 2b-1 ship-ready.** Branch `feat/ant-brain-phase2b1` (final commit `<TBD>`) ships the trainer-side PPO primitives + sim-side state_bias wiring. `HierarchicalActorCritic` now has `sample_commander`/`sample_ant` (Gaussian + tanh-squash + Jacobian log-prob) and `log_prob_of_commander_action`/`log_prob_of_ant_modulator` (PPO importance ratio inputs). `MatchEnv` has 4 new batch accessors (`commander_obs_batch`, `all_ant_obs_batch`, `apply_commander_intents`, `apply_ant_modulators_batched`). Sim-side `state_bias` modulator is now read at the Exploring → FollowingTrail transition site (and the inverse FollowingTrail → Exploring) — non-default values measurably shift transition rates while defaults preserve baseline. Observation→tensor conversion DRY'd into `pub fn` `obs_to_tensors` module. Existing flat ActorCritic + PpoTrainer untouched.
+
+### What Was Done This Session
+
+11 sequential TDD tasks on `feat/ant-brain-phase2b1`:
+- T1+T2: state_bias FSM wiring at simulation.rs decide_next_state (`0d321f8`, `d091fd8`)
+- T3: obs_to_tensors DRY module (`e37ba24`)
+- T4: MatchEnv::commander_obs_batch (`e31d645`)
+- T5: MatchEnv::all_ant_obs_batch (`c07ee9c`)
+- T6: MatchEnv write-back wrappers (`d5409e2`)
+- T7: HAC::sample_commander (`1b86650` + `3f705e1` cleanup)
+- T8: HAC::log_prob_of_commander_action (`ae46317`)
+- T9: HAC::sample_ant (`3208f1d`)
+- T10: HAC::log_prob_of_ant_modulator (`6f1129f`)
+- T11: acceptance + HANDOFF (this entry)
+
+### What's Next
+
+- Phase 2b-2 plan: `JointPpoTrainer` struct + two-buffer rollout + per-tier GAE + joint loss + Adam update + 5-iter smoke training run on kokonoe (3070 Ti, fp16). All the primitives 2b-1 just shipped are the building blocks.
+- Pre-existing 33 clippy warnings in non-Phase-2 code unchanged.
+
+### Notes for Next Session
+
+- All 4 sampling/log-prob methods use `rand_chacha::ChaCha8Rng` for reproducibility — Phase 2b-2 must thread a single RNG through the rollout loop, not create a fresh one per call.
+- `MatchEnv::apply_ant_modulators_batched` groups writes by colony then calls `apply_ant_modulators` per colony — avoids the O(N²) ant-id lookup penalty when N gets large.
+- The `state_bias` injection site is at `simulation.rs:~4091` (entry) + `~4107` (exit) — symmetric wiring on both Exploring↔FollowingTrail edges. If the FSM grows new transitions later, decide whether they should also read state_bias.
+- The `log_prob_of_*` round-trip tests use a `zeros_hac()` helper (all-zero weights) to avoid `tanh` saturation that would break the atanh inversion at network init. In trained networks this saturation doesn't occur because LayerNorm + learning dynamics bound the means. The math is identical to existing `policy.rs::log_prob_of`.
+- `obs_to_tensors::history_flatten` pads with zeros when the colony's ring has fewer than K=8 tokens. Phase 2b-2's first 5 iterations will have empty rings → all-zero history. Worth observing whether the policy actually attends to the history dim at all in those early iterations.
+- `squash_tanh_to_unit` is `pub(crate)` in `actor_critic.rs` — Phase 2b-2's trainer code can use it if needed.
+
+---
+
 ## Session 2026-05-20 — Phase 2a hierarchical policy forward pass landed
 
 🟢 Project Status: **Phase 2a ship-ready.** Branch `feat/ant-brain-phase2a` (final commit `935ce06`) ships the forward-only hierarchical policy nets — `CommanderPolicy`, `AntPolicy`, `HierarchicalActorCritic` in `crates/antcolony-trainer/src/hierarchical/`. A1 sizing target (~12M params) builds and runs forward on CPU; A2 (~95M) and A3 (~160M) dim presets defined and verified at the param-count level. End-to-end smoke (`tests/hierarchical_smoke.rs::a1_hac_drives_from_fresh_sim`) drives the HAC from a fresh `Simulation`'s `RichObservation` + per-ant `AntObservation` and asserts output tensor shapes + finite-only numerics. Sim-side `deposit_mult` modulator wired into pheromone deposit math — non-default values measurably strengthen pheromone deposition (verified by `deposit_mult_strengthens_pheromone_deposition`). Existing flat `ActorCritic` MLP untouched (47% Nash regression baseline preserved).
