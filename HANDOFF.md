@@ -26,8 +26,9 @@ This document contains everything needed to implement the ant colony simulation 
 
 ### What's Next
 
-- Phase 2b-2 plan: `JointPpoTrainer` struct + two-buffer rollout + per-tier GAE + joint loss + Adam update + 5-iter smoke training run on kokonoe (3070 Ti, fp16). All the primitives 2b-1 just shipped are the building blocks.
-- Pre-existing 33 clippy warnings in non-Phase-2 code unchanged.
+1. **Merge `feat/ant-brain-phase2b1` into main** (13 commits ahead) — same ff-merge pattern as Phase 1 / 2a. Session ended before the close-out question was answered.
+2. **Phase 2b-2 plan** via `superpowers:writing-plans`: `JointPpoTrainer` struct + two-buffer rollout + per-tier GAE + joint loss + Adam update + 5-iter smoke training run on kokonoe (3070 Ti, fp16). All the primitives 2b-1 just shipped are the building blocks.
+3. Pre-existing 33 clippy warnings in non-Phase-2 code unchanged.
 
 ### Notes for Next Session
 
