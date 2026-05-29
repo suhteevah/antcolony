@@ -312,6 +312,38 @@ impl JointPpoTrainer {
         (adv, ret)
     }
 
+    /// Run the full smoke loop: for each iteration, collect
+    /// `matches_per_iter` self-play rollouts into one buffer, then do one
+    /// joint update. Returns per-iteration loss stats. Logs each iter via
+    /// tracing.
+    pub fn train(&mut self) -> anyhow::Result<Vec<JointLossStats>> {
+        let mut opt = self.make_optimizer()?;
+        let mut history = Vec::with_capacity(self.config.iterations);
+        for it in 0..self.config.iterations {
+            let mut roll = JointRollout::default();
+            for m in 0..self.config.matches_per_iter {
+                let seed = self.config.seed
+                    ^ ((it as u64) << 32)
+                    ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                let r = self.rollout(seed, m)?;
+                roll.commander.extend(r.commander);
+                roll.ant.extend(r.ant);
+            }
+            let stats = self.joint_update(&mut opt, &roll)?;
+            tracing::info!(
+                iter = it,
+                total = stats.total,
+                commander = stats.commander,
+                ant = stats.ant,
+                cmdr_records = roll.commander.len(),
+                ant_records = roll.ant.len(),
+                "joint ppo iteration"
+            );
+            history.push(stats);
+        }
+        Ok(history)
+    }
+
     /// One joint PPO update over the rollout. Returns the per-tier loss
     /// breakdown. Numerics per tier mirror `PpoTrainer::ppo_update`
     /// (clipped surrogate + value MSE + Gaussian entropy bonus). Runs
