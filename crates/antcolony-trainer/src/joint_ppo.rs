@@ -93,6 +93,7 @@ impl JointPpoTrainer {
     /// rollout. `match_idx` stamps every record so per-match GAE never
     /// bleeds across match boundaries in `joint_update`.
     pub fn rollout(&mut self, seed: u64, match_idx: usize) -> anyhow::Result<JointRollout> {
+        tracing::debug!(seed, match_idx, "rollout start");
         let dev = self.device.clone();
         let mut env = MatchEnv::new(seed);
         let mut out = JointRollout::default();
@@ -106,7 +107,13 @@ impl JointPpoTrainer {
             // treat that as match end.
             let (state_b, pher_b, hist_b) = match env.commander_obs_batch(&dev) {
                 Ok(t) => t,
-                Err(_) => break,
+                // A colony eliminated mid-match makes commander_obs_batch
+                // error — normal match end. Log so a genuine tensor/infra
+                // failure is distinguishable from a clean termination.
+                Err(e) => {
+                    tracing::debug!(cycle, match_idx, "rollout ended: commander_obs_batch: {e}");
+                    break;
+                }
             };
             let cmdr = self.hac.sample_commander(&state_b, &pher_b, &hist_b, &mut self.rng)?;
             let dec0 = row_to_decision(&cmdr.action, 0)?;
@@ -211,6 +218,13 @@ impl JointPpoTrainer {
                 break;
             }
         }
+        tracing::debug!(
+            seed,
+            match_idx,
+            commander_records = out.commander.len(),
+            ant_records = out.ant.len(),
+            "rollout complete"
+        );
         Ok(out)
     }
 }
