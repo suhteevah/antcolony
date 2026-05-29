@@ -1,17 +1,19 @@
 //! Phase 2b-2 joint-PPO smoke runner. Builds the A1 hierarchical brain,
 //! runs `JointPpoConfig::smoke_default()` (5 iters, 2 matches/iter,
-//! 8 cycles/match) on CPU f32, and logs per-iteration losses.
+//! 8 cycles/match), and logs per-iteration losses.
+//!
+//! Device is chosen by `CandleBackend::new()`: CUDA device 0 when built
+//! with `--features cuda`, otherwise CPU f32.
 //!
 //! Usage:
-//!   cargo run --release --bin joint_smoke
-//!
-//! CUDA is intentionally NOT used: kokonoe has no MSVC linker so the
-//! candle `cuda` feature does not build (see the Phase 2b-2 plan,
-//! "Device & precision"). Multi-GPU fp16 is Phase 3 on the cnc P100s.
+//!   CPU:  cargo run --release --bin joint_smoke
+//!   CUDA: scripts/build_trainer_cuda.bat then run the cuda binary, or
+//!         scripts/run_joint_smoke_cuda.bat (sets up the BuildTools MSVC
+//!         env + link.exe override that the candle cuda build needs on
+//!         kokonoe — see that script for why).
 
-use antcolony_trainer::{JointPpoConfig, JointPpoTrainer};
 use antcolony_trainer::hierarchical::sizing::A1;
-use candle_core::Device;
+use antcolony_trainer::{Backend, CandleBackend, JointPpoConfig, JointPpoTrainer};
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -20,9 +22,12 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = JointPpoConfig::smoke_default();
-    tracing::info!(?cfg, "starting joint PPO smoke (CPU f32, A1)");
+    // CUDA device 0 when compiled with --features cuda, else CPU.
+    let backend = CandleBackend::new()?;
+    let device = backend.device().clone();
+    tracing::info!(cuda = backend.cuda_available(), ?cfg, "starting joint PPO smoke (A1)");
 
-    let mut trainer = JointPpoTrainer::new(Device::Cpu, A1, cfg)?;
+    let mut trainer = JointPpoTrainer::new(device, A1, cfg)?;
     let stats = trainer.train()?;
 
     for (i, s) in stats.iter().enumerate() {

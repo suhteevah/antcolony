@@ -186,7 +186,11 @@ impl CommanderPolicy {
         }
 
         // ── Pool: CLS-position output (index 0) ──
-        let cls_out = x.i((.., 0, ..))?;  // [B, d_model]
+        // `.i` over the sequence dim yields a strided (non-contiguous) view;
+        // candle's CUDA matmul requires contiguous operands (CPU tolerates
+        // the stride). `.contiguous()` is a no-op on values — CPU results are
+        // unchanged — and is required before the head matmuls on GPU.
+        let cls_out = x.i((.., 0, ..))?.contiguous()?;  // [B, d_model]
 
         // ── Heads ──
         let action = self.action_head.forward(&cls_out)?;        // [B, 6] — pre-tanh

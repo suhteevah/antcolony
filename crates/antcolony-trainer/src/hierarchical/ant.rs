@@ -101,7 +101,9 @@ impl AntPolicy {
         for block in &self.blocks {
             x = block.forward(&x)?;
         }
-        let pooled = x.i((.., 0, ..))?;  // [B, d_model]
+        // Contiguous for CUDA matmul in the heads (CPU tolerates the strided
+        // view; GPU does not). No-op on values. See commander.rs pooling note.
+        let pooled = x.i((.., 0, ..))?.contiguous()?;  // [B, d_model]
 
         let modulator = self.modulator_head.forward(&pooled)?;       // [B, 5]
         let value = self.value_head.forward(&pooled)?.squeeze(1)?;   // [B]
