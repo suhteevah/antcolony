@@ -9,7 +9,7 @@
 
 use crate::hierarchical::sizing::Sizing;
 use crate::HierarchicalActorCritic;
-use candle_core::{DType, Device};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, VarMap};
 
 #[derive(Clone, Debug)]
@@ -87,6 +87,48 @@ impl JointPpoTrainer {
     }
 }
 
+/// One commander decision for one colony in one cycle of one match.
+pub struct CommanderRecord {
+    pub match_idx: usize,
+    pub colony: u8,
+    pub cycle: usize,
+    pub state: Tensor,     // [1, 17]
+    pub pheromone: Tensor, // [1, 4, 32, 32]
+    pub history: Tensor,   // [1, 8, 96]
+    pub action: Tensor,    // [1, 6] post-squash
+    pub log_prob: f32,
+    pub value: f32,
+    pub reward: f32,
+    pub done: bool,
+}
+
+/// One ant decision for one ant in one tick of one cycle.
+pub struct AntRecord {
+    pub match_idx: usize,
+    pub colony: u8,
+    pub cycle: usize,
+    pub cone: Tensor,      // [1, 60]
+    pub internal: Tensor,  // [1, 8]
+    pub intent: Tensor,    // [1, 64]
+    pub modulator: Tensor, // [1, 5] post-squash
+    pub log_prob: f32,
+    pub value: f32,
+}
+
+#[derive(Default)]
+pub struct JointRollout {
+    pub commander: Vec<CommanderRecord>,
+    pub ant: Vec<AntRecord>,
+}
+
+/// Per-iteration loss breakdown for logging + the smoke assertion.
+#[derive(Clone, Debug)]
+pub struct JointLossStats {
+    pub total: f32,
+    pub commander: f32,
+    pub ant: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +151,12 @@ mod tests {
             .map(|v| v.dims().iter().product::<usize>()).sum();
         assert!(total > 1_000_000, "A1 HAC should have >1M params, got {}", total);
         let _opt = t.make_optimizer().unwrap();
+    }
+
+    #[test]
+    fn joint_rollout_defaults_empty() {
+        let r = JointRollout::default();
+        assert!(r.commander.is_empty());
+        assert!(r.ant.is_empty());
     }
 }
