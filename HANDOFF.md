@@ -37,7 +37,7 @@ Each load-bearing task (T1, T5, T6, T7) got spec + code-quality review; the fina
 - `joint_smoke` bin runs end-to-end on kokonoe in ~18s (release).
 
 **Stubbed/deferred — these are DELIBERATE smoke-scope simplifications (documented in `docs/superpowers/plans/2026-05-29-ant-brain-phase2b2-joint-trainer.md` §"Smoke-scope simplifications"), NOT done work:**
-- **CPU f32 only.** CUDA does not build on kokonoe (no MSVC linker; the candle `cuda` feature is inert locally — memory `project_rust_trainer`). fp16/bf16 + multi-GPU is Phase 3 (cnc P100s).
+- ~~**CPU f32 only.** CUDA does not build on kokonoe~~ **CORRECTED 2026-05-29: CUDA builds AND trains on kokonoe.** That claim was a misdiagnosis; real blockers were Community VS missing `vcvarsall.bat`, a global `lld-link` linker override, and a CPU-tolerated non-contiguous matmul. The trainer now builds `--features cuda` and runs the 5-iter joint smoke on the RTX 3070 Ti (`cuda=true`, all finite, ~0.4 s/iter). Recipe + fixes on branch `feat/trainer-cuda-runtime` (`scripts/build_trainer_cuda.bat`, `run_joint_smoke_cuda.bat`). fp16/bf16 mixed precision + multi-GPU split is still Phase 3 — but **single-GPU Phase-3 dev can now run on kokonoe, not only the cnc P100s.**
 - **Self-play, no league opponent** (exercises the 2-colony batch path directly).
 - **Colony-level GAE at cycle cadence for both tiers** (ant tier bootstraps off mean ant-value). Per-tick ant credit assignment is deferred.
 - **Two forward passes per tier in the update** (one for `log_prob_of_*`, one for value) — fusion is a Phase-3 perf item.
