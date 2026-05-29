@@ -325,7 +325,12 @@ impl JointPpoTrainer {
                 let seed = self.config.seed
                     ^ ((it as u64) << 32)
                     ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
-                let r = self.rollout(seed, m)?;
+                // Globally-unique match_idx (not just `m`): GAE buckets by
+                // (match_idx, colony), and `roll` is fresh per iteration so
+                // `m` alone is correct today — but a future accumulating
+                // replay buffer would silently mis-bucket on collisions.
+                let match_idx = it * self.config.matches_per_iter + m;
+                let r = self.rollout(seed, match_idx)?;
                 roll.commander.extend(r.commander);
                 roll.ant.extend(r.ant);
             }
@@ -442,6 +447,10 @@ impl JointPpoTrainer {
             };
             let total_scalar = total.to_scalar::<f32>()?;
             let cmdr_scalar = cmdr_total.to_scalar::<f32>()?;
+            // No grad-norm clipping (candle AdamW has none; the flat trainer
+            // doesn't clip either). Fine for the 5-iter smoke — a single
+            // noisy rollout can spike one iter's loss but can't diverge in 5
+            // steps. Phase 3's longer horizon needs a pre-step clip.
             opt.backward_step(&total)?;
             last = JointLossStats { total: total_scalar, commander: cmdr_scalar, ant: ant_scalar };
         }
