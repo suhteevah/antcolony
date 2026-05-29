@@ -311,6 +311,119 @@ impl JointPpoTrainer {
         }
         (adv, ret)
     }
+
+    /// One joint PPO update over the rollout. Returns the per-tier loss
+    /// breakdown. Numerics per tier mirror `PpoTrainer::ppo_update`
+    /// (clipped surrogate + value MSE + Gaussian entropy bonus). Runs
+    /// `epochs_per_batch` passes; the smoke uses 1.
+    pub fn joint_update(
+        &self,
+        opt: &mut AdamW,
+        rollout: &JointRollout,
+    ) -> anyhow::Result<JointLossStats> {
+        let dev = self.device.clone();
+        let two_pi = std::f64::consts::PI * 2.0;
+        let ent_const = 0.5 * (1.0 + two_pi.ln());
+
+        // ── advantages/returns (computed once, reused across epochs) ──
+        let (cadv_raw, cret) = self.commander_advantages(&rollout.commander);
+        let cadv = normalize_adv(&cadv_raw);
+        let (aadv_raw, aret) = self.ant_advantages(&rollout.commander, &rollout.ant);
+        let aadv = normalize_adv(&aadv_raw);
+
+        let cn = rollout.commander.len();
+        let an = rollout.ant.len();
+        anyhow::ensure!(cn > 0, "joint_update: empty commander buffer");
+
+        // ── pre-cat commander tensors (constant across epochs) ──
+        let c_state = Tensor::cat(
+            &rollout.commander.iter().map(|r| r.state.clone()).collect::<Vec<_>>(), 0)?;
+        let c_pher = Tensor::cat(
+            &rollout.commander.iter().map(|r| r.pheromone.clone()).collect::<Vec<_>>(), 0)?;
+        let c_hist = Tensor::cat(
+            &rollout.commander.iter().map(|r| r.history.clone()).collect::<Vec<_>>(), 0)?;
+        let c_act = Tensor::cat(
+            &rollout.commander.iter().map(|r| r.action.clone()).collect::<Vec<_>>(), 0)?;
+        let c_oldlp = Tensor::from_slice(
+            &rollout.commander.iter().map(|r| r.log_prob).collect::<Vec<_>>(), cn, &dev)?;
+        let c_adv = Tensor::from_slice(&cadv, cn, &dev)?;
+        let c_ret = Tensor::from_slice(&cret, cn, &dev)?;
+
+        // ── pre-cat ant tensors (may be empty) ──
+        let ant_tensors = if an > 0 {
+            let cone = Tensor::cat(
+                &rollout.ant.iter().map(|a| a.cone.clone()).collect::<Vec<_>>(), 0)?;
+            let internal = Tensor::cat(
+                &rollout.ant.iter().map(|a| a.internal.clone()).collect::<Vec<_>>(), 0)?;
+            let intent = Tensor::cat(
+                &rollout.ant.iter().map(|a| a.intent.clone()).collect::<Vec<_>>(), 0)?;
+            let modulator = Tensor::cat(
+                &rollout.ant.iter().map(|a| a.modulator.clone()).collect::<Vec<_>>(), 0)?;
+            let oldlp = Tensor::from_slice(
+                &rollout.ant.iter().map(|a| a.log_prob).collect::<Vec<_>>(), an, &dev)?;
+            let adv = Tensor::from_slice(&aadv, an, &dev)?;
+            let ret = Tensor::from_slice(&aret, an, &dev)?;
+            Some((cone, internal, intent, modulator, oldlp, adv, ret))
+        } else {
+            None
+        };
+
+        let clip_lo = 1.0 - self.config.clip;
+        let clip_hi = 1.0 + self.config.clip;
+
+        let mut last = JointLossStats { total: 0.0, commander: 0.0, ant: 0.0 };
+        for _epoch in 0..self.config.epochs_per_batch {
+            // ── Commander loss ──
+            let new_lp = self.hac.log_prob_of_commander_action(&c_state, &c_pher, &c_hist, &c_act)?;
+            let value_pred = self.hac.forward_commander(&c_state, &c_pher, &c_hist)?.value;
+            let ratio = (&new_lp - &c_oldlp)?.exp()?;
+            let surr1 = (&ratio * &c_adv)?;
+            let surr2 = (&ratio.clamp(clip_lo, clip_hi)? * &c_adv)?;
+            let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
+            let value_loss = (&value_pred - &c_ret)?.sqr()?.mean_all()?;
+            let entropy = self.hac.commander.log_std.affine(1.0, ent_const)?.sum_all()?;
+            let cmdr_total = ((&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?
+                - entropy.affine(self.config.cmdr_entropy_coef, 0.0)?)?;
+
+            // ── Ant loss (optional) ──
+            let (ant_total, ant_scalar) = if let Some((cone, internal, intent, modulator, oldlp, adv, ret)) = &ant_tensors {
+                let new_lp = self.hac.log_prob_of_ant_modulator(cone, internal, intent, modulator)?;
+                let value_pred = self.hac.forward_ant(cone, internal, intent)?.value;
+                let ratio = (&new_lp - oldlp)?.exp()?;
+                let surr1 = (&ratio * adv)?;
+                let surr2 = (&ratio.clamp(clip_lo, clip_hi)? * adv)?;
+                let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
+                let value_loss = (&value_pred - ret)?.sqr()?.mean_all()?;
+                let entropy = self.hac.ant.log_std.affine(1.0, ent_const)?.sum_all()?;
+                let at = ((&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?
+                    - entropy.affine(self.config.ant_entropy_coef, 0.0)?)?;
+                let scalar = at.to_scalar::<f32>()?;
+                (Some(at), scalar)
+            } else {
+                (None, 0.0)
+            };
+
+            // ── Combine + step ──
+            let total = match &ant_total {
+                Some(at) => (&cmdr_total + at.affine(self.config.alpha_balance, 0.0)?)?,
+                None => cmdr_total.clone(),
+            };
+            let total_scalar = total.to_scalar::<f32>()?;
+            let cmdr_scalar = cmdr_total.to_scalar::<f32>()?;
+            opt.backward_step(&total)?;
+            last = JointLossStats { total: total_scalar, commander: cmdr_scalar, ant: ant_scalar };
+        }
+        Ok(last)
+    }
+}
+
+/// Standard PPO advantage normalization (zero mean, unit std).
+fn normalize_adv(adv: &[f32]) -> Vec<f32> {
+    let n = adv.len().max(1) as f32;
+    let mean = adv.iter().sum::<f32>() / n;
+    let var = adv.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n;
+    let std = (var + 1e-8).sqrt();
+    adv.iter().map(|x| (x - mean) / std).collect()
 }
 
 fn colony_workers(env: &MatchEnv, k: u8) -> u32 {
@@ -458,5 +571,36 @@ mod tests {
         assert_eq!(aadv.len(), roll.ant.len());
         assert_eq!(aret.len(), roll.ant.len());
         assert!(aadv.iter().chain(aret.iter()).all(|x| x.is_finite()));
+    }
+
+    fn first_var_flat(vm: &candle_nn::VarMap) -> Vec<f32> {
+        // Concatenate all vars into a single flat snapshot so the "any
+        // weight moved" assertion is robust regardless of VarMap iteration
+        // order (HashMap order is non-deterministic; vars[0] could be
+        // log_std which may not move enough on a single Adam step at
+        // smoke_default's tiny entropy_coef).
+        let vars = vm.all_vars();
+        vars.iter()
+            .flat_map(|v| v.as_tensor().flatten_all().unwrap().to_vec1::<f32>().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn joint_update_returns_finite_loss_and_moves_weights() {
+        let mut t = JointPpoTrainer::new(Device::Cpu, A1, JointPpoConfig::smoke_default()).unwrap();
+        let mut opt = t.make_optimizer().unwrap();
+        let roll = t.rollout(0xfeed_3, 0).unwrap();
+
+        let before = first_var_flat(&t.varmap);
+        let stats = t.joint_update(&mut opt, &roll).unwrap();
+        let after = first_var_flat(&t.varmap);
+
+        assert!(stats.total.is_finite(), "total loss must be finite: {}", stats.total);
+        assert!(stats.commander.is_finite());
+        assert!(stats.ant.is_finite());
+        assert!(
+            before.iter().zip(after.iter()).any(|(a, b)| (a - b).abs() > 1e-9),
+            "at least one parameter must change after an Adam step"
+        );
     }
 }
