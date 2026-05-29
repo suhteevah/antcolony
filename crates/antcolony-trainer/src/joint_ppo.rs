@@ -13,6 +13,7 @@ use crate::HierarchicalActorCritic;
 use antcolony_sim::{AiDecision, MatchStatus};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, VarMap};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
 pub struct JointPpoConfig {
@@ -227,6 +228,89 @@ impl JointPpoTrainer {
         );
         Ok(out)
     }
+
+    /// Commander GAE per (colony, match). Output is index-aligned 1:1 with
+    /// `recs`. Returns (advantages, returns).
+    pub fn commander_advantages(&self, recs: &[CommanderRecord]) -> (Vec<f32>, Vec<f32>) {
+        use crate::ppo::PpoTrainer;
+        let mut adv = vec![0.0f32; recs.len()];
+        let mut ret = vec![0.0f32; recs.len()];
+        let keys: std::collections::BTreeSet<(usize, u8)> =
+            recs.iter().map(|r| (r.match_idx, r.colony)).collect();
+        for (m, colony) in keys {
+            // Records for this stream, in push order (== cycle order).
+            let idxs: Vec<usize> = recs.iter().enumerate()
+                .filter(|(_, r)| r.match_idx == m && r.colony == colony)
+                .map(|(i, _)| i).collect();
+            let rewards: Vec<f32> = idxs.iter().map(|&i| recs[i].reward).collect();
+            let values: Vec<f32> = idxs.iter().map(|&i| recs[i].value).collect();
+            let dones: Vec<bool> = idxs.iter().map(|&i| recs[i].done).collect();
+            let (a, r) = PpoTrainer::compute_gae(
+                &rewards, &values, &dones, self.config.gamma, self.config.gae_lambda,
+            );
+            for (j, &i) in idxs.iter().enumerate() {
+                adv[i] = a[j];
+                ret[i] = r[j];
+            }
+        }
+        (adv, ret)
+    }
+
+    /// Ant GAE per (colony, match) at cycle cadence. Reward/done come from
+    /// the commander record for the same (match, colony, cycle); the
+    /// bootstrap value is the mean of that cycle's ant value-head outputs.
+    /// Each ant record inherits its cycle's advantage/return. Output is
+    /// index-aligned 1:1 with `ant`.
+    pub fn ant_advantages(
+        &self,
+        cmdr: &[CommanderRecord],
+        ant: &[AntRecord],
+    ) -> (Vec<f32>, Vec<f32>) {
+        use crate::ppo::PpoTrainer;
+        let mut adv = vec![0.0f32; ant.len()];
+        let mut ret = vec![0.0f32; ant.len()];
+        let keys: std::collections::BTreeSet<(usize, u8)> =
+            ant.iter().map(|a| (a.match_idx, a.colony)).collect();
+        for (m, colony) in keys {
+            // reward/done per cycle from the commander records.
+            let mut cyc_reward: BTreeMap<usize, f32> = BTreeMap::new();
+            let mut cyc_done: BTreeMap<usize, bool> = BTreeMap::new();
+            for r in cmdr.iter().filter(|r| r.match_idx == m && r.colony == colony) {
+                cyc_reward.insert(r.cycle, r.reward);
+                cyc_done.insert(r.cycle, r.done);
+            }
+            // mean ant value + ant indices per cycle.
+            let mut cyc_val: BTreeMap<usize, (f32, usize)> = BTreeMap::new();
+            let mut cyc_idxs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+            for (i, a) in ant.iter().enumerate()
+                .filter(|(_, a)| a.match_idx == m && a.colony == colony)
+            {
+                let e = cyc_val.entry(a.cycle).or_insert((0.0, 0));
+                e.0 += a.value;
+                e.1 += 1;
+                cyc_idxs.entry(a.cycle).or_default().push(i);
+            }
+            // Ordered cycles that actually have ant samples.
+            let cycles: Vec<usize> = cyc_idxs.keys().copied().collect();
+            let rewards: Vec<f32> = cycles.iter()
+                .map(|c| *cyc_reward.get(c).unwrap_or(&0.0)).collect();
+            let values: Vec<f32> = cycles.iter()
+                .map(|c| { let (s, n) = cyc_val[c]; if n > 0 { s / n as f32 } else { 0.0 } })
+                .collect();
+            let dones: Vec<bool> = cycles.iter()
+                .map(|c| *cyc_done.get(c).unwrap_or(&false)).collect();
+            let (a, r) = PpoTrainer::compute_gae(
+                &rewards, &values, &dones, self.config.gamma, self.config.gae_lambda,
+            );
+            for (j, c) in cycles.iter().enumerate() {
+                for &i in &cyc_idxs[c] {
+                    adv[i] = a[j];
+                    ret[i] = r[j];
+                }
+            }
+        }
+        (adv, ret)
+    }
 }
 
 fn colony_workers(env: &MatchEnv, k: u8) -> u32 {
@@ -358,5 +442,21 @@ mod tests {
         let r = JointRollout::default();
         assert!(r.commander.is_empty());
         assert!(r.ant.is_empty());
+    }
+
+    #[test]
+    fn gae_helpers_align_to_records_and_are_finite() {
+        let mut t = JointPpoTrainer::new(Device::Cpu, A1, JointPpoConfig::smoke_default()).unwrap();
+        let roll = t.rollout(0xfeed_2, 0).unwrap();
+
+        let (cadv, cret) = t.commander_advantages(&roll.commander);
+        assert_eq!(cadv.len(), roll.commander.len());
+        assert_eq!(cret.len(), roll.commander.len());
+        assert!(cadv.iter().chain(cret.iter()).all(|x| x.is_finite()));
+
+        let (aadv, aret) = t.ant_advantages(&roll.commander, &roll.ant);
+        assert_eq!(aadv.len(), roll.ant.len());
+        assert_eq!(aret.len(), roll.ant.len());
+        assert!(aadv.iter().chain(aret.iter()).all(|x| x.is_finite()));
     }
 }
