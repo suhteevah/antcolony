@@ -24,7 +24,9 @@ pub mod ppo;
 pub mod env;
 pub mod league;
 pub mod hierarchical;
+pub mod joint_ppo;
 pub use hierarchical::{HierarchicalActorCritic, CommanderPolicy, AntPolicy, Sizing};
+pub use joint_ppo::JointPpoConfig;
 pub use hierarchical::obs_to_tensors::{rich_to_tensors, ant_obs_to_tensors, rich_batch_to_tensors};
 
 pub use backend::{Backend, CandleBackend};
