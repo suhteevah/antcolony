@@ -589,6 +589,31 @@ impl Simulation {
         }
     }
 
+    /// Append a commander history token to a colony's ring buffer, evicting
+    /// the oldest entry when the ring is at capacity (8). Read back via
+    /// `colony_rich_observation(..).history`. Unknown `colony_id` is a
+    /// silent no-op (mirrors `apply_ant_modulators`) so stale id batches
+    /// from the trainer never panic. The `pad` field is zero-filled — it is
+    /// reserved space in the 96-d history token (see design spec §"Open
+    /// questions / History token contents").
+    pub fn push_commander_history(
+        &mut self,
+        colony_id: u8,
+        state: [f32; 17],
+        action: [f32; 6],
+        reward: f32,
+    ) {
+        use crate::ai::observation::HistoryToken;
+        let Some(colony) = self.colonies.iter_mut().find(|c| c.id == colony_id) else {
+            return;
+        };
+        let token = HistoryToken { state, action, reward, pad: [0.0; 72] };
+        if colony.commander_history.is_full() {
+            colony.commander_history.remove(0);
+        }
+        colony.commander_history.push(token);
+    }
+
     /// AI-vs-AI mode constructor — same as `new_two_colony_with_topology`
     /// but flips both colonies' `is_ai_controlled = true` so the
     /// existing per-tick AI brain (`red_ai_tick`) acts on both sides.

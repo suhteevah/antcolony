@@ -457,6 +457,49 @@ fn deposit_mult_strengthens_pheromone_deposition() {
     );
 }
 
+fn build_two_colony_sim() -> antcolony_sim::Simulation {
+    use antcolony_sim::config::{
+        AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig,
+    };
+    use antcolony_sim::{Simulation, Topology};
+    let cfg = SimConfig {
+        world: WorldConfig { width: 32, height: 32, ..WorldConfig::default() },
+        pheromone: PheromoneConfig::default(),
+        ant: AntConfig { initial_count: 10, ..AntConfig::default() },
+        colony: ColonyConfig::default(),
+        combat: CombatConfig::default(),
+        hazards: HazardConfig::default(),
+    };
+    let topology = Topology::two_colony_arena((24, 24), (32, 32));
+    Simulation::new_ai_vs_ai_with_topology(cfg, topology, 0xa17, 0, 2)
+}
+
+#[test]
+fn push_commander_history_appends_and_evicts_oldest_at_capacity() {
+    use antcolony_sim::ai::observation::HistoryToken;
+    let mut sim = build_two_colony_sim();
+
+    // Empty to start.
+    assert_eq!(sim.colony_rich_observation(0).unwrap().history.len(), 0);
+
+    // Push 10 tokens with a monotonically increasing reward marker.
+    for i in 0..10u32 {
+        sim.push_commander_history(0, [0.0; 17], [0.0; 6], i as f32);
+    }
+
+    let hist = sim.colony_rich_observation(0).unwrap().history;
+    // Capacity is 8 — ring holds the last 8 (rewards 2..=9), oldest evicted.
+    assert_eq!(hist.len(), 8);
+    assert_eq!(hist.first().unwrap().reward, 2.0);
+    assert_eq!(hist.last().unwrap().reward, 9.0);
+    // Pad is zero-filled and FLAT_LEN-consistent.
+    let _ = HistoryToken::FLAT_LEN;
+    assert_eq!(hist.last().unwrap().pad, [0.0; 72]);
+
+    // Unknown colony is a silent no-op (mirrors apply_ant_modulators).
+    sim.push_commander_history(99, [0.0; 17], [0.0; 6], 1.0);
+}
+
 #[test]
 fn state_bias_shifts_following_trail_transition_rate() {
     use antcolony_sim::ai::observation::AntModulators;
