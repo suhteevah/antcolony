@@ -1,8 +1,65 @@
 # HANDOFF.md — Phased Implementation Spec
 
-**Last Updated:** 2026-05-20
+**Last Updated:** 2026-05-29
 
 This document contains everything needed to implement the ant colony simulation from scratch. Each phase is self-contained with clear inputs, outputs, and acceptance criteria. **Phases are sequential — do not skip ahead.**
+
+---
+
+## Session 2026-05-29 — Phase 2b-2 joint PPO trainer + single-device smoke landed
+
+🟢 Project Status: **Phase 2b-2 ship-ready.** Phase 2b-1 was verified intact and **fast-forward-merged into `main`** (`2cf4e08`) this session before 2b-2 work began (the "Initial commit" auto-uploader commits on top were benign README-only touches; the real T1–T11 chain `0d321f8`→`e1b795c` was present and all 26 trainer + 164 sim-lib tests passed). Phase 2b-2 then shipped on branch `feat/ant-brain-phase2b2` (10 commits, `eebe7c4`→`afc8baf`, off main `2cf4e08`): a single-device **CPU-f32 joint PPO trainer** that self-plays both colonies, collects a two-buffer rollout (commander @ 5-tick cadence, ant @ tick cadence), computes per-tier GAE, optimizes `L_total = L_cmdr + α_balance · L_ant` with one AdamW step, and completes a 5-iteration smoke with all losses finite and both tiers' weights measurably moving. The existing flat `ActorCritic` + `PpoTrainer` (47% Nash baseline) are byte-identical to main — untouched.
+
+### What Was Done This Session
+
+**Phase 2b-1 → main merge:** Verified branch state (real commit chain intact, snapshot commits benign, 0 divergence), ff-merged `feat/ant-brain-phase2b1` into `main` (`2cf4e08`). Local only — not pushed (auto-uploader handles origin). The previously-stale `species_food_storage_cap_wires_to_colony_override` test now passes (fixed in a prior session); sim lib is 164/164 green.
+
+**Phase 2b-2 (subagent-driven, 10 TDD tasks on `feat/ant-brain-phase2b2`):**
+- T1: `Simulation::push_commander_history` — ring append with FIFO eviction at cap 8, silent no-op on unknown colony (`eebe7c4`)
+- T2: `JointPpoConfig` + `smoke_default()` (5 iters / 2 matches / 8 cycles) (`6f242ee`)
+- T3: `JointPpoTrainer::new` + `make_optimizer` (A1, CPU f32) (`e0278ad`)
+- T4: rollout record + buffer types (`CommanderRecord`, `AntRecord`, `JointRollout`, `JointLossStats`) (`6d1f77b`)
+- T5: `rollout` — self-play both colonies into the two buffers (`b6aac85`) + tracing fixes from code review (`6c6caf3`)
+- T6: per-tier GAE — `commander_advantages` + `ant_advantages` (per colony/match, reuses `PpoTrainer::compute_gae`) (`92542f6`)
+- T7: `joint_update` — per-tier clipped-surrogate + value-MSE + entropy loss, α-balanced, one AdamW step (`80e2a03`)
+- T8: `train` driver + end-to-end `tests/joint_ppo_smoke.rs` (`c657e82`)
+- T9: `joint_smoke` bin + captured run log `bench/joint-smoke-phase2b2.log` (`d97c9f2`)
+- Review nits: globally-unique `match_idx` + no-grad-clip comment (`afc8baf`)
+
+Each load-bearing task (T1, T5, T6, T7) got spec + code-quality review; the final whole-branch review returned **no critical/important issues, merge-ready**. Captured smoke losses (CPU, A1): iter0 total=29.3, iter1=508.8 (early-training variance, no grad-clip — finite), iter2=52.7, iter3=49.7, iter4=60.7; `all_finite=true`.
+
+### Current State
+
+**Working:**
+- All trainer tests green: 27 lib (incl. 6 joint_ppo) + 4 sampling + 1 hierarchical_smoke + **1 joint_ppo_smoke** = 33, 0 failed.
+- All sim tests green: 164 lib + 14 phase1_plumbing.
+- `cargo build --workspace` clean (pre-existing render/sim warnings only).
+- `joint_smoke` bin runs end-to-end on kokonoe in ~18s (release).
+
+**Stubbed/deferred — these are DELIBERATE smoke-scope simplifications (documented in `docs/superpowers/plans/2026-05-29-ant-brain-phase2b2-joint-trainer.md` §"Smoke-scope simplifications"), NOT done work:**
+- **CPU f32 only.** CUDA does not build on kokonoe (no MSVC linker; the candle `cuda` feature is inert locally — memory `project_rust_trainer`). fp16/bf16 + multi-GPU is Phase 3 (cnc P100s).
+- **Self-play, no league opponent** (exercises the 2-colony batch path directly).
+- **Colony-level GAE at cycle cadence for both tiers** (ant tier bootstraps off mean ant-value). Per-tick ant credit assignment is deferred.
+- **Two forward passes per tier in the update** (one for `log_prob_of_*`, one for value) — fusion is a Phase-3 perf item.
+- **No grad-norm clipping** (candle AdamW has none; flat trainer never clipped either).
+
+### Blocking Issues
+
+None. Phase 2b-2 is ship-ready. Not yet merged to main (awaiting Matt's call — same ff pattern as Phase 1/2a/2b-1).
+
+### What's Next
+
+1. **Merge `feat/ant-brain-phase2b2` into `main`** (ff-merge, 10 commits ahead of `2cf4e08`). Matt's call.
+2. **Phase 3 plan** via `superpowers:writing-plans` from the design spec (`docs/superpowers/specs/2026-05-18-ant-brain-hierarchical-design.md` §"Ship sequence" step 4): `parallel_env.rs` (N-env batched stepper) + `multi_gpu.rs` (RolloutTrainSplit driver) on the cnc P100s, then the first real convergence run (design-spec Gates 1–2). **This is a cnc-side CUDA build** — needs the nvcc/MSVC toolchain kokonoe lacks; verify cnc is back up (P100 install was in flight as of the 2026-05-18 session) before starting.
+3. Pre-existing 33 clippy warnings in non-Phase-2 code, still unaddressed.
+
+### Notes for Next Session (Phase-3 watch-items surfaced by final review)
+
+- **`match_idx` is now globally unique** (`it * matches_per_iter + m`) so a future accumulating replay buffer won't mis-bucket GAE. Current per-iteration `joint_update` doesn't need it, but Phase 3's longer rollouts likely will.
+- **Grad-norm clipping must be added** before long-horizon training — the iter-1 loss spike (508 vs ~50) is benign at 5 iters but a single catastrophic rollout could diverge value estimates over hundreds of iters. Add a pre-`backward_step` clip or switch optimizers.
+- **`normalize_adv` on a 1-element stream yields ~0** (zeroes that bucket's policy gradient). Fine at smoke scale; watch it if Phase 3 introduces a per-tick ant advantage path with short streams.
+- **Self-play shares the gradient across both colonies** (both colonies' records feed one backward pass — correct for self-play). When Phase 3 adds frozen-opponent leagues, restrict the gradient source to the training colony's records only.
+- The smoke's `state_bias`/`deposit_mult`/`commander_intent` modulators (2a/2b-1) ARE exercised end-to-end through `apply_*` in the rollout, but the 5-iter horizon is far too short for them to learn anything — the smoke proves the plumbing runs, not that the brain trains.
 
 ---
 
