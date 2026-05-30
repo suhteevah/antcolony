@@ -172,6 +172,31 @@ impl HierarchicalActorCritic {
         })
     }
 
+    /// Deterministic commander action (policy mean, no sampling) for eval.
+    /// Returns (action[B,6] squashed to [0,1], intent[B,64], value[B]).
+    pub fn mean_commander_action(
+        &self,
+        state: &Tensor,
+        pheromone: &Tensor,
+        history: &Tensor,
+    ) -> Result<(Tensor, Tensor, Tensor)> {
+        let fwd = self.commander.forward(state, pheromone, history)?;
+        let action = squash_tanh_to_unit(&fwd.action)?;
+        Ok((action, fwd.intent, fwd.value))
+    }
+
+    /// Deterministic ant modulator (policy mean, no sampling) for eval.
+    /// Returns modulator[B,5] squashed to [0,1].
+    pub fn mean_ant_modulator(
+        &self,
+        cone: &Tensor,
+        internal: &Tensor,
+        intent: &Tensor,
+    ) -> Result<Tensor> {
+        let fwd = self.ant.forward(cone, internal, intent)?;
+        squash_tanh_to_unit(&fwd.modulator)
+    }
+
     /// Recompute the log-prob of a previously-sampled (post-squash) ant
     /// modulator under the current policy. Used by PPO's importance ratio
     /// on the ant tier. Mirrors `log_prob_of_commander_action` on the 5-d
@@ -268,6 +293,37 @@ mod tests {
         let hac = HierarchicalActorCritic::new(vb, A1).unwrap();
         assert_eq!(hac.commander.blocks.len(), A1.cmdr_layers);
         assert_eq!(hac.ant.blocks.len(), A1.ant_layers);
+    }
+
+    #[test]
+    fn mean_helpers_are_deterministic_and_squashed() {
+        use crate::hierarchical::sizing::{
+            A1, FIXED_CONE_D, FIXED_HISTORY_K, FIXED_HISTORY_TOK_D, FIXED_INTENT_D,
+            FIXED_INTERNAL_D, FIXED_PHEROMONE_C, FIXED_PHEROMONE_H, FIXED_PHEROMONE_W, FIXED_STATE_D,
+        };
+        let varmap = VarMap::new();
+        let device = Device::Cpu;
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let hac = HierarchicalActorCritic::new(vb, A1).unwrap();
+
+        let state = Tensor::zeros((1, FIXED_STATE_D), DType::F32, &device).unwrap();
+        let pher = Tensor::zeros((1, FIXED_PHEROMONE_C, FIXED_PHEROMONE_H, FIXED_PHEROMONE_W), DType::F32, &device).unwrap();
+        let hist = Tensor::zeros((1, FIXED_HISTORY_K, FIXED_HISTORY_TOK_D), DType::F32, &device).unwrap();
+
+        let (a1, _i1, _v1) = hac.mean_commander_action(&state, &pher, &hist).unwrap();
+        let (a2, _i2, _v2) = hac.mean_commander_action(&state, &pher, &hist).unwrap();
+        assert_eq!(a1.dims(), &[1, 6]);
+        let va1: Vec<f32> = a1.flatten_all().unwrap().to_vec1().unwrap();
+        let va2: Vec<f32> = a2.flatten_all().unwrap().to_vec1().unwrap();
+        assert_eq!(va1, va2, "mean action must be deterministic");
+        assert!(va1.iter().all(|x| (0.0..=1.0).contains(x)), "squashed to [0,1]");
+
+        let cone = Tensor::zeros((3, FIXED_CONE_D), DType::F32, &device).unwrap();
+        let internal = Tensor::zeros((3, FIXED_INTERNAL_D), DType::F32, &device).unwrap();
+        let intent = Tensor::zeros((3, FIXED_INTENT_D), DType::F32, &device).unwrap();
+        let mods = hac.mean_ant_modulator(&cone, &internal, &intent).unwrap();
+        assert_eq!(mods.dims(), &[3, 5]);
+        assert!(mods.flatten_all().unwrap().to_vec1::<f32>().unwrap().iter().all(|x| (0.0..=1.0).contains(x)));
     }
 
     #[test]
