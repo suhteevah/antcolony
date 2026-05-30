@@ -1,0 +1,11 @@
+# r6 baseline (reproduces the 47.1%-comparison conditions). Edit the
+# smartness levers below to bias colony behavior, then retrain + eval.
+worker_delta = 0.01
+food_delta = 0.002
+queen_bonus = 0.005
+terminal_win = 1.0
+timeout_share = 1.0
+# Smartness levers (0.0 = off). Thumb these up to reward "smart" behavior:
+brood_growth = 0.0          # reward egg->larva->pupa pipeline growth
+food_inflow = 0.0           # reward active foraging (food inflow rate)
+combat_loss_penalty = 0.0   # penalize losing workers in combat
