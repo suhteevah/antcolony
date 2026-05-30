@@ -18,7 +18,7 @@ use antcolony_sim::{AiBrain, AiDecision, MatchStatus};
 use crate::env::{MatchEnv, DECISION_CADENCE};
 use crate::hierarchical::obs_to_tensors::{ant_obs_to_tensors, rich_batch_to_tensors};
 use crate::hierarchical::sizing::{FIXED_INTENT_D, FIXED_MODULATOR_D};
-use crate::joint_ppo::{AntRecord, CommanderRecord, JointRollout};
+use crate::joint_ppo::{AntBatch, CommanderRecord, JointRollout};
 use crate::reward::{compute_step_reward, ColonyMetrics, RewardConfig};
 use crate::HierarchicalActorCritic;
 use crate::League;
@@ -164,6 +164,7 @@ impl ParallelEnv {
                     let lp: Vec<f32> = ant.log_prob.to_vec1()?;
                     let val: Vec<f32> = ant.value.to_vec1()?;
                     let mod_rows: Vec<Vec<f32>> = ant.modulator.to_vec2()?;
+                    // Scatter modulators back to each env's sim (per-env grouped).
                     let mut row = 0usize;
                     for &i in &active {
                         if done[i] {
@@ -182,27 +183,28 @@ impl ParallelEnv {
                                 state_bias: m[4],
                             });
                             ids.push(index_map[row].1);
-                            out.ant.push(AntRecord {
-                                match_idx: i,
-                                colony: 0,
-                                cycle,
-                                cone: cone.narrow(0, row, 1)?.detach(),
-                                internal: internal.narrow(0, row, 1)?.detach(),
-                                intent: intent.narrow(0, row, 1)?.detach(),
-                                modulator: ant.modulator.narrow(0, row, 1)?.detach(),
-                                log_prob: lp[row],
-                                value: val[row],
-                            });
                             row += 1;
                         }
                         if !ids.is_empty() {
                             envs[i].sim.apply_ant_modulators(0, &mods, &ids);
                         }
                     }
-                    // Anchor: ensure FIXED_MODULATOR_D is used (compile-time check).
-                    // Compile-time guard: the m[0..5] decode below assumes a
-                    // 5-d modulator. If the action space ever changes, this trips.
+                    // Compile-time guard: the m[0..5] decode above assumes a 5-d modulator.
                     const _: () = assert!(FIXED_MODULATOR_D == 5);
+                    // Store the WHOLE tick batch (one tensor each), not per-ant —
+                    // keeps the GPU cat in joint_update cheap. Row order matches
+                    // index_map (env-grouped); match_idx = env index, colony = 0.
+                    out.ant.push(AntBatch {
+                        match_idx: index_map.iter().map(|&(e, _)| e).collect(),
+                        colony: vec![0u8; index_map.len()],
+                        cycle,
+                        cone: cone.detach(),
+                        internal: internal.detach(),
+                        intent: intent.detach(),
+                        modulator: ant.modulator.detach(),
+                        log_prob: lp,
+                        value: val,
+                    });
                 }
                 for &i in &active {
                     if done[i] {
@@ -293,7 +295,9 @@ mod tests {
         assert!(!roll.commander.is_empty());
         assert!(!roll.ant.is_empty());
         assert!(roll.commander.iter().all(|r| r.colony == 0));
-        assert!(roll.ant.iter().all(|a| a.colony == 0));
+        // Left-vs-league: every ant row is colony 0, every match_idx is an env.
+        assert!(roll.ant.iter().all(|a| a.colony.iter().all(|&c| c == 0)));
+        assert!(roll.ant.iter().all(|a| a.match_idx.iter().all(|&e| e < 3)));
         let envs_seen: std::collections::HashSet<usize> =
             roll.commander.iter().map(|r| r.match_idx).collect();
         assert!(envs_seen.iter().all(|&e| e < 3));
@@ -303,8 +307,11 @@ mod tests {
             assert!(r.reward.is_finite() && r.value.is_finite() && r.log_prob.is_finite());
         }
         for a in &roll.ant {
-            assert_eq!(a.modulator.dims(), &[1, 5]);
-            assert!(a.value.is_finite() && a.log_prob.is_finite());
+            let mt = a.len();
+            assert!(mt >= 1);
+            assert_eq!(a.modulator.dims(), &[mt, 5]);
+            assert_eq!(a.match_idx.len(), mt);
+            assert!(a.log_prob.iter().chain(a.value.iter()).all(|x| x.is_finite()));
         }
     }
 }

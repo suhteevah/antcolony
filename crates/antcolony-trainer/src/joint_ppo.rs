@@ -131,21 +131,18 @@ impl JointPpoTrainer {
                 if !index_map.is_empty() {
                     let ant = self.hac.sample_ant(&cone, &internal, &intent_b, &mut self.rng)?;
                     env.apply_ant_modulators_batched(&ant.modulator, &index_map)?;
-                    let lp: Vec<f32> = ant.log_prob.to_vec1()?;
-                    let val: Vec<f32> = ant.value.to_vec1()?;
-                    for (i, &(cid, _aid)) in index_map.iter().enumerate() {
-                        out.ant.push(AntRecord {
-                            match_idx,
-                            colony: cid,
-                            cycle,
-                            cone: cone.narrow(0, i, 1)?.detach(),
-                            internal: internal.narrow(0, i, 1)?.detach(),
-                            intent: intent_b.narrow(0, i, 1)?.detach(),
-                            modulator: ant.modulator.narrow(0, i, 1)?.detach(),
-                            log_prob: lp[i],
-                            value: val[i],
-                        });
-                    }
+                    // Store the whole tick batch (one tensor each), not per-ant.
+                    out.ant.push(AntBatch {
+                        match_idx: vec![match_idx; index_map.len()],
+                        colony: index_map.iter().map(|&(cid, _)| cid).collect(),
+                        cycle,
+                        cone: cone.detach(),
+                        internal: internal.detach(),
+                        intent: intent_b.detach(),
+                        modulator: ant.modulator.detach(),
+                        log_prob: ant.log_prob.to_vec1()?,
+                        value: ant.value.to_vec1()?,
+                    });
                 }
                 env.sim.tick();
                 if !matches!(env.sim.match_status(), MatchStatus::InProgress)
@@ -259,54 +256,72 @@ impl JointPpoTrainer {
     /// Ant GAE per (colony, match) at cycle cadence. Reward/done come from
     /// the commander record for the same (match, colony, cycle); the
     /// bootstrap value is the mean of that cycle's ant value-head outputs.
-    /// Each ant record inherits its cycle's advantage/return. Output is
-    /// index-aligned 1:1 with `ant`.
+    /// Each ant row inherits its cycle's advantage/return. Output is a flat
+    /// `Vec` of length `sum(batch.len())`, in (batch order, row order) — the
+    /// same order `joint_update` cats the batch tensors, so element `k`
+    /// aligns with cat row `k`.
     pub fn ant_advantages(
         &self,
         cmdr: &[CommanderRecord],
-        ant: &[AntRecord],
+        ant: &[AntBatch],
     ) -> (Vec<f32>, Vec<f32>) {
         use crate::ppo::PpoTrainer;
-        let mut adv = vec![0.0f32; ant.len()];
-        let mut ret = vec![0.0f32; ant.len()];
-        let keys: std::collections::BTreeSet<(usize, u8)> =
-            ant.iter().map(|a| (a.match_idx, a.colony)).collect();
-        for (m, colony) in keys {
-            // reward/done per cycle from the commander records.
+        // Flattened length = total rows across all batches, in (batch order,
+        // row order) — the SAME order `joint_update` cats the batch tensors,
+        // so adv[k]/ret[k] align with cat row k.
+        let total: usize = ant.iter().map(|b| b.len()).sum();
+        let mut adv = vec![0.0f32; total];
+        let mut ret = vec![0.0f32; total];
+
+        // Mean ant value per (match, colony, cycle).
+        let mut val_sum: BTreeMap<(usize, u8, usize), (f32, usize)> = BTreeMap::new();
+        for b in ant {
+            for j in 0..b.len() {
+                let e = val_sum.entry((b.match_idx[j], b.colony[j], b.cycle)).or_insert((0.0, 0));
+                e.0 += b.value[j];
+                e.1 += 1;
+            }
+        }
+        // Distinct (match, colony) streams and their cycles.
+        let mut streams: BTreeMap<(usize, u8), Vec<usize>> = BTreeMap::new();
+        for (m, c, cyc) in val_sum.keys() {
+            streams.entry((*m, *c)).or_default().push(*cyc);
+        }
+        // Cycle-cadence GAE per (match, colony) → map (match,colony,cycle)→(adv,ret).
+        let mut cyc_adv: BTreeMap<(usize, u8, usize), (f32, f32)> = BTreeMap::new();
+        for ((m, c), cyc_list) in &streams {
+            let mut cycles = cyc_list.clone();
+            cycles.sort_unstable();
+            cycles.dedup();
             let mut cyc_reward: BTreeMap<usize, f32> = BTreeMap::new();
             let mut cyc_done: BTreeMap<usize, bool> = BTreeMap::new();
-            for r in cmdr.iter().filter(|r| r.match_idx == m && r.colony == colony) {
+            for r in cmdr.iter().filter(|r| r.match_idx == *m && r.colony == *c) {
                 cyc_reward.insert(r.cycle, r.reward);
                 cyc_done.insert(r.cycle, r.done);
             }
-            // mean ant value + ant indices per cycle.
-            let mut cyc_val: BTreeMap<usize, (f32, usize)> = BTreeMap::new();
-            let mut cyc_idxs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-            for (i, a) in ant.iter().enumerate()
-                .filter(|(_, a)| a.match_idx == m && a.colony == colony)
-            {
-                let e = cyc_val.entry(a.cycle).or_insert((0.0, 0));
-                e.0 += a.value;
-                e.1 += 1;
-                cyc_idxs.entry(a.cycle).or_default().push(i);
-            }
-            // Ordered cycles that actually have ant samples.
-            let cycles: Vec<usize> = cyc_idxs.keys().copied().collect();
-            let rewards: Vec<f32> = cycles.iter()
-                .map(|c| *cyc_reward.get(c).unwrap_or(&0.0)).collect();
+            let rewards: Vec<f32> = cycles.iter().map(|cy| *cyc_reward.get(cy).unwrap_or(&0.0)).collect();
             let values: Vec<f32> = cycles.iter()
-                .map(|c| { let (s, n) = cyc_val[c]; if n > 0 { s / n as f32 } else { 0.0 } })
+                .map(|cy| {
+                    let (s, n) = *val_sum.get(&(*m, *c, *cy)).unwrap_or(&(0.0, 0));
+                    if n > 0 { s / n as f32 } else { 0.0 }
+                })
                 .collect();
-            let dones: Vec<bool> = cycles.iter()
-                .map(|c| *cyc_done.get(c).unwrap_or(&false)).collect();
+            let dones: Vec<bool> = cycles.iter().map(|cy| *cyc_done.get(cy).unwrap_or(&false)).collect();
             let (a, r) = PpoTrainer::compute_gae(
                 &rewards, &values, &dones, self.config.gamma, self.config.gae_lambda,
             );
-            for (j, c) in cycles.iter().enumerate() {
-                for &i in &cyc_idxs[c] {
-                    adv[i] = a[j];
-                    ret[i] = r[j];
-                }
+            for (k, cy) in cycles.iter().enumerate() {
+                cyc_adv.insert((*m, *c, *cy), (a[k], r[k]));
+            }
+        }
+        // Fill the flat output in batch-row order.
+        let mut row = 0usize;
+        for b in ant {
+            for j in 0..b.len() {
+                let (a, r) = *cyc_adv.get(&(b.match_idx[j], b.colony[j], b.cycle)).unwrap_or(&(0.0, 0.0));
+                adv[row] = a;
+                ret[row] = r;
+                row += 1;
             }
         }
         (adv, ret)
@@ -369,7 +384,9 @@ impl JointPpoTrainer {
         let aadv = normalize_adv(&aadv_raw);
 
         let cn = rollout.commander.len();
-        let an = rollout.ant.len();
+        // Total ant rows across all batches (flattened) — matches the
+        // cat row count and the ant_advantages output length.
+        let an: usize = rollout.ant.iter().map(|b| b.len()).sum();
         anyhow::ensure!(cn > 0, "joint_update: empty commander buffer");
 
         // ── pre-cat commander tensors (constant across epochs) ──
@@ -396,8 +413,13 @@ impl JointPpoTrainer {
                 &rollout.ant.iter().map(|a| a.intent.clone()).collect::<Vec<_>>(), 0)?;
             let modulator = Tensor::cat(
                 &rollout.ant.iter().map(|a| a.modulator.clone()).collect::<Vec<_>>(), 0)?;
-            let oldlp = Tensor::from_slice(
-                &rollout.ant.iter().map(|a| a.log_prob).collect::<Vec<_>>(), an, &dev)?;
+            // Flatten per-batch log_probs in batch-row order (== cat order
+            // == ant_advantages order).
+            let mut oldlp_v: Vec<f32> = Vec::with_capacity(an);
+            for b in &rollout.ant {
+                oldlp_v.extend_from_slice(&b.log_prob);
+            }
+            let oldlp = Tensor::from_slice(&oldlp_v, an, &dev)?;
             let adv = Tensor::from_slice(&aadv, an, &dev)?;
             let ret = Tensor::from_slice(&aret, an, &dev)?;
             Some((cone, internal, intent, modulator, oldlp, adv, ret))
@@ -509,23 +531,43 @@ pub struct CommanderRecord {
     pub done: bool,
 }
 
-/// One ant decision for one ant in one tick of one cycle.
-pub struct AntRecord {
-    pub match_idx: usize,
-    pub colony: u8,
+/// One tick's batch of ant decisions — the whole `[Mt, …]` tensor from one
+/// `sample_ant` call, kept batched rather than split per ant. This is the
+/// load-bearing perf choice: with parallel envs a tick produces hundreds of
+/// ants and a match tens of thousands; storing/`cat`-ing them per-ant did one
+/// GPU tensor + handle per ant (≈50 min/iter on CUDA). One batch tensor per
+/// tick (≈80 per iter) keeps the GPU `cat` cheap. Per-row metadata
+/// (`match_idx`/`colony`/`log_prob`/`value`) is host-side `Vec`s.
+pub struct AntBatch {
+    /// Per-row source match/env index — the GAE bucket key (with `colony`).
+    pub match_idx: Vec<usize>,
+    /// Per-row colony id (self-play has both; left-vs-league is all 0).
+    pub colony: Vec<u8>,
+    /// Decision cycle this batch belongs to (shared by all rows).
     pub cycle: usize,
-    pub cone: Tensor,      // [1, 60]
-    pub internal: Tensor,  // [1, 8]
-    pub intent: Tensor,    // [1, 64]
-    pub modulator: Tensor, // [1, 5] post-squash
-    pub log_prob: f32,
-    pub value: f32,
+    pub cone: Tensor,      // [Mt, 60]
+    pub internal: Tensor,  // [Mt, 8]
+    pub intent: Tensor,    // [Mt, 64]
+    pub modulator: Tensor, // [Mt, 5] post-squash
+    pub log_prob: Vec<f32>, // [Mt]
+    pub value: Vec<f32>,    // [Mt]
+}
+
+impl AntBatch {
+    /// Number of ant rows in this batch.
+    pub fn len(&self) -> usize {
+        self.log_prob.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.log_prob.is_empty()
+    }
 }
 
 #[derive(Default)]
 pub struct JointRollout {
     pub commander: Vec<CommanderRecord>,
-    pub ant: Vec<AntRecord>,
+    /// Ant samples, grouped one `AntBatch` per `sample_ant` call (per tick).
+    pub ant: Vec<AntBatch>,
 }
 
 /// Per-iteration loss breakdown for logging + the smoke assertion.
@@ -559,13 +601,19 @@ mod tests {
             assert!(r.log_prob.is_finite() && r.value.is_finite() && r.reward.is_finite());
             assert!(r.colony == 0 || r.colony == 1);
         }
-        // Ant rows finite + shaped.
+        // Ant batches: tensors are [Mt, ..] with Mt == per-row metadata len,
+        // all finite.
         for a in &roll.ant {
-            assert_eq!(a.cone.dims(), &[1, 60]);
-            assert_eq!(a.internal.dims(), &[1, 8]);
-            assert_eq!(a.intent.dims(), &[1, 64]);
-            assert_eq!(a.modulator.dims(), &[1, 5]);
-            assert!(a.log_prob.is_finite() && a.value.is_finite());
+            let mt = a.len();
+            assert!(mt >= 1);
+            assert_eq!(a.cone.dims(), &[mt, 60]);
+            assert_eq!(a.internal.dims(), &[mt, 8]);
+            assert_eq!(a.intent.dims(), &[mt, 64]);
+            assert_eq!(a.modulator.dims(), &[mt, 5]);
+            assert_eq!(a.match_idx.len(), mt);
+            assert_eq!(a.colony.len(), mt);
+            assert_eq!(a.value.len(), mt);
+            assert!(a.log_prob.iter().chain(a.value.iter()).all(|x| x.is_finite()));
         }
         // Both colonies represented in the commander buffer.
         assert!(roll.commander.iter().any(|r| r.colony == 0));
@@ -608,9 +656,10 @@ mod tests {
         assert_eq!(cret.len(), roll.commander.len());
         assert!(cadv.iter().chain(cret.iter()).all(|x| x.is_finite()));
 
+        let total_ant_rows: usize = roll.ant.iter().map(|b| b.len()).sum();
         let (aadv, aret) = t.ant_advantages(&roll.commander, &roll.ant);
-        assert_eq!(aadv.len(), roll.ant.len());
-        assert_eq!(aret.len(), roll.ant.len());
+        assert_eq!(aadv.len(), total_ant_rows);
+        assert_eq!(aret.len(), total_ant_rows);
         assert!(aadv.iter().chain(aret.iter()).all(|x| x.is_finite()));
     }
 
