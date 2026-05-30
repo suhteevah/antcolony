@@ -1,8 +1,49 @@
 # HANDOFF.md — Phased Implementation Spec
 
-**Last Updated:** 2026-05-30
+**Last Updated:** 2026-05-30 (later session — Phase 3.5 horizon fix attempt #1)
 
 This document contains everything needed to implement the ant colony simulation from scratch. Each phase is self-contained with clear inputs, outputs, and acceptance criteria. **Phases are sequential — do not skip ahead.**
+
+---
+
+## Session 2026-05-30 (later) — Phase 3.5: minibatched `joint_update` + cnc-P100 full-horizon run (combat still 0.00)
+
+🟡 Project Status: **Both "rollout-horizon" levers hit, run executed on a freed cnc P100 — modest mean gain (0.286 vs 0.207) but the combat-archetype failure (defender/aggressor = 0.00) PERSISTED at 3× horizon.** The prior diagnosis ("policy never sees combat/terminal reward because rollout is 80 ticks") is now only *partially* supported: terminal rewards DID fire at the longer horizon (matches terminate in-rollout), yet combat win-rate stayed at exactly 0.00. **Lever-1 code (minibatched ant update) is committed-worthy but currently UNCOMMITTED on main** — local working-tree changes only.
+
+### What was asked
+"Hit both levers" from the prior handoff's Phase-3.5 plan: (1) minibatch `joint_update` to break the 8GB OOM ceiling so `rollout_cycles` can span longer horizons, and (2) run on the cnc P100s. Plus (Matt, emphatically): **coordinate GPU time with openclaw `main` before any smoke/training.**
+
+### Lever 1 — minibatched `joint_update` (DONE, TDD, tested)
+`crates/antcolony-trainer/src/joint_ppo.rs`:
+- New `JointPpoConfig.ant_chunk_size: usize` (0 = monolithic, exact prior numerics preserved for the 47% baseline; >0 = chunked).
+- New `joint_update_chunked()`: commander tier forwarded whole (tiny), ant tier's forward/backward split into `ant_chunk_size`-row chunks. Per-chunk loss weighted by `len/n` so the sum of weighted chunk-means == the full-batch mean → **identical gradient**, one optimizer step. Ant entropy term added ONCE (batch-independent). Manual gradient accumulation via `accumulate_grads()` (candle `GradStore.get/insert`, summing per-Var across chunk backward passes; commander/ant Vars are disjoint, ant Vars sum across chunks).
+- RED→GREEN equivalence test `chunked_ant_update_matches_monolithic`: asserts chunked (4 chunks) vs monolithic produce matching **loss scalars** (proves per-chunk weighting correct in loss AND gradient — Adam's sign-only first step would otherwise mask a pure grad-scale error) AND matching post-Adam weights within 1e-3 (above the f32+Adam near-zero sign-flip floor ~2·lr, far below any real bug ~O(0.01+)).
+- Wired through: `--ant-chunk-size` flag on `bin/phase3_train.rs` (default 0). `Phase3Config.joint.ant_chunk_size` flows into `JointPpoTrainer`.
+- **Full trainer suite green** (37 lib incl. the new test + integration smokes, exit 0).
+
+### Lever 2 — cnc P100 CUDA build + run (DONE, recipe captured)
+cnc already had `/opt/candle-src` (Pascal-optimized candle fork, built for P100 on 2026-05-19) + CUDA 12.8 toolkit. Built a self-contained trainer tree at **`/opt/antcolony-cuda/`** via `scripts/ship_trainer_cnc.ps1` + stripped `scripts/Cargo.cnc-trainer.toml` (sim+trainer only, candle → `/opt/candle-src`, no bevy). **cnc CUDA build gotchas (new):**
+- **nvcc 12.8 rejects cnc's default gcc 15** → pin host compiler: `NVCC_PREPEND_FLAGS="-ccbin g++-13"` (g++-13 is installed). `CUDA_COMPUTE_CAP=60` (P100=sm_60). Build: `cargo build --release -p antcolony-trainer --features cuda -j2` (cnc = **4 cores, 15GB RAM**, use -j2). Built clean in 9m01s.
+- **Runtime libs are split**: `libcudart/cublas` under the toolkit, but `libnvrtc.so.12` + `libcurand.so.10` ship ONLY via the pip nvidia packages under `/opt/ml-venv/lib/python3.13/site-packages/nvidia/*/lib`. Runtime needs `LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib:<all nvidia/*/lib>` or it dies with `libnvrtc.so.12: cannot open shared object file`. Baked into `scripts/run_phase3_cnc.sh` / `launch_convergence_cnc.sh`.
+- Smoke validated `cuda=true`, chunked path runs, finite losses, eval produces win-rates.
+
+### GPU coordination (per Matt's instruction)
+openclaw `main` (`ssh cnc "sudo podman exec openclaw-gateway openclaw agent --agent main --message '...'"`) is the human-facing orchestrator but is **NOT a GPU scheduler** — it runs in a bridge-networked container with no GPU visibility. It DID confirm an empty task queue + cloud fallbacks, so it gave GO. **Ground truth (nvidia-smi) the right way:** both P100s host the fleet's resident `llama-server` inference — GPU0 (12GB) = 14b workhorse (~full, untouched), GPU1 (16GB) = 7b scout + bge embed. Matt chose **"free GPU1 first"** → `sudo systemctl stop openclaw-inference-scout openclaw-inference-embed` freed the 16GB card; restarted both after the run (back to 200/200, 6GB). Run pinned to the 16GB card by UUID (`CUDA_VISIBLE_DEVICES=GPU-17bd0d20-...`).
+
+### THE key finding — chunking lifts ONE of THREE memory ceilings
+The first envs=16/cycles=96 run **OOM'd 16GB instantly**. Root cause: the minibatched update only bounds the **per-forward activation** memory. Two other ceilings remain, both scaling with total ant rows `an`:
+1. **Stored rollout** — `parallel_env` keeps every tick's ant batch GPU-resident for the whole rollout.
+2. **Pre-cat** — `joint_update_chunked` (like the monolithic path) `Tensor::cat`s all ant batches into `[an,…]` before chunking.
+`an` grows **super-linearly with `rollout_cycles`** because colonies *grow* over a longer match → more ants/tick in late ticks. That's why the prior 64envs×32cycles fit 8GB but 16envs×96cycles blew 16GB. **The real full-match-horizon unlock is host-offloading the rollout** (store batches on CPU, stream chunks to GPU in the update) — the clean next lever; it decouples horizon from GPU memory entirely.
+
+### The run (envs=8, cycles=96=480 ticks = 3× the failed horizon; ant-chunk-size=8192; 100 iters; mpe=5)
+Probed to fit: **peak 10.7GB / 16GB**. Wall-clock ~40 min (rollout+update ~5s/iter; **eval dominates** — ~8 min each at mpe=5 on 3 contended cores). Win-rate curve (mean vs 7-archetype bench): iter0 0.300 / 25 0.214 / 50 0.257 / **75 0.414** / final 0.286 (baseline 0.471). Final per-archetype: heuristic 0.40, economist 0.40, breeder 0.50, forager 0.50, conservative 0.20, **defender 0.00, aggressor 0.00**. Checkpoints (hac_iter{0,25,50,75,final}.safetensors, 45MB each) pulled to `bench/phase3-a1-fullhorizon/` — **iter75 (0.414) is the best**.
+
+### Honest read + what's next
+- 3× horizon nudged the MEAN up (0.286 vs 0.207) and economy archetypes improved, but **did NOT move combat off 0.00** despite terminal rewards now firing. So horizon is *not the whole story*.
+- **Top open question (cheap to answer, do FIRST next session):** does the **47.1% baseline MlpBrain also score ~0 vs defender/aggressor**? If yes, combat-0.00 is NOT a horizon/A1 bug — the bench's achievable score lives largely in economy archetypes and A1 at 0.286 is just weaker there. If no, combat is a genuine A1/horizon/reward gap. The `project_ai_ceiling` memory says ~47% is a Nash plateau but doesn't break it down per-archetype.
+- **Then**, in rough priority: (a) host-offload the rollout → try a genuinely full-match horizon (cycles→2000); (b) A2 sizing; (c) combat-shaped reward (`combat_loss_penalty` lever in `RewardConfig`, currently 0.0); (d) longer training / hyperparams.
+- **UNCOMMITTED:** lever-1 trainer changes + the cnc scripts (`scripts/{Cargo.cnc-trainer.toml,ship_trainer_cnc.ps1,build_trainer_cnc.sh,run_phase3_cnc.sh,launch_convergence_cnc.sh,probe_mem_cnc.sh}`) are local-only on `main`. Commit when Matt says.
 
 ---
 

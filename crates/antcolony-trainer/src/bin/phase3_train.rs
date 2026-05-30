@@ -9,6 +9,14 @@
 //!
 //! The reward TOML mirrors RewardConfig fields; omitted fields take r6
 //! defaults. To "thumb up smartness", set e.g. brood_growth / food_inflow.
+//!
+//! `--ant-chunk-size N` (default 0 = off) bounds peak GPU memory in the ant
+//! tier's update by forwarding/backward-ing at most N ant rows at a time and
+//! accumulating their gradients before one optimizer step (identical math).
+//! This is what lets `--rollout-cycles` span full-match horizons — so the
+//! policy experiences combat + terminal reward — without the update OOMing.
+//! (Note: the *stored* rollout still grows with envs × cycles, so trade those
+//! off against card memory; the chunk size only fixes the update-side ceiling.)
 
 use antcolony_trainer::hierarchical::sizing::A1;
 use antcolony_trainer::{Backend, CandleBackend, Phase3Config, RewardConfig, run_phase3};
@@ -26,6 +34,7 @@ fn main() -> anyhow::Result<()> {
     let mut rollout_cycles = 32usize;
     let mut eval_every = 25usize;
     let mut matches_per_eval = 50usize;
+    let mut ant_chunk_size = 0usize; // 0 = monolithic ant update; >0 bounds peak GPU memory
     let mut reward_path: Option<PathBuf> = None;
     let mut out_dir = PathBuf::from("bench/phase3-a1");
 
@@ -39,6 +48,7 @@ fn main() -> anyhow::Result<()> {
             "--rollout-cycles" => { rollout_cycles = next().parse().unwrap_or(rollout_cycles); i += 2; }
             "--eval-every" => { eval_every = next().parse().unwrap_or(eval_every); i += 2; }
             "--matches-per-eval" => { matches_per_eval = next().parse().unwrap_or(matches_per_eval); i += 2; }
+            "--ant-chunk-size" => { ant_chunk_size = next().parse().unwrap_or(ant_chunk_size); i += 2; }
             "--reward" => { reward_path = Some(PathBuf::from(next())); i += 2; }
             "--out" => { out_dir = PathBuf::from(next()); i += 2; }
             other => { tracing::warn!(arg = other, "unknown flag, ignoring"); i += 1; }
@@ -60,7 +70,13 @@ fn main() -> anyhow::Result<()> {
 
     let backend = CandleBackend::new()?;
     let device = backend.device().clone();
-    tracing::info!(cuda = backend.cuda_available(), iters, envs, rollout_cycles, "phase3 start (A1)");
+    tracing::info!(
+        cuda = backend.cuda_available(), iters, envs, rollout_cycles, ant_chunk_size,
+        "phase3 start (A1)"
+    );
+
+    let mut joint = JointPpoConfig::smoke_default();
+    joint.ant_chunk_size = ant_chunk_size;
 
     let cfg = Phase3Config {
         iterations: iters,
@@ -69,7 +85,7 @@ fn main() -> anyhow::Result<()> {
         eval_every,
         matches_per_eval,
         reward,
-        joint: JointPpoConfig::smoke_default(),
+        joint,
         out_dir,
     };
 

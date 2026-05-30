@@ -1,0 +1,40 @@
+# Stripped workspace manifest for building antcolony-trainer (+ its
+# antcolony-sim dep) with CUDA on cnc-server's P100s. Excludes bevy /
+# game / render / net / the root binary so no display/winit stack is
+# pulled. Candle points at cnc's already-provisioned /opt/candle-src
+# (the Pascal-optimized fork built for the P100s on 2026-05-19).
+#
+# Deployed to /opt/antcolony-cuda/Cargo.toml by scripts/ship_trainer_cnc.ps1.
+# Version pins mirror the real workspace Cargo.toml exactly.
+[workspace]
+resolver = "2"
+members = [
+    "crates/antcolony-sim",
+    "crates/antcolony-trainer",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+rand = "0.8"
+rand_chacha = "0.3"
+glam = { version = "0.29", features = ["serde"] }
+rayon = "1.10"
+toml = "0.8"
+wide = "0.7"
+
+antcolony-sim = { path = "crates/antcolony-sim" }
+
+# cnc's existing Pascal-optimized candle fork (already built for P100).
+candle-core = { path = "/opt/candle-src/candle-core" }
+candle-nn = { path = "/opt/candle-src/candle-nn" }

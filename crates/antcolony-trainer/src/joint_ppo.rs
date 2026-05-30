@@ -34,6 +34,15 @@ pub struct JointPpoConfig {
     /// don't drown the commander gradient. Design spec §"Joint PPO loss".
     pub alpha_balance: f64,
     pub seed: u64,
+    /// Max ant rows forwarded per backward pass in `joint_update`. `0` =
+    /// no chunking (one forward over every ant row — the original
+    /// monolithic path, exact-reproducible for the 47% baseline). A
+    /// positive value splits the ant tier's forward/backward into chunks
+    /// of this many rows and accumulates their gradients before a single
+    /// optimizer step — mathematically identical, but it caps peak
+    /// activation memory so `rollout_cycles` can span full matches on an
+    /// 8 GB card without OOM. See Phase 3.5 (rollout-horizon fix).
+    pub ant_chunk_size: usize,
 }
 
 impl JointPpoConfig {
@@ -55,6 +64,7 @@ impl JointPpoConfig {
             ant_entropy_coef: 0.01,
             alpha_balance: 0.1,
             seed: 0xa17_c01_2b2,
+            ant_chunk_size: 0,
         }
     }
 }
@@ -389,6 +399,14 @@ impl JointPpoTrainer {
         let an: usize = rollout.ant.iter().map(|b| b.len()).sum();
         anyhow::ensure!(cn > 0, "joint_update: empty commander buffer");
 
+        // Memory-bounded path: chunk the ant tier so peak activation memory
+        // stays flat regardless of rollout horizon. Only worth it when there
+        // are more ant rows than the chunk budget; otherwise fall through to
+        // the monolithic path (exact 47%-baseline numerics).
+        if self.config.ant_chunk_size > 0 && an > self.config.ant_chunk_size {
+            return self.joint_update_chunked(opt, rollout, &cadv, &cret, &aadv, &aret);
+        }
+
         // ── pre-cat commander tensors (constant across epochs) ──
         let c_state = Tensor::cat(
             &rollout.commander.iter().map(|r| r.state.clone()).collect::<Vec<_>>(), 0)?;
@@ -478,6 +496,153 @@ impl JointPpoTrainer {
         }
         Ok(last)
     }
+
+    /// Memory-bounded variant of `joint_update`: identical gradient, but the
+    /// ant tier's forward/backward is split into `ant_chunk_size`-row chunks
+    /// whose gradients are accumulated before one optimizer step. The
+    /// commander tier (tiny) is done whole. Caps peak activation memory so
+    /// long-horizon rollouts fit on small cards. `cadv/cret/aadv/aret` are the
+    /// already-normalized advantages / returns from `joint_update`.
+    #[allow(clippy::too_many_arguments)]
+    fn joint_update_chunked(
+        &self,
+        opt: &mut AdamW,
+        rollout: &JointRollout,
+        cadv: &[f32],
+        cret: &[f32],
+        aadv: &[f32],
+        aret: &[f32],
+    ) -> anyhow::Result<JointLossStats> {
+        let dev = self.device.clone();
+        let two_pi = std::f64::consts::PI * 2.0;
+        let ent_const = 0.5 * (1.0 + two_pi.ln());
+
+        let cn = rollout.commander.len();
+        let an: usize = rollout.ant.iter().map(|b| b.len()).sum();
+        anyhow::ensure!(an > 0, "joint_update_chunked: empty ant buffer");
+
+        // ── pre-cat commander tensors (small; forwarded whole) ──
+        let c_state = Tensor::cat(&rollout.commander.iter().map(|r| r.state.clone()).collect::<Vec<_>>(), 0)?;
+        let c_pher = Tensor::cat(&rollout.commander.iter().map(|r| r.pheromone.clone()).collect::<Vec<_>>(), 0)?;
+        let c_hist = Tensor::cat(&rollout.commander.iter().map(|r| r.history.clone()).collect::<Vec<_>>(), 0)?;
+        let c_act = Tensor::cat(&rollout.commander.iter().map(|r| r.action.clone()).collect::<Vec<_>>(), 0)?;
+        let c_oldlp = Tensor::from_slice(
+            &rollout.commander.iter().map(|r| r.log_prob).collect::<Vec<_>>(), cn, &dev)?;
+        let c_adv = Tensor::from_slice(cadv, cn, &dev)?;
+        let c_ret = Tensor::from_slice(cret, cn, &dev)?;
+
+        // ── pre-cat ant tensors (data only; chunks `narrow` into these) ──
+        let a_cone = Tensor::cat(&rollout.ant.iter().map(|a| a.cone.clone()).collect::<Vec<_>>(), 0)?;
+        let a_int = Tensor::cat(&rollout.ant.iter().map(|a| a.internal.clone()).collect::<Vec<_>>(), 0)?;
+        let a_intent = Tensor::cat(&rollout.ant.iter().map(|a| a.intent.clone()).collect::<Vec<_>>(), 0)?;
+        let a_mod = Tensor::cat(&rollout.ant.iter().map(|a| a.modulator.clone()).collect::<Vec<_>>(), 0)?;
+        let mut oldlp_v: Vec<f32> = Vec::with_capacity(an);
+        for b in &rollout.ant {
+            oldlp_v.extend_from_slice(&b.log_prob);
+        }
+        let a_oldlp = Tensor::from_slice(&oldlp_v, an, &dev)?;
+        let a_adv = Tensor::from_slice(aadv, an, &dev)?;
+        let a_ret = Tensor::from_slice(aret, an, &dev)?;
+
+        let clip_lo = 1.0 - self.config.clip;
+        let clip_hi = 1.0 + self.config.clip;
+        let vars = self.varmap.all_vars();
+        let chunk = self.config.ant_chunk_size;
+        let n = an as f64;
+
+        let mut last = JointLossStats { total: 0.0, commander: 0.0, ant: 0.0 };
+        for _epoch in 0..self.config.epochs_per_batch {
+            // ── Commander loss (whole) → seeds the gradient accumulator ──
+            let new_lp = self.hac.log_prob_of_commander_action(&c_state, &c_pher, &c_hist, &c_act)?;
+            let value_pred = self.hac.forward_commander(&c_state, &c_pher, &c_hist)?.value;
+            let ratio = (&new_lp - &c_oldlp)?.exp()?;
+            let surr1 = (&ratio * &c_adv)?;
+            let surr2 = (&ratio.clamp(clip_lo, clip_hi)? * &c_adv)?;
+            let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
+            let value_loss = (&value_pred - &c_ret)?.sqr()?.mean_all()?;
+            let entropy = self.hac.commander.log_std.affine(1.0, ent_const)?.sum_all()?;
+            let cmdr_total = ((&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?
+                - entropy.affine(self.config.cmdr_entropy_coef, 0.0)?)?;
+            let cmdr_scalar = cmdr_total.to_scalar::<f32>()?;
+            let mut grads = cmdr_total.backward()?;
+
+            // ── Ant entropy term: α·(−ant_entropy_coef)·entropy, added ONCE.
+            // Batch-independent (depends only on ant.log_std), so it must NOT
+            // be replicated per chunk. α_balance folded in so the gradient
+            // lands pre-scaled in the accumulator.
+            let ant_ent = self.hac.ant.log_std.affine(1.0, ent_const)?.sum_all()?;
+            let ant_ent_val = ant_ent.to_scalar::<f32>()?;
+            let ent_loss = ant_ent.affine(
+                -(self.config.ant_entropy_coef * self.config.alpha_balance), 0.0)?;
+            accumulate_grads(&mut grads, &ent_loss.backward()?, &vars)?;
+
+            // ── Ant policy+value: per-chunk forward/backward, accumulated ──
+            // Each chunk's mean is weighted by len/n so the sum of weighted
+            // chunk means equals the full-batch mean → identical gradient to
+            // one forward over all rows, but peak activation memory is capped
+            // at one chunk. α_balance folded into each chunk loss.
+            let mut ant_pv_scalar = 0.0f32; // reconstructs the whole-batch ant policy+value loss
+            let mut start = 0usize;
+            while start < an {
+                let len = chunk.min(an - start);
+                let cone_c = a_cone.narrow(0, start, len)?;
+                let int_c = a_int.narrow(0, start, len)?;
+                let intent_c = a_intent.narrow(0, start, len)?;
+                let mod_c = a_mod.narrow(0, start, len)?;
+                let oldlp_c = a_oldlp.narrow(0, start, len)?;
+                let adv_c = a_adv.narrow(0, start, len)?;
+                let ret_c = a_ret.narrow(0, start, len)?;
+
+                let new_lp = self.hac.log_prob_of_ant_modulator(&cone_c, &int_c, &intent_c, &mod_c)?;
+                let value_pred = self.hac.forward_ant(&cone_c, &int_c, &intent_c)?.value;
+                let ratio = (&new_lp - &oldlp_c)?.exp()?;
+                let surr1 = (&ratio * &adv_c)?;
+                let surr2 = (&ratio.clamp(clip_lo, clip_hi)? * &adv_c)?;
+                let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
+                let value_loss = (&value_pred - &ret_c)?.sqr()?.mean_all()?;
+                let pv = (&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?;
+
+                let w = (len as f64) / n;
+                ant_pv_scalar += (w as f32) * pv.to_scalar::<f32>()?;
+                let g_loss = pv.affine(w * self.config.alpha_balance, 0.0)?;
+                accumulate_grads(&mut grads, &g_loss.backward()?, &vars)?;
+                start += len;
+            }
+
+            // One optimizer step over the combined (commander + entropy +
+            // all ant chunks) gradient — NOT one step per chunk (that would
+            // be a different Adam trajectory).
+            opt.step(&grads)?;
+
+            let ant_scalar = ant_pv_scalar - self.config.ant_entropy_coef as f32 * ant_ent_val;
+            let total_scalar = cmdr_scalar + self.config.alpha_balance as f32 * ant_scalar;
+            last = JointLossStats { total: total_scalar, commander: cmdr_scalar, ant: ant_scalar };
+        }
+        Ok(last)
+    }
+}
+
+/// Sum the gradients in `src` into `acc` for every var (adding where a var
+/// already has an accumulated grad). Gradients are linear, so summing the
+/// per-chunk backward passes is identical to one backward over the
+/// concatenation — this is what lets `joint_update_chunked` take a single
+/// optimizer step over many memory-bounded ant chunks.
+fn accumulate_grads(
+    acc: &mut candle_core::backprop::GradStore,
+    src: &candle_core::backprop::GradStore,
+    vars: &[candle_core::Var],
+) -> anyhow::Result<()> {
+    for v in vars {
+        let t = v.as_tensor();
+        if let Some(g) = src.get(t) {
+            let merged = match acc.get(t) {
+                Some(existing) => existing.add(g)?,
+                None => g.clone(),
+            };
+            acc.insert(t, merged);
+        }
+    }
+    Ok(())
 }
 
 /// Standard PPO advantage normalization (zero mean, unit std).
@@ -691,6 +856,72 @@ mod tests {
         assert!(
             before.iter().zip(after.iter()).any(|(a, b)| (a - b).abs() > 1e-9),
             "at least one parameter must change after an Adam step"
+        );
+    }
+
+    #[test]
+    fn chunked_ant_update_matches_monolithic() {
+        // The minibatched ant path must produce the SAME parameter update as
+        // the monolithic one-forward-over-all-rows path — only its peak memory
+        // differs. Run both from identical init + a fresh optimizer over the
+        // same rollout, compare every weight.
+        let mut t = JointPpoTrainer::new(Device::Cpu, A1, JointPpoConfig::smoke_default()).unwrap();
+        let roll = t.rollout(0xc0ff_ee, 0).unwrap();
+        let an: usize = roll.ant.iter().map(|b| b.len()).sum();
+        assert!(an > 4, "need >4 ant rows to exercise chunking, got {an}");
+
+        let vars = t.varmap.all_vars();
+        let flat = |v: &candle_core::Var| -> Vec<f32> {
+            v.as_tensor().flatten_all().unwrap().to_vec1::<f32>().unwrap()
+        };
+        // Snapshot as fully independent tensors (Var::set rejects a tensor
+        // derived from the var's own value, so clone()/detach() won't do).
+        let snap: Vec<Tensor> = vars.iter().map(|v| {
+            let t = v.as_tensor();
+            let dims = t.dims().to_vec();
+            Tensor::from_vec(flat(v), dims, &Device::Cpu).unwrap()
+        }).collect();
+
+        // Monolithic update (chunking disabled).
+        t.config.ant_chunk_size = 0;
+        let mut opt = t.make_optimizer().unwrap();
+        let s_mono = t.joint_update(&mut opt, &roll).unwrap();
+        let mono: Vec<Vec<f32>> = vars.iter().map(|v| flat(v)).collect();
+
+        // Restore init, redo with several ant chunks.
+        for (v, s) in vars.iter().zip(&snap) {
+            v.set(s).unwrap();
+        }
+        t.config.ant_chunk_size = (an / 4).max(2); // ~4 chunks
+        let mut opt2 = t.make_optimizer().unwrap();
+        let s_chunk = t.joint_update(&mut opt2, &roll).unwrap();
+        let chunked: Vec<Vec<f32>> = vars.iter().map(|v| flat(v)).collect();
+
+        // Loss scalars must match: the monolithic path computes the TRUE
+        // full-batch mean independently, so a match proves the per-chunk
+        // weighting (len/n) is correct in both the reported loss AND the
+        // gradient (they share `w`). This is what catches a pure
+        // gradient-scale error, which Adam's sign-only first step would hide
+        // in the post-step weights.
+        assert!((s_mono.commander - s_chunk.commander).abs() < 1e-4,
+            "commander loss diverged: {} vs {}", s_mono.commander, s_chunk.commander);
+        assert!((s_mono.ant - s_chunk.ant).abs() < 1e-3,
+            "ant loss diverged: {} vs {}", s_mono.ant, s_chunk.ant);
+        assert!((s_mono.total - s_chunk.total).abs() < 1e-3,
+            "total loss diverged: {} vs {}", s_mono.total, s_chunk.total);
+
+        // Post-Adam weights must match too (catches sign-structure /
+        // multi-step bugs). Tolerance sits above the f32 + Adam near-zero
+        // sign-flip floor (~2·lr) yet far below any real logic bug (O(0.01+)).
+        let mut max_diff = 0.0f32;
+        for (a, b) in mono.iter().zip(chunked.iter()) {
+            for (x, y) in a.iter().zip(b.iter()) {
+                max_diff = max_diff.max((x - y).abs());
+            }
+        }
+        assert!(
+            max_diff < 1e-3,
+            "chunked vs monolithic param update diverged: max_diff={max_diff}"
         );
     }
 }
