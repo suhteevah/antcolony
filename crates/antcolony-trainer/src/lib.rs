@@ -22,6 +22,7 @@ pub mod backend;
 pub mod policy;
 pub mod ppo;
 pub mod env;
+pub mod eval;
 pub mod league;
 pub mod hierarchical;
 pub mod joint_ppo;
@@ -33,6 +34,7 @@ pub use joint_ppo::{JointPpoConfig, JointPpoTrainer, JointRollout, JointLossStat
 pub use reward::{ColonyMetrics, RewardConfig, compute_step_reward};
 pub use hierarchical::obs_to_tensors::{rich_to_tensors, ant_obs_to_tensors, rich_batch_to_tensors};
 
+pub use eval::{EvalReport, evaluate_hac};
 pub use backend::{Backend, CandleBackend};
 pub use policy::ActorCritic;
 pub use ppo::{PpoConfig, PpoTrainer};
