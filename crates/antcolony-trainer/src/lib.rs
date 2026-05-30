@@ -28,6 +28,7 @@ pub mod hierarchical;
 pub mod joint_ppo;
 pub mod reward;
 pub mod parallel_env;
+pub mod phase3;
 pub use hierarchical::{HierarchicalActorCritic, CommanderPolicy, AntPolicy, Sizing};
 pub use parallel_env::ParallelEnv;
 pub use joint_ppo::{JointPpoConfig, JointPpoTrainer, JointRollout, JointLossStats};
@@ -35,6 +36,7 @@ pub use reward::{ColonyMetrics, RewardConfig, compute_step_reward};
 pub use hierarchical::obs_to_tensors::{rich_to_tensors, ant_obs_to_tensors, rich_batch_to_tensors};
 
 pub use eval::{EvalReport, evaluate_hac};
+pub use phase3::{Phase3Config, run_phase3, Phase3Report};
 pub use backend::{Backend, CandleBackend};
 pub use policy::ActorCritic;
 pub use ppo::{PpoConfig, PpoTrainer};
