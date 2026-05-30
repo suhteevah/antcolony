@@ -1,8 +1,46 @@
 # HANDOFF.md — Phased Implementation Spec
 
-**Last Updated:** 2026-05-29
+**Last Updated:** 2026-05-30
 
 This document contains everything needed to implement the ant colony simulation from scratch. Each phase is self-contained with clear inputs, outputs, and acceptance criteria. **Phases are sequential — do not skip ahead.**
+
+---
+
+## Session 2026-05-30 — Phase 3 single-GPU parallel-env training INFRA complete (convergence run pending)
+
+🟢 Project Status: **Phase 3 infra ship-ready; the convergence run (the headline experiment) is the remaining step.** Branch `feat/ant-brain-phase3` (15 commits off main `ba4a522`). Also this session: **CUDA was confirmed building+training on kokonoe** (the old "CUDA blocked" memory was a misdiagnosis — see the corrected `project_toolchain`/`project_rust_trainer` memories), and **LLVM was installed** so the global `lld-link` config works (those landed on main earlier this session: `2cf4e08`→`ba4a522`).
+
+### What shipped (Phase 3 infra, 8 plan tasks + GPU fixes)
+- **`reward.rs`** — tunable `RewardConfig` (serde). `default()` reproduces r6 EXACTLY (apples-to-apples with the 47.1% baseline); opt-in "smartness" levers `brood_growth`/`food_inflow`/`combat_loss_penalty` default 0.0. `compute_step_reward` + `ColonyMetrics::from_sim`. **This is Matt's "thumb up/down smartness" dial** — edit `assets/reward/default.toml`, retrain, eval.
+- **`parallel_env.rs`** — `ParallelEnv::collect_rollout`: N envs, left=HAC / right=league-sampled archetype, observations batched across active envs into single GPU forwards (commander @ cadence-5, ants @ tick). Emits the existing `JointRollout` (left records, `match_idx=env_idx`, colony 0) → reuses 2b-2 `joint_update`+GAE unchanged.
+- **`eval.rs`** — deterministic `evaluate_hac` vs the 7-archetype bench (`BENCH_ARCHETYPES`), per-archetype + mean win-rate. Same metric as the MlpBrain 47.1%.
+- **`phase3.rs`** — `run_phase3` driver: rollout → joint_update → periodic eval + `varmap.save` checkpoint. `Phase3Config` (all knobs tunable).
+- **`bin/phase3_train.rs`** — CUDA CLI (`CandleBackend` → GPU); flags `--iters/--envs/--rollout-cycles/--eval-every/--matches-per-eval/--reward/--out`. `scripts/build_trainer_cuda.bat` + `run_phase3_cuda.bat`.
+- **HAC `mean_commander_action`/`mean_ant_modulator`** (deterministic eval helpers).
+
+### GPU fixes + the perf cliff (the meat of the debugging)
+Two issues the GPU pilot exposed, both fixed:
+1. **CUDA contiguous-matmul** — candle's CUDA matmul rejects non-contiguous operands that CPU tolerates. Fixed `.contiguous()` at: commander/ant CLS-pool extraction (`x.i((..,0,..))`, 2b-1 leftovers) AND the broadcast intent in `ant_obs_to_tensors` (eval crashed here). Value no-ops; CPU unaffected.
+2. **Rollout perf cliff: ~50 min → ~10 min → ~11–32 s per iter.** First fix (batch host transfers: `to_vec2` once instead of per-ant `to_vec1`) cut 50→10 min. The real fix (`AntBatch`, commit `c1accd9`): the rollout stored ~25k individual `[1,..]` per-ant GPU tensors/iter and `joint_update` cat'd them all — replaced with **one `[Mt,..]` batch tensor per tick** (~80/iter) + host-side per-row metadata. `ant_advantages` now emits advantages in flattened batch-row order (== cat order). **Measured on the 3070 Ti: iter 2 = 11 s** (iter 0 = 32 s warmup; iter 1 = 3m39s contention spike from resident ollama/Chrome). A 200-iter run is now ~1–2 h locally (with desktop-GPU jitter) or clean on the P100s.
+
+### Current state
+- All trainer CPU tests green: 36 lib + 4 sampling + 1 hierarchical_smoke + 1 joint_ppo_smoke + 1 phase3 smoke (341 s) = 0 failures. `cargo build --workspace` clean.
+- GPU path works end-to-end on kokonoe: build (`scripts/build_trainer_cuda.bat`), train (`run_phase3_cuda.bat`), eval — `cuda=true`, finite losses, win-rates produced, checkpoints saved.
+
+### What's NOT done (be honest)
+- **The convergence run itself.** Everything above is the *machinery*; the headline deliverable — a win-rate-vs-iters curve for A1 hierarchical vs the 47.1% line — requires an actual 200+ iter run, which hasn't happened. All win-rates seen so far (0.36–0.43) are random-init noise on tiny eval (1–3 matches/opp), meaningless.
+- A2/A3 sizes (after A1 shows signal); multi-GPU rollout/train split; distillation; self-snapshot league. All deferred per the design spec.
+
+### What's next
+1. **Merge `feat/ant-brain-phase3` → main** (ff, 15 commits, complete + tested + perf-fixed). Matt's call.
+2. **Run the convergence run.** Venue TBD: (a) local-overnight on the 3070 Ti (machine never sleeps; accept GPU jitter from desktop/ollama), or (b) the dedicated cnc P100s (no jitter, but needs candle+CUDA provisioning on cnc — the existing cnc setup is SIM-only, no candle/cudarc; coordinate time via openclaw main). Command: `cargo +stable-x86_64-pc-windows-msvc run --release -p antcolony-trainer --features cuda --bin phase3_train -- --iters 200 --envs 64 --rollout-cycles 32 --eval-every 25 --matches-per-eval 50 --reward assets/reward/default.toml --out bench/phase3-a1` (via `run_phase3_cuda.bat`).
+3. **Read the result honestly:** Gate 2 = win-rate trends up from random; if A1 plateaus < 47%, try A2 (still fits 8 GB) before concluding the plateau is environmental.
+
+### Notes for next session
+- **Tunable reward is the "smartness" lever Matt wants** — `assets/reward/default.toml`. Default = r6 (47%-comparable). Bump `brood_growth`/`food_inflow`/`combat_loss_penalty` for shaped-behavior experiments (separate from the apples-to-apples baseline run).
+- **Eval is the wall-clock cost** (full matches to completion, ~10–22 s/match on CPU sim; the sim is CPU even when the net is on GPU). 50 matches/opp × 7 = 350 matches per eval ≈ slow. Use fewer matches/opp during training, 50 for the final number.
+- Desktop GPU contention (ollama resident) causes per-iter jitter — the P100s would remove it. That's the standing argument for routing the real run to cnc via openclaw main.
+- The `phase3_train` bin's flag parser is minimal hand-rolled (no clap). Fine for now.
 
 ---
 
