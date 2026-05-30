@@ -70,6 +70,7 @@ impl ParallelEnv {
         reward: &RewardConfig,
         base_seed: u64,
     ) -> Result<JointRollout> {
+        tracing::debug!(n_envs = self.n_envs, rollout_cycles = self.rollout_cycles, base_seed, "parallel rollout start");
         let mut envs: Vec<MatchEnv> = Vec::with_capacity(self.n_envs);
         let mut opponents: Vec<Box<dyn AiBrain>> = Vec::with_capacity(self.n_envs);
         for i in 0..self.n_envs {
@@ -198,7 +199,9 @@ impl ParallelEnv {
                         }
                     }
                     // Anchor: ensure FIXED_MODULATOR_D is used (compile-time check).
-                    let _ = FIXED_MODULATOR_D;
+                    // Compile-time guard: the m[0..5] decode below assumes a
+                    // 5-d modulator. If the action space ever changes, this trips.
+                    const _: () = assert!(FIXED_MODULATOR_D == 5);
                 }
                 for &i in &active {
                     if done[i] {
@@ -252,6 +255,11 @@ impl ParallelEnv {
                 envs[i].sim.push_commander_history(0, st, ac, reward_left);
             }
         }
+        tracing::debug!(
+            commander_records = out.commander.len(),
+            ant_records = out.ant.len(),
+            "parallel rollout complete"
+        );
         Ok(out)
     }
 }
