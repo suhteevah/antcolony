@@ -157,8 +157,13 @@ impl ParallelEnv {
                     let internal = Tensor::cat(&internals, 0)?;
                     let intent = Tensor::cat(&intents, 0)?;
                     let ant = hac.sample_ant(&cone, &internal, &intent, rng)?;
+                    // Pull the whole batch host-side ONCE (one GPU->CPU sync each)
+                    // instead of per-ant narrow+to_vec1. On CUDA a per-ant sync per
+                    // row costs ~ms; with tens of thousands of ant rows that was the
+                    // dominant cost (≈50 min/iter). to_vec2 transfers [M,5] in one go.
                     let lp: Vec<f32> = ant.log_prob.to_vec1()?;
                     let val: Vec<f32> = ant.value.to_vec1()?;
+                    let mod_rows: Vec<Vec<f32>> = ant.modulator.to_vec2()?;
                     let mut row = 0usize;
                     for &i in &active {
                         if done[i] {
@@ -168,11 +173,7 @@ impl ParallelEnv {
                         let mut ids: Vec<u32> = Vec::new();
                         // index_map is grouped by env in active order; consume contiguous block.
                         while row < index_map.len() && index_map[row].0 == i {
-                            let m: Vec<f32> = ant
-                                .modulator
-                                .narrow(0, row, 1)?
-                                .flatten_all()?
-                                .to_vec1()?;
+                            let m = &mod_rows[row];
                             mods.push(AntModulators {
                                 alpha_mult: m[0],
                                 beta_mult: m[1],
@@ -217,6 +218,11 @@ impl ParallelEnv {
             }
 
             // ── Per-cycle reward + commander records for active envs ──
+            // Host-side copies of the per-env state/action rows, pulled ONCE
+            // (two GPU->CPU syncs) for the history tokens below — avoids a
+            // per-record narrow+to_vec1 sync per active env.
+            let state_rows: Vec<Vec<f32>> = state_b.to_vec2()?;
+            let action_rows: Vec<Vec<f32>> = cmdr.action.to_vec2()?;
             for (j, &i) in active.iter().enumerate() {
                 let cur = [
                     ColonyMetrics::from_sim(&envs[i].sim, 0),
@@ -239,19 +245,10 @@ impl ParallelEnv {
                     reward: reward_left,
                     done: done[i],
                 });
-                let st_row: Vec<f32> = state_b
-                    .narrow(0, j, 1)?
-                    .flatten_all()?
-                    .to_vec1()?;
-                let ac_row: Vec<f32> = cmdr
-                    .action
-                    .narrow(0, j, 1)?
-                    .flatten_all()?
-                    .to_vec1()?;
                 let mut st = [0.0f32; 17];
-                st.copy_from_slice(&st_row);
+                st.copy_from_slice(&state_rows[j]);
                 let mut ac = [0.0f32; 6];
-                ac.copy_from_slice(&ac_row);
+                ac.copy_from_slice(&action_rows[j]);
                 envs[i].sim.push_commander_history(0, st, ac, reward_left);
             }
         }

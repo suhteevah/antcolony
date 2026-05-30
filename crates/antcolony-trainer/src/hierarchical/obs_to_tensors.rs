@@ -80,7 +80,10 @@ pub fn ant_obs_to_tensors(
     }
     let cone = Tensor::from_vec(cone_v, (b, FIXED_CONE_D), device)?;
     let internal = Tensor::from_vec(internal_v, (b, FIXED_INTERNAL_D), device)?;
-    let intent = intent_per_colony.broadcast_as((b, FIXED_INTENT_D))?;
+    // `broadcast_as` yields a stride-0 view; candle's CUDA matmul (in the
+    // ant intent_encoder) requires contiguous operands, so materialize it.
+    // No-op on values; CPU never cared, GPU does.
+    let intent = intent_per_colony.broadcast_as((b, FIXED_INTENT_D))?.contiguous()?;
     Ok((cone, internal, intent))
 }
 

@@ -13,5 +13,5 @@ if errorlevel 1 (echo VCVARS FAILED & exit /b 1)
 
 set RUST_LOG=antcolony_trainer=info,phase3_train=info
 
-cargo +stable-x86_64-pc-windows-msvc run --release --features cuda --bin phase3_train -- %*
+cargo +stable-x86_64-pc-windows-msvc run --release -p antcolony-trainer --features cuda --bin phase3_train -- %*
 echo === EXITCODE %ERRORLEVEL% ===
