@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn brood_growth_lever_rewards_brood_when_enabled() {
         let cfg = RewardConfig { brood_growth: 0.01, ..Default::default() };
-        let mut prev = [ColonyMetrics::default(); 2];
+        let prev = [ColonyMetrics::default(); 2];
         let mut cur = [ColonyMetrics::default(); 2];
         cur[0].brood = 100.0;
         let (l, r) = compute_step_reward(&cfg, &prev, &cur, false, MatchStatus::InProgress);
