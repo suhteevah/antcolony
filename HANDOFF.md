@@ -6,11 +6,23 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
-## Session 2026-05-30 — Phase 3 single-GPU parallel-env training INFRA complete (convergence run pending)
+## Session 2026-05-30 — Phase 3 single-GPU parallel-env training INFRA complete + first convergence run (NEGATIVE, diagnosed)
 
-🟢 Project Status: **Phase 3 infra ship-ready; the convergence run (the headline experiment) is the remaining step.** Branch `feat/ant-brain-phase3` (15 commits off main `ba4a522`). Also this session: **CUDA was confirmed building+training on kokonoe** (the old "CUDA blocked" memory was a misdiagnosis — see the corrected `project_toolchain`/`project_rust_trainer` memories), and **LLVM was installed** so the global `lld-link` config works (those landed on main earlier this session: `2cf4e08`→`ba4a522`).
+🟡 Project Status: **Phase 3 infra shipped + merged to main (`62c6e43`); first A1 convergence run done — did NOT beat the 47.1% plateau, but the failure is cleanly diagnosed.** Branch merged.
 
-### What shipped (Phase 3 infra, 8 plan tasks + GPU fixes)
+### First convergence run result (A1, 200 iters, left-vs-league, r6 reward, 2h48m on the 3070 Ti)
+Win-rate vs the 7-archetype bench: iter0 0.364 / 25 0.164 / 50 0.321 / 75 0.250 / 100 0.129 / 125 0.250 / 150 0.221 / 175 0.307 / **FINAL 0.207** (baseline 0.471). **No upward trend; Gate 1 ✅ (ran clean, no NaN), Gate 2 ❌ (no learning toward the bench).**
+- **Training was HEALTHY** — loss converged 9.8→~0.35 and stayed stable from ~iter 50. Not an instability/divergence failure.
+- **Smoking gun — final per-archetype:** economist 0.35, forager 0.35, breeder 0.30, conservative 0.25, heuristic 0.20, **defender 0.00, aggressor 0.00.** It learned passable early-game ECONOMY but loses 100% to the COMBAT archetypes.
+- **Diagnosis (high confidence): rollout horizon.** `rollout_cycles=16` = 80 ticks, but matches run to 10,000 ticks. Training only ever sees the first 80 ticks (peaceful early growth); the terminal win/loss reward NEVER fires (no match ends in 80 ticks). So the policy optimizes growth-shaping and never learns combat/defense → wiped by aggressive opponents in full-match eval. The 0.00-vs-combat result is exactly what that predicts.
+- **Why 80 ticks:** memory. Full-match rollouts need minibatched `joint_update` (2b-2 deferred minibatching) or the P100s' 28 GB. The 8 GB card OOM'd at 64×32 (the update does ONE forward over ALL ant rows — ~100k rows OOMs; the 32×16 ≈ 25k-row config fit at 7.7/8 GB).
+
+### THE key next step (Phase 3.5 / Phase 4)
+**Fix the rollout horizon so the policy experiences full matches incl. combat + terminal reward.** Concretely: (1) **minibatch `joint_update`** (chunk the ant rows through the forward/backward instead of one giant batch — removes the OOM ceiling, lets `rollout_cycles` span full matches), and/or (2) move to the **cnc P100s** (28 GB, dedicated — coordinate via openclaw main). Then re-run; only after horizon is fixed does model size (A2) / longer training / hyperparam tuning matter. A1 is the spec's compact *distillation* target, not the from-scratch SOTA target — don't over-read its failure as "hierarchy doesn't work."
+
+Also this session (landed on main earlier, `2cf4e08`→`ba4a522`): **CUDA was confirmed building+training on kokonoe** (the old "CUDA blocked" memory was a misdiagnosis — see the corrected `project_toolchain`/`project_rust_trainer` memories), and **LLVM was installed** so the global `lld-link` config works.
+
+### What shipped (Phase 3 infra, 8 plan tasks + GPU fixes) — all on main `62c6e43`
 - **`reward.rs`** — tunable `RewardConfig` (serde). `default()` reproduces r6 EXACTLY (apples-to-apples with the 47.1% baseline); opt-in "smartness" levers `brood_growth`/`food_inflow`/`combat_loss_penalty` default 0.0. `compute_step_reward` + `ColonyMetrics::from_sim`. **This is Matt's "thumb up/down smartness" dial** — edit `assets/reward/default.toml`, retrain, eval.
 - **`parallel_env.rs`** — `ParallelEnv::collect_rollout`: N envs, left=HAC / right=league-sampled archetype, observations batched across active envs into single GPU forwards (commander @ cadence-5, ants @ tick). Emits the existing `JointRollout` (left records, `match_idx=env_idx`, colony 0) → reuses 2b-2 `joint_update`+GAE unchanged.
 - **`eval.rs`** — deterministic `evaluate_hac` vs the 7-archetype bench (`BENCH_ARCHETYPES`), per-archetype + mean win-rate. Same metric as the MlpBrain 47.1%.
