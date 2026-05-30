@@ -57,9 +57,213 @@ fn row_to_intent(intent: &Tensor, row: usize) -> Result<[f32; FIXED_INTENT_D]> {
     Ok(arr)
 }
 
+impl ParallelEnv {
+    /// Collect one parallel rollout. Creates `n_envs` fresh matches (left =
+    /// HAC, right = league-sampled opponent), runs up to `rollout_cycles`
+    /// commander cycles, and returns left-colony records bucketed by env.
+    /// `base_seed` decorrelates this rollout's env/opponent seeds.
+    pub fn collect_rollout(
+        &mut self,
+        hac: &HierarchicalActorCritic,
+        device: &Device,
+        rng: &mut ChaCha8Rng,
+        reward: &RewardConfig,
+        base_seed: u64,
+    ) -> Result<JointRollout> {
+        let mut envs: Vec<MatchEnv> = Vec::with_capacity(self.n_envs);
+        let mut opponents: Vec<Box<dyn AiBrain>> = Vec::with_capacity(self.n_envs);
+        for i in 0..self.n_envs {
+            let seed = base_seed ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15));
+            envs.push(MatchEnv::new(seed));
+            let pick = (i + (base_seed as usize)) % self.league.entries.len();
+            let spec = self.league.entries[pick].spec.clone();
+            opponents.push(League::make_brain(&spec, seed.wrapping_add(1)));
+        }
+
+        let mut out = JointRollout::default();
+        let mut done = vec![false; self.n_envs];
+        let mut prev: Vec<[ColonyMetrics; 2]> = (0..self.n_envs)
+            .map(|i| {
+                [
+                    ColonyMetrics::from_sim(&envs[i].sim, 0),
+                    ColonyMetrics::from_sim(&envs[i].sim, 1),
+                ]
+            })
+            .collect();
+
+        for cycle in 0..self.rollout_cycles {
+            let active: Vec<usize> = (0..self.n_envs)
+                .filter(|&i| !done[i] && envs[i].sim.colony_rich_observation(0).is_some())
+                .collect();
+            if active.is_empty() {
+                break;
+            }
+
+            // ── Commander forward, batched across active envs ──
+            let riches: Vec<_> = active
+                .iter()
+                .map(|&i| {
+                    envs[i]
+                        .sim
+                        .colony_rich_observation(0)
+                        .expect("active => Some: filtered by is_some() above")
+                })
+                .collect();
+            let rich_refs: Vec<_> = riches.iter().collect();
+            let (state_b, pher_b, hist_b) = rich_batch_to_tensors(&rich_refs, device)?;
+            let cmdr = hac.sample_commander(&state_b, &pher_b, &hist_b, rng)?;
+            let cmdr_lp: Vec<f32> = cmdr.log_prob.to_vec1()?;
+            let cmdr_val: Vec<f32> = cmdr.value.to_vec1()?;
+
+            for (j, &i) in active.iter().enumerate() {
+                let dec = row_to_decision(&cmdr.action, j)?;
+                envs[i].sim.apply_ai_decision(0, &dec);
+                let intent = row_to_intent(&cmdr.intent, j)?;
+                envs[i].sim.apply_commander_intent(0, &intent);
+                if let Some(sr) = envs[i].sim.colony_ai_state(1) {
+                    let dr = opponents[i].decide(&sr);
+                    envs[i].sim.apply_ai_decision(1, &dr);
+                }
+            }
+
+            // ── Tick loop with per-tick batched ant decisions over active envs ──
+            for _ in 0..DECISION_CADENCE {
+                let mut cones: Vec<Tensor> = Vec::new();
+                let mut internals: Vec<Tensor> = Vec::new();
+                let mut intents: Vec<Tensor> = Vec::new();
+                let mut index_map: Vec<(usize, u32)> = Vec::new();
+                for (j, &i) in active.iter().enumerate() {
+                    if done[i] {
+                        continue;
+                    }
+                    let obs = envs[i].sim.per_ant_observations(0);
+                    if obs.is_empty() {
+                        continue;
+                    }
+                    // Slice one intent row [1, 64] for this env's ants.
+                    let intent_row = cmdr.intent.narrow(0, j, 1)?;
+                    let (cone, internal, intent_b) =
+                        ant_obs_to_tensors(&obs, &intent_row, device)?;
+                    for o in &obs {
+                        index_map.push((i, o.ant_id));
+                    }
+                    cones.push(cone);
+                    internals.push(internal);
+                    intents.push(intent_b);
+                }
+                if !index_map.is_empty() {
+                    let cone = Tensor::cat(&cones, 0)?;
+                    let internal = Tensor::cat(&internals, 0)?;
+                    let intent = Tensor::cat(&intents, 0)?;
+                    let ant = hac.sample_ant(&cone, &internal, &intent, rng)?;
+                    let lp: Vec<f32> = ant.log_prob.to_vec1()?;
+                    let val: Vec<f32> = ant.value.to_vec1()?;
+                    let mut row = 0usize;
+                    for &i in &active {
+                        if done[i] {
+                            continue;
+                        }
+                        let mut mods: Vec<AntModulators> = Vec::new();
+                        let mut ids: Vec<u32> = Vec::new();
+                        // index_map is grouped by env in active order; consume contiguous block.
+                        while row < index_map.len() && index_map[row].0 == i {
+                            let m: Vec<f32> = ant
+                                .modulator
+                                .narrow(0, row, 1)?
+                                .flatten_all()?
+                                .to_vec1()?;
+                            mods.push(AntModulators {
+                                alpha_mult: m[0],
+                                beta_mult: m[1],
+                                exploration_mod: m[2],
+                                deposit_mult: m[3],
+                                state_bias: m[4],
+                            });
+                            ids.push(index_map[row].1);
+                            out.ant.push(AntRecord {
+                                match_idx: i,
+                                colony: 0,
+                                cycle,
+                                cone: cone.narrow(0, row, 1)?.detach(),
+                                internal: internal.narrow(0, row, 1)?.detach(),
+                                intent: intent.narrow(0, row, 1)?.detach(),
+                                modulator: ant.modulator.narrow(0, row, 1)?.detach(),
+                                log_prob: lp[row],
+                                value: val[row],
+                            });
+                            row += 1;
+                        }
+                        if !ids.is_empty() {
+                            envs[i].sim.apply_ant_modulators(0, &mods, &ids);
+                        }
+                    }
+                    // Anchor: ensure FIXED_MODULATOR_D is used (compile-time check).
+                    let _ = FIXED_MODULATOR_D;
+                }
+                for &i in &active {
+                    if done[i] {
+                        continue;
+                    }
+                    envs[i].sim.tick();
+                    if !matches!(envs[i].sim.match_status(), MatchStatus::InProgress)
+                        || envs[i].sim.tick >= envs[i].max_ticks
+                    {
+                        done[i] = true;
+                    }
+                }
+            }
+
+            // ── Per-cycle reward + commander records for active envs ──
+            for (j, &i) in active.iter().enumerate() {
+                let cur = [
+                    ColonyMetrics::from_sim(&envs[i].sim, 0),
+                    ColonyMetrics::from_sim(&envs[i].sim, 1),
+                ];
+                let status = envs[i].sim.match_status();
+                let (reward_left, _reward_right) =
+                    compute_step_reward(reward, &prev[i], &cur, done[i], status);
+                prev[i] = cur;
+                out.commander.push(CommanderRecord {
+                    match_idx: i,
+                    colony: 0,
+                    cycle,
+                    state: state_b.narrow(0, j, 1)?.detach(),
+                    pheromone: pher_b.narrow(0, j, 1)?.detach(),
+                    history: hist_b.narrow(0, j, 1)?.detach(),
+                    action: cmdr.action.narrow(0, j, 1)?.detach(),
+                    log_prob: cmdr_lp[j],
+                    value: cmdr_val[j],
+                    reward: reward_left,
+                    done: done[i],
+                });
+                let st_row: Vec<f32> = state_b
+                    .narrow(0, j, 1)?
+                    .flatten_all()?
+                    .to_vec1()?;
+                let ac_row: Vec<f32> = cmdr
+                    .action
+                    .narrow(0, j, 1)?
+                    .flatten_all()?
+                    .to_vec1()?;
+                let mut st = [0.0f32; 17];
+                st.copy_from_slice(&st_row);
+                let mut ac = [0.0f32; 6];
+                ac.copy_from_slice(&ac_row);
+                envs[i].sim.push_commander_history(0, st, ac, reward_left);
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hierarchical::sizing::A1;
+    use crate::reward::RewardConfig;
+    use candle_core::{DType, Device};
+    use candle_nn::{VarBuilder, VarMap};
+    use rand::SeedableRng;
 
     #[test]
     fn parallel_env_constructs_with_default_league() {
@@ -67,5 +271,35 @@ mod tests {
         assert_eq!(pe.n_envs, 4);
         assert_eq!(pe.rollout_cycles, 8);
         assert_eq!(pe.league.entries.len(), 7, "default pool = 7 archetypes");
+    }
+
+    #[test]
+    fn collect_rollout_fills_buffer_left_only_env_bucketed() {
+        let varmap = VarMap::new();
+        let device = Device::Cpu;
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let hac = HierarchicalActorCritic::new(vb, A1).unwrap();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0xa1);
+        let reward = RewardConfig::default();
+
+        let mut pe = ParallelEnv::new(3, 4);
+        let roll = pe.collect_rollout(&hac, &device, &mut rng, &reward, 0xfeed).unwrap();
+
+        assert!(!roll.commander.is_empty());
+        assert!(!roll.ant.is_empty());
+        assert!(roll.commander.iter().all(|r| r.colony == 0));
+        assert!(roll.ant.iter().all(|a| a.colony == 0));
+        let envs_seen: std::collections::HashSet<usize> =
+            roll.commander.iter().map(|r| r.match_idx).collect();
+        assert!(envs_seen.iter().all(|&e| e < 3));
+        assert!(!envs_seen.is_empty());
+        for r in &roll.commander {
+            assert_eq!(r.state.dims(), &[1, 17]);
+            assert!(r.reward.is_finite() && r.value.is_finite() && r.log_prob.is_finite());
+        }
+        for a in &roll.ant {
+            assert_eq!(a.modulator.dims(), &[1, 5]);
+            assert!(a.value.is_finite() && a.log_prob.is_finite());
+        }
     }
 }
