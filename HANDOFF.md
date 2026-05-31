@@ -43,7 +43,7 @@ Probed to fit: **peak 10.7GB / 16GB**. Wall-clock ~40 min (rollout+update ~5s/it
 - 3× horizon nudged the MEAN up (0.286 vs 0.207) and economy archetypes improved, but **did NOT move combat off 0.00** despite terminal rewards now firing. So horizon is *not the whole story*.
 - **Top open question (cheap to answer, do FIRST next session):** does the **47.1% baseline MlpBrain also score ~0 vs defender/aggressor**? If yes, combat-0.00 is NOT a horizon/A1 bug — the bench's achievable score lives largely in economy archetypes and A1 at 0.286 is just weaker there. If no, combat is a genuine A1/horizon/reward gap. The `project_ai_ceiling` memory says ~47% is a Nash plateau but doesn't break it down per-archetype.
 - **Then**, in rough priority: (a) host-offload the rollout → try a genuinely full-match horizon (cycles→2000); (b) A2 sizing; (c) combat-shaped reward (`combat_loss_penalty` lever in `RewardConfig`, currently 0.0); (d) longer training / hyperparams.
-- **UNCOMMITTED:** lever-1 trainer changes + the cnc scripts (`scripts/{Cargo.cnc-trainer.toml,ship_trainer_cnc.ps1,build_trainer_cnc.sh,run_phase3_cnc.sh,launch_convergence_cnc.sh,probe_mem_cnc.sh}`) are local-only on `main`. Commit when Matt says.
+- **Committed + pushed to `origin/main`:** lever-1 trainer changes + the 6 cnc scripts (`f4eb8ae`), plus a `.gitattributes` pinning `*.sh` to `eol=lf` so re-shipping scripts to cnc after a Windows checkout doesn't break bash with `$'\r'` (`1300c07`). Checkpoints stayed gitignored (in `bench/`).
 
 ---
 
