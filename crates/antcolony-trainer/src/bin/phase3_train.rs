@@ -18,7 +18,7 @@
 //! (Note: the *stored* rollout still grows with envs × cycles, so trade those
 //! off against card memory; the chunk size only fixes the update-side ceiling.)
 
-use antcolony_trainer::hierarchical::sizing::A1;
+use antcolony_trainer::hierarchical::sizing::{A1, A2};
 use antcolony_trainer::{Backend, CandleBackend, Phase3Config, RewardConfig, run_phase3};
 use antcolony_trainer::JointPpoConfig;
 use std::path::PathBuf;
@@ -35,6 +35,7 @@ fn main() -> anyhow::Result<()> {
     let mut eval_every = 25usize;
     let mut matches_per_eval = 50usize;
     let mut ant_chunk_size = 0usize; // 0 = monolithic ant update; >0 bounds peak GPU memory
+    let mut sizing_name = "a1".to_string(); // a1 (default) | a2
     let mut reward_path: Option<PathBuf> = None;
     let mut out_dir = PathBuf::from("bench/phase3-a1");
 
@@ -49,6 +50,7 @@ fn main() -> anyhow::Result<()> {
             "--eval-every" => { eval_every = next().parse().unwrap_or(eval_every); i += 2; }
             "--matches-per-eval" => { matches_per_eval = next().parse().unwrap_or(matches_per_eval); i += 2; }
             "--ant-chunk-size" => { ant_chunk_size = next().parse().unwrap_or(ant_chunk_size); i += 2; }
+            "--sizing" => { sizing_name = next(); i += 2; }
             "--reward" => { reward_path = Some(PathBuf::from(next())); i += 2; }
             "--out" => { out_dir = PathBuf::from(next()); i += 2; }
             other => { tracing::warn!(arg = other, "unknown flag, ignoring"); i += 1; }
@@ -70,9 +72,14 @@ fn main() -> anyhow::Result<()> {
 
     let backend = CandleBackend::new()?;
     let device = backend.device().clone();
+    let sizing = match sizing_name.as_str() {
+        "a2" | "A2" => A2,
+        _ => A1,
+    };
     tracing::info!(
         cuda = backend.cuda_available(), iters, envs, rollout_cycles, ant_chunk_size,
-        "phase3 start (A1)"
+        sizing = %sizing_name,
+        "phase3 start"
     );
 
     let mut joint = JointPpoConfig::smoke_default();
@@ -89,7 +96,7 @@ fn main() -> anyhow::Result<()> {
         out_dir,
     };
 
-    let report = run_phase3(device, A1, cfg)?;
+    let report = run_phase3(device, sizing, cfg)?;
 
     tracing::info!("=== Phase 3 win-rate curve (iter, mean) ===");
     for (it, wr) in &report.evals {

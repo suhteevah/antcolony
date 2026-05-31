@@ -126,6 +126,104 @@ pub fn evaluate_hac(
     Ok(EvalReport { per_archetype, mean_win_rate: mean })
 }
 
+/// Diagnostic eval: same play loop as `play_match`, but logs WHAT the HAC
+/// commands (mean caste ratios — does it ever build soldiers?) and HOW the
+/// match ends (final caste counts per colony, queen health, win/loss/timeout).
+/// Answers "why does A1 lose to combat archetypes": is it failing to build
+/// soldiers (defense), getting its queen killed (wiped), or losing the worker
+/// race at timeout (economy)? Logs one line per match at INFO.
+pub fn evaluate_hac_introspect(
+    hac: &HierarchicalActorCritic,
+    device: &Device,
+    opp_spec: &str,
+    matches: usize,
+) -> Result<()> {
+    for m in 0..matches {
+        let seed = 0xE7A1_u64
+            .wrapping_mul(opp_spec.len() as u64 + 1)
+            ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+        let mut env = MatchEnv::new(seed);
+        let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1));
+        let (mut sum_w, mut sum_s, mut sum_b, mut nd) = (0.0f32, 0.0f32, 0.0f32, 0u32);
+
+        loop {
+            let rich = match env.sim.colony_rich_observation(0) {
+                Some(r) => r,
+                None => break,
+            };
+            let (s, p, h) = rich_to_tensors(&rich, device)?;
+            let (action, intent, _value) = hac.mean_commander_action(&s, &p, &h)?;
+            let av: Vec<f32> = action.flatten_all()?.to_vec1()?;
+            sum_w += av[0];
+            sum_s += av[1];
+            sum_b += av[2];
+            nd += 1;
+            let dec = antcolony_sim::AiDecision {
+                caste_ratio_worker: av[0], caste_ratio_soldier: av[1], caste_ratio_breeder: av[2],
+                forage_weight: av[3], dig_weight: av[4], nurse_weight: av[5], research_choice: None,
+            };
+            env.sim.apply_ai_decision(0, &dec);
+            let iv: Vec<f32> = intent.flatten_all()?.to_vec1()?;
+            let mut intent_arr = [0.0f32; 64];
+            intent_arr.copy_from_slice(&iv);
+            env.sim.apply_commander_intent(0, &intent_arr);
+            if let Some(sr) = env.sim.colony_ai_state(1) {
+                let dr = opp.decide(&sr);
+                env.sim.apply_ai_decision(1, &dr);
+            }
+
+            let mut done = false;
+            for _ in 0..DECISION_CADENCE {
+                let obs = env.sim.per_ant_observations(0);
+                if !obs.is_empty() {
+                    let (cone, internal, intent_b) = ant_obs_to_tensors(&obs, &intent, device)?;
+                    let mods_t = hac.mean_ant_modulator(&cone, &internal, &intent_b)?;
+                    let flat: Vec<f32> = mods_t.flatten_all()?.to_vec1()?;
+                    let mut mods = Vec::with_capacity(obs.len());
+                    let mut ids = Vec::with_capacity(obs.len());
+                    for (k, o) in obs.iter().enumerate() {
+                        let off = k * 5;
+                        mods.push(AntModulators {
+                            alpha_mult: flat[off], beta_mult: flat[off + 1], exploration_mod: flat[off + 2],
+                            deposit_mult: flat[off + 3], state_bias: flat[off + 4],
+                        });
+                        ids.push(o.ant_id);
+                    }
+                    env.sim.apply_ant_modulators(0, &mods, &ids);
+                }
+                env.sim.tick();
+                if !matches!(env.sim.match_status(), MatchStatus::InProgress)
+                    || env.sim.tick >= env.max_ticks
+                {
+                    done = true;
+                    break;
+                }
+            }
+            if done {
+                break;
+            }
+        }
+
+        let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0);
+        let ls = env.sim.colonies.first().map(|c| c.population.soldiers).unwrap_or(0);
+        let lq = env.sim.colonies.first().map(|c| c.queen_health).unwrap_or(0.0);
+        let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0);
+        let rs = env.sim.colonies.get(1).map(|c| c.population.soldiers).unwrap_or(0);
+        let denom = nd.max(1) as f32;
+        let status = env.sim.match_status();
+        tracing::info!(
+            opp = opp_spec, m,
+            end_tick = env.sim.tick,
+            ?status,
+            cmd_soldier = sum_s / denom, cmd_worker = sum_w / denom, cmd_breeder = sum_b / denom,
+            left_workers = lw, left_soldiers = ls, left_queen = lq,
+            right_workers = rw, right_soldiers = rs,
+            "introspect match"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

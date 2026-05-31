@@ -12,11 +12,15 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib:${_nvlibs}
 export RAYON_NUM_THREADS=3
 cd /opt/antcolony-cuda || exit 97
 
-echo "=== convergence run start $(date -Is) ==="
+# Args: $1 = reward TOML (default r6), $2 = out dir.
+REWARD="${1:-assets/reward/default.toml}"
+OUT="${2:-bench/phase3-a1-fullhorizon}"
+
+echo "=== convergence run start $(date -Is) reward=$REWARD out=$OUT ==="
 ./target/release/phase3_train \
   --iters 100 --envs 8 --rollout-cycles 96 --ant-chunk-size 8192 \
   --eval-every 25 --matches-per-eval 5 \
-  --reward assets/reward/default.toml --out bench/phase3-a1-fullhorizon
+  --reward "$REWARD" --out "$OUT"
 code=$?
 echo "=== convergence run done $(date -Is) exit=$code ==="
 echo "$code" > /opt/antcolony-cuda/run.done

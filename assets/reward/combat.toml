@@ -1,0 +1,16 @@
+# r6 baseline + combat-loss penalty turned ON. Tests whether penalizing the
+# HAC for losing units in combat moves its defender/aggressor win-rate off the
+# 0.00 floor (the baseline MLP sits at ~0.52 vs combat under the same metric,
+# so the collapse is A1-specific). combat_loss_penalty subtracts
+# 0.05 * (left_combat_losses - right_combat_losses) per step -> a combat death
+# costs ~5x a normal worker loss (worker_delta=0.01). Turtling doesn't dodge
+# it; you still lose workers when attacked, so it rewards actual defense.
+worker_delta = 0.01
+food_delta = 0.002
+queen_bonus = 0.005
+terminal_win = 1.0
+timeout_share = 1.0
+# Smartness levers (0.0 = off).
+brood_growth = 0.0
+food_inflow = 0.0
+combat_loss_penalty = 0.05
