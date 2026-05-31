@@ -43,6 +43,15 @@ pub struct JointPpoConfig {
     /// activation memory so `rollout_cycles` can span full matches on an
     /// 8 GB card without OOM. See Phase 3.5 (rollout-horizon fix).
     pub ant_chunk_size: usize,
+    /// Global gradient-norm clip threshold applied before the optimizer step.
+    /// `0.0` (or negative) disables clipping — exact-reproducible with the
+    /// un-clipped 47% baseline and the prior smoke numerics. A positive value
+    /// (PPO-standard ≈ 0.5) scales the combined gradient down to this L2 norm
+    /// whenever it exceeds it, taming the late-training AdamW spikes that made
+    /// the Phase-3 win-rate curve peak then regress (candle's AdamW has no
+    /// built-in clip). Applied identically in the monolithic and chunked
+    /// paths, so it does not break their gradient equivalence.
+    pub max_grad_norm: f64,
 }
 
 impl JointPpoConfig {
@@ -65,6 +74,7 @@ impl JointPpoConfig {
             alpha_balance: 0.1,
             seed: 0xa17_c01_2b2,
             ant_chunk_size: 0,
+            max_grad_norm: 0.0,
         }
     }
 }
@@ -487,11 +497,18 @@ impl JointPpoTrainer {
             };
             let total_scalar = total.to_scalar::<f32>()?;
             let cmdr_scalar = cmdr_total.to_scalar::<f32>()?;
-            // No grad-norm clipping (candle AdamW has none; the flat trainer
-            // doesn't clip either). Fine for the 5-iter smoke — a single
-            // noisy rollout can spike one iter's loss but can't diverge in 5
-            // steps. Phase 3's longer horizon needs a pre-step clip.
-            opt.backward_step(&total)?;
+            // Manual backward → (optional) global-norm clip → step, instead of
+            // `opt.backward_step(&total)`. With `max_grad_norm == 0.0` this is
+            // bit-identical to the old `backward_step` (which is just
+            // `backward()` then `step()`); a positive threshold tames the
+            // late-training AdamW gradient spikes that made the win-rate curve
+            // peak then regress. candle's AdamW has no built-in clip.
+            let mut grads = total.backward()?;
+            if self.config.max_grad_norm > 0.0 {
+                let gn = clip_grad_norm(&mut grads, &self.varmap.all_vars(), self.config.max_grad_norm)?;
+                tracing::debug!(grad_norm = gn, max = self.config.max_grad_norm, "grad clip (monolithic)");
+            }
+            opt.step(&grads)?;
             last = JointLossStats { total: total_scalar, commander: cmdr_scalar, ant: ant_scalar };
         }
         Ok(last)
@@ -609,9 +626,14 @@ impl JointPpoTrainer {
                 start += len;
             }
 
-            // One optimizer step over the combined (commander + entropy +
-            // all ant chunks) gradient — NOT one step per chunk (that would
-            // be a different Adam trajectory).
+            // Clip the fully-accumulated gradient (same combined gradient the
+            // monolithic path produces → identical clip result), then take ONE
+            // optimizer step over commander + entropy + all ant chunks — NOT
+            // one step per chunk (that would be a different Adam trajectory).
+            if self.config.max_grad_norm > 0.0 {
+                let gn = clip_grad_norm(&mut grads, &vars, self.config.max_grad_norm)?;
+                tracing::debug!(grad_norm = gn, max = self.config.max_grad_norm, "grad clip (chunked)");
+            }
             opt.step(&grads)?;
 
             let ant_scalar = ant_pv_scalar - self.config.ant_entropy_coef as f32 * ant_ent_val;
@@ -643,6 +665,49 @@ fn accumulate_grads(
         }
     }
     Ok(())
+}
+
+/// Global-norm gradient clipping (PPO-standard, à la
+/// `torch.nn.utils.clip_grad_norm_`). Computes the L2 norm over every var's
+/// gradient in `grads`; if it exceeds `max_norm`, scales all of them in place
+/// by `max_norm / (total_norm + 1e-6)` so the combined gradient has norm
+/// `max_norm`. `max_norm <= 0` is a no-op (preserves the un-clipped baseline
+/// numerics bit-for-bit). Returns the pre-clip global norm for logging.
+///
+/// Operates on the whole var set as ONE vector (not per-tensor), so it's
+/// invariant to how the gradient was assembled — the monolithic and chunked
+/// update paths build the identical combined gradient, hence clip to the
+/// identical result.
+fn clip_grad_norm(
+    grads: &mut candle_core::backprop::GradStore,
+    vars: &[candle_core::Var],
+    max_norm: f64,
+) -> anyhow::Result<f32> {
+    // Sum of squares across every var's gradient.
+    let mut sumsq = 0.0f64;
+    for v in vars {
+        let t = v.as_tensor();
+        if let Some(g) = grads.get(t) {
+            sumsq += g.sqr()?.sum_all()?.to_scalar::<f32>()? as f64;
+        }
+    }
+    let total_norm = sumsq.sqrt();
+    if max_norm > 0.0 && total_norm > max_norm {
+        let scale = max_norm / (total_norm + 1e-6);
+        for v in vars {
+            let t = v.as_tensor();
+            // Borrow of `g` ends inside the match arm (affine clones), so the
+            // subsequent insert's mutable borrow doesn't conflict.
+            let scaled = match grads.get(t) {
+                Some(g) => Some(g.affine(scale, 0.0)?),
+                None => None,
+            };
+            if let Some(s) = scaled {
+                grads.insert(t, s);
+            }
+        }
+    }
+    Ok(total_norm as f32)
 }
 
 /// Standard PPO advantage normalization (zero mean, unit std).
@@ -857,6 +922,79 @@ mod tests {
             before.iter().zip(after.iter()).any(|(a, b)| (a - b).abs() > 1e-9),
             "at least one parameter must change after an Adam step"
         );
+    }
+
+    #[test]
+    fn clip_grad_norm_scales_to_max_and_leaves_small_grads() {
+        use candle_core::Var;
+        let dev = Device::Cpu;
+        // x = [3, 4]; loss = 0.5·Σx²  →  grad = x, global L2 norm = 5.
+        let x = Var::new(&[3.0f32, 4.0], &dev).unwrap();
+        let vars = vec![x.clone()];
+        let loss = || x.as_tensor().sqr().unwrap().sum_all().unwrap().affine(0.5, 0.0).unwrap();
+
+        // max_norm = 1 → grad scaled to [0.6, 0.8] (norm 1); pre-clip norm = 5.
+        let mut g = loss().backward().unwrap();
+        let pre = clip_grad_norm(&mut g, &vars, 1.0).unwrap();
+        assert!((pre - 5.0).abs() < 1e-4, "pre-clip norm = {pre}");
+        let gv = g.get(x.as_tensor()).unwrap().to_vec1::<f32>().unwrap();
+        let post = (gv[0] * gv[0] + gv[1] * gv[1]).sqrt();
+        assert!((post - 1.0).abs() < 1e-3, "post-clip norm = {post}, g = {gv:?}");
+        assert!((gv[0] - 0.6).abs() < 1e-3 && (gv[1] - 0.8).abs() < 1e-3, "g = {gv:?}");
+
+        // max_norm above the actual norm → untouched.
+        let mut g2 = loss().backward().unwrap();
+        clip_grad_norm(&mut g2, &vars, 100.0).unwrap();
+        let gv2 = g2.get(x.as_tensor()).unwrap().to_vec1::<f32>().unwrap();
+        assert!((gv2[0] - 3.0).abs() < 1e-5 && (gv2[1] - 4.0).abs() < 1e-5, "g2 = {gv2:?}");
+
+        // max_norm = 0 (disabled) → untouched even when over threshold.
+        let mut g3 = loss().backward().unwrap();
+        clip_grad_norm(&mut g3, &vars, 0.0).unwrap();
+        let gv3 = g3.get(x.as_tensor()).unwrap().to_vec1::<f32>().unwrap();
+        assert!((gv3[0] - 3.0).abs() < 1e-5 && (gv3[1] - 4.0).abs() < 1e-5, "g3 = {gv3:?}");
+    }
+
+    #[test]
+    fn chunked_matches_monolithic_with_grad_clip() {
+        // Grad clipping must not break the chunked/monolithic equivalence:
+        // both build the identical combined gradient, so clipping to a shared
+        // global norm yields the identical post-clip gradient and Adam step.
+        let mut t = JointPpoTrainer::new(Device::Cpu, A1, JointPpoConfig::smoke_default()).unwrap();
+        t.config.max_grad_norm = 0.5; // force a clip well below the raw norm
+        let roll = t.rollout(0xc0ff_ee, 0).unwrap();
+        let an: usize = roll.ant.iter().map(|b| b.len()).sum();
+        assert!(an > 4, "need >4 ant rows to exercise chunking, got {an}");
+
+        let vars = t.varmap.all_vars();
+        let flat = |v: &candle_core::Var| -> Vec<f32> {
+            v.as_tensor().flatten_all().unwrap().to_vec1::<f32>().unwrap()
+        };
+        let snap: Vec<Tensor> = vars.iter().map(|v| {
+            let t = v.as_tensor();
+            Tensor::from_vec(flat(v), t.dims().to_vec(), &Device::Cpu).unwrap()
+        }).collect();
+
+        t.config.ant_chunk_size = 0;
+        let mut opt = t.make_optimizer().unwrap();
+        t.joint_update(&mut opt, &roll).unwrap();
+        let mono: Vec<Vec<f32>> = vars.iter().map(|v| flat(v)).collect();
+
+        for (v, s) in vars.iter().zip(&snap) {
+            v.set(s).unwrap();
+        }
+        t.config.ant_chunk_size = (an / 4).max(2);
+        let mut opt2 = t.make_optimizer().unwrap();
+        t.joint_update(&mut opt2, &roll).unwrap();
+        let chunked: Vec<Vec<f32>> = vars.iter().map(|v| flat(v)).collect();
+
+        let mut max_diff = 0.0f32;
+        for (a, b) in mono.iter().zip(chunked.iter()) {
+            for (x, y) in a.iter().zip(b.iter()) {
+                max_diff = max_diff.max((x - y).abs());
+            }
+        }
+        assert!(max_diff < 1e-3, "clipped chunked vs monolithic diverged: max_diff={max_diff}");
     }
 
     #[test]

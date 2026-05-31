@@ -35,6 +35,8 @@ fn main() -> anyhow::Result<()> {
     let mut eval_every = 25usize;
     let mut matches_per_eval = 50usize;
     let mut ant_chunk_size = 0usize; // 0 = monolithic ant update; >0 bounds peak GPU memory
+    let mut max_grad_norm = 0.5f64; // PPO-standard global grad-norm clip; 0 = off
+    let mut early_stop_patience = 0usize; // 0 = run all iters; N = stop after N evals w/o improvement
     let mut sizing_name = "a1".to_string(); // a1 (default) | a2
     let mut reward_path: Option<PathBuf> = None;
     let mut out_dir = PathBuf::from("bench/phase3-a1");
@@ -50,6 +52,8 @@ fn main() -> anyhow::Result<()> {
             "--eval-every" => { eval_every = next().parse().unwrap_or(eval_every); i += 2; }
             "--matches-per-eval" => { matches_per_eval = next().parse().unwrap_or(matches_per_eval); i += 2; }
             "--ant-chunk-size" => { ant_chunk_size = next().parse().unwrap_or(ant_chunk_size); i += 2; }
+            "--max-grad-norm" => { max_grad_norm = next().parse().unwrap_or(max_grad_norm); i += 2; }
+            "--early-stop-patience" => { early_stop_patience = next().parse().unwrap_or(early_stop_patience); i += 2; }
             "--sizing" => { sizing_name = next(); i += 2; }
             "--reward" => { reward_path = Some(PathBuf::from(next())); i += 2; }
             "--out" => { out_dir = PathBuf::from(next()); i += 2; }
@@ -78,12 +82,13 @@ fn main() -> anyhow::Result<()> {
     };
     tracing::info!(
         cuda = backend.cuda_available(), iters, envs, rollout_cycles, ant_chunk_size,
-        sizing = %sizing_name,
+        max_grad_norm, early_stop_patience, sizing = %sizing_name,
         "phase3 start"
     );
 
     let mut joint = JointPpoConfig::smoke_default();
     joint.ant_chunk_size = ant_chunk_size;
+    joint.max_grad_norm = max_grad_norm;
 
     let cfg = Phase3Config {
         iterations: iters,
@@ -91,6 +96,7 @@ fn main() -> anyhow::Result<()> {
         rollout_cycles,
         eval_every,
         matches_per_eval,
+        early_stop_patience,
         reward,
         joint,
         out_dir,
@@ -107,6 +113,12 @@ fn main() -> anyhow::Result<()> {
         for (name, wr) in &fe.per_archetype {
             tracing::info!(archetype = name, win_rate = wr, "final per-archetype");
         }
+    }
+    if let Some((bi, bw)) = report.best_eval {
+        tracing::info!(
+            best_iter = bi, best_win_rate = bw, baseline = 0.471,
+            "BEST checkpoint -> hac_best.safetensors (ship this one)"
+        );
     }
     Ok(())
 }

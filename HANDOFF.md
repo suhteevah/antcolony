@@ -1,8 +1,36 @@
 # HANDOFF.md — Phased Implementation Spec
 
-**Last Updated:** 2026-05-31 — ROOT CAUSE FOUND + FIXED (policy collapse → init fix → matches the 47.1% baseline)
+**Last Updated:** 2026-05-31 (later) — late-training stabilizers landed: grad-norm clipping + keep-best checkpoint + early-stop
 
 This document contains everything needed to implement the ant colony simulation from scratch. Each phase is self-contained with clear inputs, outputs, and acceptance criteria. **Phases are sequential — do not skip ahead.**
+
+---
+
+## Session 2026-05-31 (later) — Late-training stabilizers: grad-norm clipping + keep-best checkpoint + early-stop
+
+🟢 Project Status: **Shipped the two fixes the prior session flagged as next-up #1 — the Phase-3 win-rate curve no longer has to peak-then-regress with no safety net.** Grad-norm clipping tames the unclipped-AdamW spikes that caused the late decline (0.629@iter50 → 0.457 final); keep-best persists `hac_best.safetensors` so the shippable checkpoint is unambiguous even if the tail regresses; optional early-stop can cut the dead tail. All CPU-validated; **no GPU run yet** (next session, on cnc P100). Code changes only — `bench/` checkpoints untouched.
+
+### What shipped (3 files, TDD)
+1. **Grad-norm clipping** (`joint_ppo.rs`). New `JointPpoConfig.max_grad_norm: f64` (`0.0` = OFF, bit-identical to the un-clipped 47%-baseline + prior smoke numerics; PPO-standard ≈ 0.5). New private `clip_grad_norm(grads, vars, max_norm)`: global L2 over **every var's** gradient, scales all in place by `max_norm/(norm+1e-6)` when exceeded, returns pre-clip norm for logging. Applied in BOTH update paths:
+   - `joint_update` (monolithic): split `opt.backward_step(&total)` → `total.backward()` + `clip_grad_norm` + `opt.step(&grads)`. With `max_grad_norm==0.0` this is bit-identical to the old `backward_step` (which is just backward-then-step).
+   - `joint_update_chunked`: clip the fully-accumulated `grads` right before `opt.step`. Because both paths build the **identical** combined gradient, clipping to a shared global norm preserves the chunked==monolithic equivalence (regression-tested).
+2. **Keep-best + early-stop** (`phase3.rs`). New `Phase3Report.best_eval: Option<(usize,f32)>`; new `Phase3Config.early_stop_patience: usize` (`0` = run all iters). Driver now tracks the best eval (periodic evals **and** the final eval are candidates), writes `hac_best.safetensors` on each improvement, and breaks early after `patience` evals with no improvement. The per-iter `hac_iterNNNN.safetensors` checkpoints are unchanged; `hac_best` just makes "ship this one" explicit + CLI-reportable.
+3. **CLI** (`bin/phase3_train.rs`). New flags `--max-grad-norm` (default **0.5** — so the next real run is stable by default; `smoke_default()` stays `0.0` to preserve the equivalence test) and `--early-stop-patience` (default `0`). Summary now logs `BEST checkpoint -> hac_best.safetensors`.
+
+### Tests (TDD, all green on CPU)
+- `clip_grad_norm_scales_to_max_and_leaves_small_grads` — known-norm grad ([3,4]→norm 5): clips to [0.6,0.8]@max=1, untouched @max=100, untouched @max=0 (disabled).
+- `chunked_matches_monolithic_with_grad_clip` — sets `max_grad_norm=0.5` on both paths, asserts post-Adam weights still match (max_diff < 1e-3). Proves clipping doesn't break the chunk equivalence.
+- `phase3_smoke_runs_and_evals` extended — `best_eval` set, `best_wr >= max(periodic evals)` and `>= final eval`, and `hac_best.safetensors` exists on disk.
+- Existing `chunked_ant_update_matches_monolithic` + the 47%-baseline-preserving numerics untouched (`max_grad_norm` defaults 0.0).
+
+### What's next (priority)
+1. **Run it on cnc P100** (free GPU1 via openclaw `main`, restore after). Re-run the A1 init-fixed config that peaked at 0.629 but now with `--max-grad-norm 0.5`; confirm the curve holds at/above baseline instead of regressing, and that `hac_best.safetensors` ≥ the prior 0.629 keeper. Command is the prior session's `run_phase3_cnc.sh` + add `--max-grad-norm 0.5` (optionally `--early-stop-patience 4`).
+2. **Combat axis** (now the real non-degenerate weak spot): league with combat archetypes weighted up, longer training, or A2 (`--sizing a2`).
+3. `combat_loss_penalty` metric still broken (per-tick reset) — low priority, `worker_delta` covers it.
+
+### Notes
+- `max_grad_norm` is in `JointPpoConfig`, NOT `RewardConfig` — it's an optimizer knob, not a reward shaper. The reward TOML is unchanged.
+- Early-stop guards on a **coarse** eval (few matches/opp during training) — leave `patience=0` (off) unless eval matches-per-eval is high enough to trust, or it may stop on noise. Keep-best is always on regardless.
 
 ---
 
