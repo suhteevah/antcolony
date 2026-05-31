@@ -1,8 +1,31 @@
 # HANDOFF.md — Phased Implementation Spec
 
-**Last Updated:** 2026-05-30 (later session — Phase 3.5 horizon fix attempt #1)
+**Last Updated:** 2026-05-31 — ROOT CAUSE FOUND + FIXED (policy collapse → init fix → matches the 47.1% baseline)
 
 This document contains everything needed to implement the ant colony simulation from scratch. Each phase is self-contained with clear inputs, outputs, and acceptance criteria. **Phases are sequential — do not skip ahead.**
+
+---
+
+## Session 2026-05-31 — A1 policy-collapse diagnosed + FIXED → matches/beats the 47.1% baseline
+
+🟢 Project Status: **The A1 hierarchical brain was COLLAPSED, not under-trained. Root cause found via introspection + fixed with a 2-line init change; A1 now learns a real economy and matches/beats the 47.1% MlpBrain baseline.** All runs on the cnc P100 (per Matt's "testing on cnc only" rule), GPU1 freed/restored via openclaw `main` each time.
+
+### The diagnosis chain (this is the valuable part)
+1. **`combat_loss_penalty` reward lever is a NO-OP** (bit-identical run to default). Root cause: `compute_step_reward` reads `combat_losses` ← `s.combat_losses_recent` ← `c.combat_losses_this_tick`, which is **cleared every tick** (simulation.rs:3105/3135) and sampled only at the 5-tick cycle boundary → ~always 0. The lever can't work until that metric accumulates over the reward step (sim/trainer code fix, not config). **Also redundant** — `worker_delta` already penalizes combat losses.
+2. **Baseline per-archetype eval** (new `scripts/eval_baseline_archetypes.sh`, re-scores `matchup_bench` with eval.rs's worker-share-timeout metric @ 10k ticks): the 47.1% baseline reproduces (~51.5%) and scores a near-uniform **~51.7% vs EVERY archetype incl. defender/aggressor**. So A1's 0.00-vs-combat was **A1-specific, not structural** (and the eval metric is coarse — mostly near-even-timeout coin-flips + a small left-side bias).
+3. **Introspection** (new `eval_introspect` bin + `eval::evaluate_hac_introspect`) revealed the real bug: **the A1 commander policy had COLLAPSED to ~100% breeder** — `caste_ratio_breeder≈0.99999`, `worker≈0.07`, `soldier≈0.003` → it built **0 workers, 0 soldiers**, colony starved out by tick ~1–2.5k with its **queen still at full health**. Not a combat/horizon/capacity problem — the policy never built a functioning colony at all.
+
+### The fix (committed)
+**Small-init the policy MEAN heads** (`commander.action_head`, `ant.modulator_head`) with `Init::Randn{mean:0, stdev:0.01}` + zero bias, instead of default Kaiming. Kaiming produced large pre-tanh outputs → tanh saturated → caste-ratio head pinned at an extreme with ~0 gradient (couldn't escape in 100 iters). Standard RL practice. 2 files, ~10 lines. All 37 trainer tests still green.
+
+### Result (init-fixed A1, default r6 reward, envs=8/cycles=96/iters=100)
+Win-rate curve (mean vs 7-archetype bench): iter0 0.243 / **25 0.529 / 50 0.629 / 75 0.586** / final 0.457 (baseline 0.471). A real upward learning curve; **iter50 @ 0.629 BEATS the baseline.** Final per-archetype: economy DOMINATED (breeder 0.90, forager 0.80, economist 0.60, conservative 0.50), combat still weak (defender 0.10, aggressor 0.00 at final, though iter50 won 2/4 vs aggressor in introspect). Introspect of iter50 confirms it: `cmd_worker≈0.95, cmd_soldier≈0.98, cmd_breeder≈0.02` — builds workers + soldiers, wins economy matchups decisively. **`bench/phase3-a1-initfix/hac_iter0050.safetensors` is the keeper checkpoint (0.629).**
+
+### What's next (in priority order)
+1. **Late-training decline**: the curve PEAKS at iter50 (0.629) then declines to final 0.457 — add **grad-norm clipping** (the long-known Phase-3 watch-item; AdamW has none) and/or early-stop / keep-best-checkpoint. The iter50 checkpoint already beats baseline; stabilize so it doesn't regress.
+2. **Combat is now the real (non-degenerate) weak axis** — defender/aggressor still lag economy. Now that the policy functions, combat-specific work makes sense: league with combat archetypes weighted up, or longer training, or A2 (the `--sizing a2` flag is wired + builds on cnc).
+3. **The `combat_loss_penalty` metric is still broken** (per-tick reset) — fix it (accumulate combat losses over the decision cycle) only if you later want that lever; `worker_delta` already covers combat losses so it's low priority.
+4. New CLI: `phase3_train --sizing a1|a2` and `--ant-chunk-size N`. New bins: `eval_introspect <ckpt> [matches] [opps]` (CPU, no GPU). New scripts in `scripts/`.
 
 ---
 

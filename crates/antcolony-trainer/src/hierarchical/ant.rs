@@ -62,7 +62,20 @@ impl AntPolicy {
             )?);
         }
 
-        let modulator_head = candle_nn::linear(d_model, sizing.fixed_modulator_d, vb.pp("modulator_head"))?;
+        // Small-init the modulator MEAN head (std 0.01) — same anti-saturation
+        // reasoning as the commander action head (see commander.rs): start the
+        // pre-squash modulators near 0 so the policy isn't pinned at the
+        // clamp edges from step 0.
+        let modulator_head = {
+            let vbm = vb.pp("modulator_head");
+            let w = vbm.get_with_hints(
+                (sizing.fixed_modulator_d, d_model),
+                "weight",
+                candle_nn::Init::Randn { mean: 0.0, stdev: 0.01 },
+            )?;
+            let b = vbm.get_with_hints(sizing.fixed_modulator_d, "bias", candle_nn::Init::Const(0.0))?;
+            candle_nn::Linear::new(w, Some(b))
+        };
         let value_head = candle_nn::linear(d_model, 1, vb.pp("value_head"))?;
 
         let log_std = vb.get_with_hints(

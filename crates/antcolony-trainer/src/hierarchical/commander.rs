@@ -108,7 +108,22 @@ impl CommanderPolicy {
             )?);
         }
 
-        let action_head = candle_nn::linear(d_model, sizing.fixed_action_d, vb.pp("action_head"))?;
+        // Small-init the policy MEAN head (std 0.01) so the initial pre-tanh
+        // action is ~0 and the tanh squash starts UNSATURATED. Default Kaiming
+        // init produced large outputs that saturated the caste-ratio head to a
+        // degenerate ~100%-breeder policy (0 workers/soldiers -> colony
+        // collapse) which never recovered — gradient ≈ 0 at tanh saturation.
+        // Standard RL practice: tiny final-layer init for the policy mean.
+        let action_head = {
+            let vba = vb.pp("action_head");
+            let w = vba.get_with_hints(
+                (sizing.fixed_action_d, d_model),
+                "weight",
+                candle_nn::Init::Randn { mean: 0.0, stdev: 0.01 },
+            )?;
+            let b = vba.get_with_hints(sizing.fixed_action_d, "bias", candle_nn::Init::Const(0.0))?;
+            Linear::new(w, Some(b))
+        };
         let intent_head = candle_nn::linear(d_model, sizing.fixed_intent_d, vb.pp("intent_head"))?;
         let value_head = candle_nn::linear(d_model, 1, vb.pp("value_head"))?;
 
