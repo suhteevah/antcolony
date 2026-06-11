@@ -33,7 +33,7 @@ fn play_match(
     seed: u64,
 ) -> Result<f32> {
     let mut env = MatchEnv::new(seed);
-    let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1));
+    let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1))?;
 
     loop {
         let rich = match env.sim.colony_rich_observation(0) {
@@ -43,6 +43,8 @@ fn play_match(
         let (s, p, h) = rich_to_tensors(&rich, device)?;
         let (action, intent, _value) = hac.mean_commander_action(&s, &p, &h)?;
         let av: Vec<f32> = action.flatten_all()?.to_vec1()?;
+        // L11: document the 6-dim action invariant (can't fire — dims pinned).
+        debug_assert_eq!(av.len(), 6, "commander action expects 6 dims");
         let dec = antcolony_sim::AiDecision {
             caste_ratio_worker: av[0], caste_ratio_soldier: av[1], caste_ratio_breeder: av[2],
             forage_weight: av[3], dig_weight: av[4], nurse_weight: av[5], research_choice: None,
@@ -96,11 +98,30 @@ fn play_match(
         MatchStatus::InProgress => {
             let lw = env.sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0) as f32;
             let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
-            let share = lw / (lw + rw).max(1.0);
-            if share > 0.5 { 1.0 } else if share < 0.5 { 0.0 } else { 0.5 }
+            // L9: 0-vs-0 timeout is a draw (0.5), consistent with MatchStatus::Draw —
+            // not a loss. Without this guard share = 0/1 = 0 grades as a loss.
+            if lw == 0.0 && rw == 0.0 {
+                0.5
+            } else {
+                let share = lw / (lw + rw).max(1.0);
+                if share > 0.5 { 1.0 } else if share < 0.5 { 0.0 } else { 0.5 }
+            }
         }
         _ => 0.5,
     })
+}
+
+/// L10: deterministic per-archetype seed salt. Folds a byte hash of the spec
+/// (FNV-1a-ish) into the multiplier so same-LENGTH names (breeder/forager,
+/// aggressor/economist/heuristic) no longer share sim seeds. Always non-zero
+/// (`| 1`) so the seed multiplier never collapses to 0.
+fn spec_seed_salt(spec: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in spec.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h | 1
 }
 
 pub fn evaluate_hac(
@@ -111,14 +132,23 @@ pub fn evaluate_hac(
     let mut per_archetype = Vec::with_capacity(BENCH_ARCHETYPES.len());
     for spec in BENCH_ARCHETYPES {
         let mut score = 0.0f32;
+        let mut played = 0usize;
         for m in 0..matches_per_opp {
+            // L10: fold a per-archetype byte hash into the seed so same-length
+            // archetype names (e.g. breeder/forager) don't share sim seeds and
+            // correlate their win-rate estimates.
             let seed = 0xE7A1_u64
-                .wrapping_mul(spec.len() as u64 + 1)
+                .wrapping_mul(spec_seed_salt(spec))
                 ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
-            score += play_match(hac, device, spec, seed)?;
+            // M16: a single bad match (e.g. a custom spec that fails to build)
+            // shouldn't abort the whole eval — log+skip it.
+            match play_match(hac, device, spec, seed) {
+                Ok(s) => { score += s; played += 1; }
+                Err(e) => tracing::error!(archetype = spec, m, error = %e, "eval match failed; skipping"),
+            }
         }
-        let wr = score / matches_per_opp.max(1) as f32;
-        tracing::info!(archetype = spec, win_rate = wr, "eval vs archetype");
+        let wr = score / played.max(1) as f32;
+        tracing::info!(archetype = spec, win_rate = wr, played, "eval vs archetype");
         per_archetype.push((spec.to_string(), wr));
     }
     let mean = per_archetype.iter().map(|(_, w)| *w).sum::<f32>()
@@ -140,10 +170,10 @@ pub fn evaluate_hac_introspect(
 ) -> Result<()> {
     for m in 0..matches {
         let seed = 0xE7A1_u64
-            .wrapping_mul(opp_spec.len() as u64 + 1)
+            .wrapping_mul(spec_seed_salt(opp_spec))
             ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
         let mut env = MatchEnv::new(seed);
-        let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1));
+        let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1))?;
         let (mut sum_w, mut sum_s, mut sum_b, mut nd) = (0.0f32, 0.0f32, 0.0f32, 0u32);
 
         loop {

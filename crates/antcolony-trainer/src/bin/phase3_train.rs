@@ -23,6 +23,22 @@ use antcolony_trainer::{Backend, CandleBackend, Phase3Config, RewardConfig, run_
 use antcolony_trainer::JointPpoConfig;
 use std::path::PathBuf;
 
+/// Parse a CLI flag value or exit(2) loudly. L8: prevents a typo'd value from
+/// silently running the default config.
+fn parse_or_exit<T>(flag: &str, raw: &str) -> T
+where
+    T: std::str::FromStr,
+    <T as std::str::FromStr>::Err: std::fmt::Display,
+{
+    match raw.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(flag, value = raw, error = %e, "failed to parse CLI flag value");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("antcolony_sim=warn,antcolony_trainer=info,phase3_train=info")
@@ -45,15 +61,18 @@ fn main() -> anyhow::Result<()> {
     let mut i = 0;
     while i < args.len() {
         let next = || args.get(i + 1).cloned().unwrap_or_default();
+        // L8: a typo'd value (e.g. `--iters twenty`) must NOT silently fall back
+        // to the default — that would run a different config than intended.
+        // `parse_or_exit` logs loudly and exit(2)s on a parse failure.
         match args[i].as_str() {
-            "--iters" => { iters = next().parse().unwrap_or(iters); i += 2; }
-            "--envs" => { envs = next().parse().unwrap_or(envs); i += 2; }
-            "--rollout-cycles" => { rollout_cycles = next().parse().unwrap_or(rollout_cycles); i += 2; }
-            "--eval-every" => { eval_every = next().parse().unwrap_or(eval_every); i += 2; }
-            "--matches-per-eval" => { matches_per_eval = next().parse().unwrap_or(matches_per_eval); i += 2; }
-            "--ant-chunk-size" => { ant_chunk_size = next().parse().unwrap_or(ant_chunk_size); i += 2; }
-            "--max-grad-norm" => { max_grad_norm = next().parse().unwrap_or(max_grad_norm); i += 2; }
-            "--early-stop-patience" => { early_stop_patience = next().parse().unwrap_or(early_stop_patience); i += 2; }
+            "--iters" => { iters = parse_or_exit("--iters", &next()); i += 2; }
+            "--envs" => { envs = parse_or_exit("--envs", &next()); i += 2; }
+            "--rollout-cycles" => { rollout_cycles = parse_or_exit("--rollout-cycles", &next()); i += 2; }
+            "--eval-every" => { eval_every = parse_or_exit("--eval-every", &next()); i += 2; }
+            "--matches-per-eval" => { matches_per_eval = parse_or_exit("--matches-per-eval", &next()); i += 2; }
+            "--ant-chunk-size" => { ant_chunk_size = parse_or_exit("--ant-chunk-size", &next()); i += 2; }
+            "--max-grad-norm" => { max_grad_norm = parse_or_exit("--max-grad-norm", &next()); i += 2; }
+            "--early-stop-patience" => { early_stop_patience = parse_or_exit("--early-stop-patience", &next()); i += 2; }
             "--sizing" => { sizing_name = next(); i += 2; }
             "--reward" => { reward_path = Some(PathBuf::from(next())); i += 2; }
             "--out" => { out_dir = PathBuf::from(next()); i += 2; }

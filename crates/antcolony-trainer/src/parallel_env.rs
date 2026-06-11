@@ -38,6 +38,8 @@ impl ParallelEnv {
 /// Decode one row of a [B, 6] squashed-action tensor into an AiDecision.
 fn row_to_decision(action: &Tensor, row: usize) -> Result<AiDecision> {
     let v: Vec<f32> = action.narrow(0, row, 1)?.squeeze(0)?.to_vec1()?;
+    // L11: document the 6-dim action invariant (can't fire — dims pinned).
+    debug_assert_eq!(v.len(), 6, "row_to_decision expects 6 action dims");
     Ok(AiDecision {
         caste_ratio_worker: v[0],
         caste_ratio_soldier: v[1],
@@ -55,6 +57,15 @@ fn row_to_intent(intent: &Tensor, row: usize) -> Result<[f32; FIXED_INTENT_D]> {
     let mut arr = [0.0f32; FIXED_INTENT_D];
     arr.copy_from_slice(&v);
     Ok(arr)
+}
+
+/// Cumulative cross-colony losses for a colony (never reset by the sim), used
+/// to derive the per-window combat-loss delta. H7: the tick-local
+/// `combat_losses_this_tick` is cleared every tick, so it can't be sampled at
+/// cycle cadence — the cumulative counter's delta over the window is the
+/// correct window-summed loss count.
+fn colony_combat_losses(env: &MatchEnv, k: u8) -> u32 {
+    env.sim.colonies.get(k as usize).map(|c| c.combat_losses).unwrap_or(0)
 }
 
 impl ParallelEnv {
@@ -78,16 +89,26 @@ impl ParallelEnv {
             envs.push(MatchEnv::new(seed));
             let pick = (i + (base_seed as usize)) % self.league.entries.len();
             let spec = self.league.entries[pick].spec.clone();
-            opponents.push(League::make_brain(&spec, seed.wrapping_add(1)));
+            // M16: a bad league spec (typo'd --add-opp, missing snapshot) must
+            // not abort the whole run. Log it and fall back to the heuristic
+            // brain for this env so training continues. `heuristic` is hardcoded
+            // and infallible, so the unwrap_or_else can't itself fail.
+            let brain = League::make_brain(&spec, seed.wrapping_add(1)).unwrap_or_else(|e| {
+                tracing::error!(env = i, spec = %spec, error = %e, "bad league entry; falling back to heuristic");
+                League::make_brain("heuristic", seed.wrapping_add(1))
+                    .expect("heuristic brain is infallible")
+            });
+            opponents.push(brain);
         }
 
         let mut out = JointRollout::default();
         let mut done = vec![false; self.n_envs];
+        // Baseline metrics: no window has elapsed yet, so window combat losses = 0.
         let mut prev: Vec<[ColonyMetrics; 2]> = (0..self.n_envs)
             .map(|i| {
                 [
-                    ColonyMetrics::from_sim(&envs[i].sim, 0),
-                    ColonyMetrics::from_sim(&envs[i].sim, 1),
+                    ColonyMetrics::from_sim(&envs[i].sim, 0, 0),
+                    ColonyMetrics::from_sim(&envs[i].sim, 1, 0),
                 ]
             })
             .collect();
@@ -99,6 +120,14 @@ impl ParallelEnv {
             if active.is_empty() {
                 break;
             }
+
+            // H7: snapshot the cumulative combat-loss counter per active env
+            // BEFORE the inner tick loop; the per-cycle reward uses the delta
+            // over the window (the tick-local counter is cleared every tick).
+            let loss_base: std::collections::HashMap<usize, [u32; 2]> = active
+                .iter()
+                .map(|&i| (i, [colony_combat_losses(&envs[i], 0), colony_combat_losses(&envs[i], 1)]))
+                .collect();
 
             // ── Commander forward, batched across active envs ──
             let riches: Vec<_> = active
@@ -226,9 +255,15 @@ impl ParallelEnv {
             let state_rows: Vec<Vec<f32>> = state_b.to_vec2()?;
             let action_rows: Vec<Vec<f32>> = cmdr.action.to_vec2()?;
             for (j, &i) in active.iter().enumerate() {
+                // Window-summed combat losses = cumulative-counter delta over
+                // the inner tick loop (H7). `loss_base` always has `i` (built
+                // from `active` above).
+                let base = loss_base.get(&i).copied().unwrap_or([0, 0]);
+                let win0 = colony_combat_losses(&envs[i], 0).saturating_sub(base[0]);
+                let win1 = colony_combat_losses(&envs[i], 1).saturating_sub(base[1]);
                 let cur = [
-                    ColonyMetrics::from_sim(&envs[i].sim, 0),
-                    ColonyMetrics::from_sim(&envs[i].sim, 1),
+                    ColonyMetrics::from_sim(&envs[i].sim, 0, win0),
+                    ColonyMetrics::from_sim(&envs[i].sim, 1, win1),
                 ];
                 let status = envs[i].sim.match_status();
                 let (reward_left, _reward_right) =

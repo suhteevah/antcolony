@@ -96,28 +96,37 @@ impl League {
 
     /// Materialize a brain for the given spec. Mirrors matchup_bench's
     /// build_brain() so league entries use the same parser.
-    pub fn make_brain(spec: &str, seed: u64) -> Box<dyn AiBrain> {
+    ///
+    /// M16: returns `Result` instead of panicking on a bad spec. A typo'd
+    /// `--add-opp`/`--noisy-pool` spec or a missing snapshot file would
+    /// otherwise abort a multi-hour run mid-flight (CLAUDE.md rule #2). Callers
+    /// in the rollout/eval hot paths log+skip a bad entry instead.
+    pub fn make_brain(spec: &str, seed: u64) -> anyhow::Result<Box<dyn AiBrain>> {
         if let Some(rest) = spec.strip_prefix("mlp:") {
-            return Box::new(MlpBrain::load(rest, format!("mlp-{seed}"))
-                .expect("failed to load mlp weights"));
+            let b = MlpBrain::load(rest, format!("mlp-{seed}"))
+                .map_err(|e| anyhow::anyhow!("league: failed to load mlp weights `{rest}`: {e}"))?;
+            return Ok(Box::new(b));
         }
         if let Some(rest) = spec.strip_prefix("mix:") {
-            return Box::new(MixedBrain::from_archetype_spec(rest, seed)
-                .unwrap_or_else(|e| panic!("league: bad mix spec `{rest}`: {e}")));
+            let b = MixedBrain::from_archetype_spec(rest, seed)
+                .map_err(|e| anyhow::anyhow!("league: bad mix spec `{rest}`: {e}"))?;
+            return Ok(Box::new(b));
         }
         if let Some(rest) = spec.strip_prefix("noisy_mlp:") {
             // Format: noisy_mlp:<path>:<std> — same as matchup_bench.
             // rsplitn so paths with ':' work (e.g. drive letters on Windows).
             let mut parts = rest.rsplitn(2, ':');
-            let std_s = parts.next().expect("noisy_mlp spec missing std");
-            let path = parts.next().expect("noisy_mlp spec missing path");
+            let std_s = parts.next()
+                .ok_or_else(|| anyhow::anyhow!("league: noisy_mlp spec `{rest}` missing std"))?;
+            let path = parts.next()
+                .ok_or_else(|| anyhow::anyhow!("league: noisy_mlp spec `{rest}` missing path"))?;
             let std: f32 = std_s.parse().unwrap_or(0.1);
             let mut b = MlpBrain::load(path, format!("noisy_mlp-{seed}"))
-                .expect("failed to load mlp weights for noisy_mlp");
+                .map_err(|e| anyhow::anyhow!("league: failed to load noisy_mlp weights `{path}`: {e}"))?;
             b.set_explore_std(std);
-            return Box::new(b);
+            return Ok(Box::new(b));
         }
-        match spec {
+        Ok(match spec {
             "heuristic" => Box::new(HeuristicBrain::new(5.0)),
             "random" => Box::new(RandomBrain::new(seed)),
             "defender" => Box::new(DefenderBrain::new()),
@@ -126,7 +135,7 @@ impl League {
             "breeder" => Box::new(BreederBrain::new()),
             "forager" => Box::new(ForagerBrain::new()),
             "conservative" => Box::new(ConservativeBuilderBrain::new()),
-            other => panic!("league: unknown spec `{other}`"),
-        }
+            other => anyhow::bail!("league: unknown spec `{other}`"),
+        })
     }
 }

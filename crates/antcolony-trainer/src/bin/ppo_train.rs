@@ -169,10 +169,12 @@ fn main() -> anyhow::Result<()> {
             let seed = (10_000u64 * it as u64) + m as u64;
             let batch: RolloutBatch = trainer.rollout(&opp_spec, seed)?;
             total_reward += batch.rewards.iter().sum::<f32>();
-            // GAE per episode
-            let (adv, ret) = PpoTrainer::compute_gae(
+            // GAE per episode. H6: pass the captured post-rollout V(s_n) so a
+            // horizon-truncated tail bootstraps from a real estimate instead of 0.
+            let (adv, ret) = PpoTrainer::compute_gae_bootstrap(
                 &batch.rewards, &batch.values, &batch.dones,
                 trainer.config.gamma, trainer.config.gae_lambda,
+                batch.last_value,
             );
             all_states.extend(batch.states);
             all_actions.extend(batch.actions);

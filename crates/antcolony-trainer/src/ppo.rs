@@ -102,6 +102,9 @@ impl PpoTrainer {
         // action is [1, 6]; flatten to [6] before extracting
         let flat = if action.dims().len() == 2 { action.squeeze(0)? } else { action.clone() };
         let v: Vec<f32> = flat.to_vec1()?;
+        // L11: document the invariant — the action head is fixed at 6 dims
+        // (OUTPUT_DIM). Can't fire today, but per the no-panic rule.
+        debug_assert_eq!(v.len(), OUTPUT_DIM, "tensor_to_decision expects {OUTPUT_DIM} action dims");
         Ok(AiDecision {
             caste_ratio_worker: v[0],
             caste_ratio_soldier: v[1],
@@ -117,7 +120,7 @@ impl PpoTrainer {
     /// Returns (states, actions, log_probs, rewards, values, dones).
     pub fn rollout(&mut self, opp_spec: &str, seed: u64) -> anyhow::Result<RolloutBatch> {
         let mut env = MatchEnv::new(seed);
-        let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1));
+        let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1))?;
         let mut batch = RolloutBatch::default();
 
         loop {
@@ -147,6 +150,24 @@ impl PpoTrainer {
             batch.rewards.push(step.reward_left);
             batch.dones.push(step.done);
             if step.done || env.sim.tick >= env.max_ticks {
+                // H6: if we're stopping with the last step NON-terminal (a pure
+                // horizon truncation — the sim is still InProgress), capture a
+                // detached V(s_n) on the post-rollout left observation so GAE
+                // bootstraps from a real estimate instead of 0. A genuine
+                // terminal (step.done with a Won/Draw status) leaves last_value
+                // None and GAE bootstraps from 0.
+                if !step.done {
+                    if let Some(s_next) = env.observe(0) {
+                        let s_next_t = state_to_tensor(&s_next, &self.device)?;
+                        let v = self.policy.value(&s_next_t)?.detach();
+                        let v_scalar = if v.dims().is_empty() {
+                            v.to_scalar::<f32>()?
+                        } else {
+                            v.squeeze(0)?.to_scalar::<f32>()?
+                        };
+                        batch.last_value = Some(v_scalar);
+                    }
+                }
                 break;
             }
         }
@@ -234,11 +255,17 @@ impl PpoTrainer {
         let a = Tensor::cat(actions, 0)?;       // [N, 6]
         let n = states.len();
         let rt = Tensor::from_slice(returns, n, &self.device)?;
-        // Normalize advantages — standard PPO trick
+        // Normalize advantages — standard PPO trick. M14: with < 2 samples,
+        // mean-subtract only; the `/std` would collapse a singleton buffer's
+        // advantage to ~0 and zero the policy gradient.
         let mean_adv: f32 = advantages.iter().sum::<f32>() / n as f32;
-        let var_adv: f32 = advantages.iter().map(|x| (x - mean_adv).powi(2)).sum::<f32>() / n as f32;
-        let std_adv = (var_adv + 1e-8).sqrt();
-        let normed: Vec<f32> = advantages.iter().map(|x| (x - mean_adv) / std_adv).collect();
+        let normed: Vec<f32> = if n < 2 {
+            advantages.iter().map(|x| x - mean_adv).collect()
+        } else {
+            let var_adv: f32 = advantages.iter().map(|x| (x - mean_adv).powi(2)).sum::<f32>() / n as f32;
+            let std_adv = (var_adv + 1e-8).sqrt();
+            advantages.iter().map(|x| (x - mean_adv) / std_adv).collect()
+        };
         let adv = Tensor::from_slice(&normed, n, &self.device)?;
         let old_lp = Tensor::from_slice(old_log_probs, n, &self.device)?;
         let old_v = Tensor::from_slice(old_values, n, &self.device)?;
@@ -326,13 +353,58 @@ impl PpoTrainer {
     }
 
     /// Compute Generalized Advantage Estimation.
+    ///
+    /// Thin wrapper over [`compute_gae_bootstrap`] with `last_value = None`,
+    /// i.e. the truncated tail bootstraps from the last collected step's own
+    /// value estimate. Kept for callers that don't have a post-rollout value.
     pub fn compute_gae(rewards: &[f32], values: &[f32], dones: &[bool], gamma: f32, lambda: f32) -> (Vec<f32>, Vec<f32>) {
+        Self::compute_gae_bootstrap(rewards, values, dones, gamma, lambda, None)
+    }
+
+    /// Compute GAE, correctly handling horizon-TRUNCATION (the common case in
+    /// our rollouts) vs genuine TERMINATION.
+    ///
+    /// H6 fix: previously the final collected step always bootstrapped from
+    /// `next_value = 0.0`. Because rollouts are almost always cut off by the
+    /// cycle cap with `done == false` (a *truncation*, not a terminal), this
+    /// injected a spurious `delta = r - V(s_last)` at every rollout tail and
+    /// biased value targets low.
+    ///
+    /// Now: when the last collected step is non-terminal (`!dones[n-1]`), we
+    /// bootstrap its `next_value` from a real estimate of `V(s_n)` (the
+    /// post-rollout state) with `next_nonterminal = 1`. `last_value` supplies
+    /// that estimate; when `None` we fall back to the last collected step's
+    /// own value (`values[n-1]`) — a documented, less-invasive bootstrap that
+    /// still avoids the V=0 pessimism. Genuine terminals (`dones[n-1]`) still
+    /// bootstrap from 0 as before.
+    ///
+    /// Note: only the FINAL step's `next_value` is affected; interior steps are
+    /// unchanged, so the chunked==monolithic equivalence (which feeds both
+    /// paths the identical GAE output) is untouched.
+    pub fn compute_gae_bootstrap(
+        rewards: &[f32],
+        values: &[f32],
+        dones: &[bool],
+        gamma: f32,
+        lambda: f32,
+        last_value: Option<f32>,
+    ) -> (Vec<f32>, Vec<f32>) {
         let n = rewards.len();
         let mut advantages = vec![0.0_f32; n];
         let mut returns = vec![0.0_f32; n];
         let mut gae = 0.0_f32;
         for t in (0..n).rev() {
-            let next_value = if t + 1 < n { values[t + 1] } else { 0.0 };
+            let next_value = if t + 1 < n {
+                values[t + 1]
+            } else if dones[t] {
+                // Genuine terminal: no future value.
+                0.0
+            } else {
+                // Horizon-truncated tail: bootstrap from a real next-state
+                // value estimate instead of 0. Prefer the supplied
+                // post-rollout V(s_n); else fall back to this step's own value.
+                last_value.unwrap_or_else(|| values[t])
+            };
             let next_nonterminal = if dones[t] { 0.0 } else { 1.0 };
             let delta = rewards[t] + gamma * next_value * next_nonterminal - values[t];
             gae = delta + gamma * lambda * next_nonterminal * gae;
@@ -381,4 +453,8 @@ pub struct RolloutBatch {
     pub values: Vec<f32>,
     pub rewards: Vec<f32>,
     pub dones: Vec<bool>,
+    /// H6: detached `V(s_n)` for the post-rollout state when the rollout ended
+    /// by horizon TRUNCATION (last step non-terminal). `None` on a genuine
+    /// terminal — GAE then bootstraps the tail from 0.
+    pub last_value: Option<f32>,
 }

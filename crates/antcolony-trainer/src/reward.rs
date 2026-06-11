@@ -50,7 +50,17 @@ pub struct ColonyMetrics {
 }
 
 impl ColonyMetrics {
-    pub fn from_sim(sim: &Simulation, colony_id: u8) -> Self {
+    /// Build colony metrics, taking the combat losses ACCUMULATED over the
+    /// decision window (summed across the inner `DECISION_CADENCE`-tick loop)
+    /// rather than `ColonyAiState::combat_losses_recent`.
+    ///
+    /// H7 fix: `combat_losses_recent` == `combat_losses_this_tick`, which the
+    /// sim clears at the end of every tick. Because the trainer only samples
+    /// metrics at cycle cadence (after the whole inner loop), reading that
+    /// field captured only the last tick of the window → ~always 0, making the
+    /// `combat_loss_penalty` lever inert. The caller now sums the per-tick
+    /// losses across the window and passes that here.
+    pub fn from_sim(sim: &Simulation, colony_id: u8, window_combat_losses: u32) -> Self {
         match sim.colony_ai_state(colony_id) {
             Some(s) => Self {
                 workers: s.worker_count as f32,
@@ -58,7 +68,7 @@ impl ColonyMetrics {
                 queen_alive: if s.queens_alive > 0 { 1.0 } else { 0.0 },
                 brood: (s.brood_egg + s.brood_larva + s.brood_pupa) as f32,
                 food_inflow: s.food_inflow_recent,
-                combat_losses: s.combat_losses_recent as f32,
+                combat_losses: window_combat_losses as f32,
             },
             None => Self::default(),
         }
@@ -149,6 +159,30 @@ mod tests {
         let (l, r) = compute_step_reward(&cfg, &prev, &cur, false, MatchStatus::InProgress);
         assert!((l - 1.0).abs() < 1e-6, "100*0.01 = 1.0, got {l}");
         assert!((r + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn combat_loss_penalty_changes_reward_when_enabled() {
+        // H7: with the lever ON and the colony taking window combat losses, the
+        // step reward must actually move (it read ~0 before because the metric
+        // sampled a tick-cleared counter). With the lever OFF it's r6-identical.
+        let mut prev = [ColonyMetrics::default(); 2];
+        let mut cur = [ColonyMetrics::default(); 2];
+        // Left colony took 4 combat losses this window; right took 0.
+        prev[0].combat_losses = 0.0;
+        cur[0].combat_losses = 4.0;
+
+        let off = RewardConfig::default();
+        let (l_off, _) = compute_step_reward(&off, &prev, &cur, false, MatchStatus::InProgress);
+        assert_eq!(l_off, 0.0, "combat losses must not affect reward under r6 defaults");
+
+        let on = RewardConfig { combat_loss_penalty: 0.05, ..Default::default() };
+        let (l_on, r_on) = compute_step_reward(&on, &prev, &cur, false, MatchStatus::InProgress);
+        // -combat_loss_penalty * (cur[0].combat_losses - cur[1].combat_losses)
+        //   = -0.05 * (4 - 0) = -0.2
+        assert!((l_on + 0.2).abs() < 1e-6, "expected -0.2, got {l_on}");
+        assert!((r_on - 0.2).abs() < 1e-6, "zero-sum, got {r_on}");
+        assert!((l_on - l_off).abs() > 1e-6, "lever must change the reward when enabled");
     }
 
     #[test]

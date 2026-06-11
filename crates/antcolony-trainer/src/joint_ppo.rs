@@ -9,6 +9,7 @@
 
 use crate::env::{MatchEnv, DECISION_CADENCE};
 use crate::hierarchical::sizing::Sizing;
+use crate::reward::{compute_step_reward, ColonyMetrics, RewardConfig};
 use crate::HierarchicalActorCritic;
 use antcolony_sim::{AiDecision, MatchStatus};
 use candle_core::{DType, Device, Tensor};
@@ -52,6 +53,15 @@ pub struct JointPpoConfig {
     /// built-in clip). Applied identically in the monolithic and chunked
     /// paths, so it does not break their gradient equivalence.
     pub max_grad_norm: f64,
+    /// M13: optional PPO value-loss clipping range for BOTH tiers (mirrors the
+    /// flat `PpoConfig.value_clip`). `None` (or `<= 0`) = plain MSE, which is
+    /// exact-reproducible with the 47% baseline and keeps the chunked==
+    /// monolithic equivalence (both feed identical old_values). When `Some(c)`,
+    /// the value head's per-step move is clipped to ±c around its rollout-time
+    /// prediction and the loss is `max(unclipped_mse, clipped_mse)` — the same
+    /// pessimistic bound that stopped the 115k+/40M+ value-loss spikes on the
+    /// flat path when novel pop-based opponents enter the league.
+    pub value_clip: Option<f32>,
 }
 
 impl JointPpoConfig {
@@ -75,6 +85,7 @@ impl JointPpoConfig {
             seed: 0xa17_c01_2b2,
             ant_chunk_size: 0,
             max_grad_norm: 0.0,
+            value_clip: None,
         }
     }
 }
@@ -119,8 +130,14 @@ impl JointPpoTrainer {
         let mut env = MatchEnv::new(seed);
         let mut out = JointRollout::default();
 
-        let mut prev_workers = [colony_workers(&env, 0), colony_workers(&env, 1)];
-        let mut prev_food = [colony_food(&env, 0), colony_food(&env, 1)];
+        // M15: r6 reward via the shared `compute_step_reward` (no inlined third
+        // copy). Self-play uses RewardConfig::default() == r6, so the smoke
+        // numerics are unchanged. Window combat losses = 0 at the baseline.
+        let reward_cfg = RewardConfig::default();
+        let mut prev = [
+            ColonyMetrics::from_sim(&env.sim, 0, 0),
+            ColonyMetrics::from_sim(&env.sim, 1, 0),
+        ];
 
         for cycle in 0..self.config.rollout_cycles {
             // ── Commander decision (both colonies, batch leading dim 2) ──
@@ -142,6 +159,11 @@ impl JointPpoTrainer {
             env.sim.apply_ai_decision(0, &dec0);
             env.sim.apply_ai_decision(1, &dec1);
             env.apply_commander_intents(&cmdr.intent)?; // intent is [2, 64]
+
+            // H7: snapshot cumulative combat losses before the tick loop so the
+            // per-cycle reward sees the window-summed delta (the tick-local
+            // counter is cleared every tick).
+            let loss_base = [colony_combat_losses(&env, 0), colony_combat_losses(&env, 1)];
 
             // ── Outer tick loop with per-tick batched ant decisions ──
             let mut done = false;
@@ -173,33 +195,21 @@ impl JointPpoTrainer {
                 }
             }
 
-            // ── Per-cycle r6 reward (mirrors MatchEnv::step) ──
-            let workers_now = [colony_workers(&env, 0), colony_workers(&env, 1)];
-            let food_now = [colony_food(&env, 0), colony_food(&env, 1)];
-            let q = [colony_queen_alive(&env, 0), colony_queen_alive(&env, 1)];
-            let dl = workers_now[0] as i32 - prev_workers[0] as i32;
-            let dr = workers_now[1] as i32 - prev_workers[1] as i32;
-            let dfl = food_now[0] - prev_food[0];
-            let dfr = food_now[1] - prev_food[1];
-            let mut reward_left = (dl as f32) * 0.01 - (dr as f32) * 0.01
-                + dfl * 0.002 - dfr * 0.002
-                + (q[0] - q[1]) * 0.005;
-            let mut reward_right = -reward_left;
-            if done {
-                match env.sim.match_status() {
-                    MatchStatus::Won { winner: 0, .. } => { reward_left += 1.0; reward_right -= 1.0; }
-                    MatchStatus::Won { winner: 1, .. } => { reward_left -= 1.0; reward_right += 1.0; }
-                    MatchStatus::InProgress => {
-                        let total = (workers_now[0] + workers_now[1]).max(1) as f32;
-                        let share = workers_now[0] as f32 / total;
-                        reward_left += (share - 0.5) * 2.0;
-                        reward_right += (0.5 - share) * 2.0;
-                    }
-                    _ => {}
-                }
-            }
-            prev_workers = workers_now;
-            prev_food = food_now;
+            // ── Per-cycle r6 reward via the shared compute_step_reward (M15) ──
+            // A genuinely vanished colony yields ColonyMetrics::default() (0
+            // workers/food, queen_alive=0) — a clean terminal signal, NOT a
+            // spurious negative worker-delta vs a stale `prev`. The terminal
+            // win/share bonus then dominates.
+            let win0 = colony_combat_losses(&env, 0).saturating_sub(loss_base[0]);
+            let win1 = colony_combat_losses(&env, 1).saturating_sub(loss_base[1]);
+            let cur = [
+                ColonyMetrics::from_sim(&env.sim, 0, win0),
+                ColonyMetrics::from_sim(&env.sim, 1, win1),
+            ];
+            let status = env.sim.match_status();
+            let (reward_left, reward_right) =
+                compute_step_reward(&reward_cfg, &prev, &cur, done, status);
+            prev = cur;
 
             // ── Commander records (split the [2, ..] batch per colony) ──
             let cmdr_lp: Vec<f32> = cmdr.log_prob.to_vec1()?;
@@ -262,8 +272,13 @@ impl JointPpoTrainer {
             let rewards: Vec<f32> = idxs.iter().map(|&i| recs[i].reward).collect();
             let values: Vec<f32> = idxs.iter().map(|&i| recs[i].value).collect();
             let dones: Vec<bool> = idxs.iter().map(|&i| recs[i].done).collect();
-            let (a, r) = PpoTrainer::compute_gae(
-                &rewards, &values, &dones, self.config.gamma, self.config.gae_lambda,
+            // H6: bootstrap a horizon-truncated tail from the last step's own
+            // value (last_value = None) instead of 0. A genuine terminal
+            // (dones[last] == true) still bootstraps from 0. Threading a real
+            // post-rollout V(s_n) through the batched parallel rollout is
+            // invasive, so we take the documented `values[n-1]` fallback here.
+            let (a, r) = PpoTrainer::compute_gae_bootstrap(
+                &rewards, &values, &dones, self.config.gamma, self.config.gae_lambda, None,
             );
             for (j, &i) in idxs.iter().enumerate() {
                 adv[i] = a[j];
@@ -327,8 +342,10 @@ impl JointPpoTrainer {
                 })
                 .collect();
             let dones: Vec<bool> = cycles.iter().map(|cy| *cyc_done.get(cy).unwrap_or(&false)).collect();
-            let (a, r) = PpoTrainer::compute_gae(
-                &rewards, &values, &dones, self.config.gamma, self.config.gae_lambda,
+            // H6: truncated tail bootstraps from the last cycle's own mean ant
+            // value (last_value = None) instead of 0; genuine terminal -> 0.
+            let (a, r) = PpoTrainer::compute_gae_bootstrap(
+                &rewards, &values, &dones, self.config.gamma, self.config.gae_lambda, None,
             );
             for (k, cy) in cycles.iter().enumerate() {
                 cyc_adv.insert((*m, *c, *cy), (a[k], r[k]));
@@ -430,6 +447,9 @@ impl JointPpoTrainer {
             &rollout.commander.iter().map(|r| r.log_prob).collect::<Vec<_>>(), cn, &dev)?;
         let c_adv = Tensor::from_slice(&cadv, cn, &dev)?;
         let c_ret = Tensor::from_slice(&cret, cn, &dev)?;
+        // M13: rollout-time value predictions (old_value) for value clipping.
+        let c_oldv = Tensor::from_slice(
+            &rollout.commander.iter().map(|r| r.value).collect::<Vec<_>>(), cn, &dev)?;
 
         // ── pre-cat ant tensors (may be empty) ──
         let ant_tensors = if an > 0 {
@@ -444,13 +464,16 @@ impl JointPpoTrainer {
             // Flatten per-batch log_probs in batch-row order (== cat order
             // == ant_advantages order).
             let mut oldlp_v: Vec<f32> = Vec::with_capacity(an);
+            let mut oldv_v: Vec<f32> = Vec::with_capacity(an);
             for b in &rollout.ant {
                 oldlp_v.extend_from_slice(&b.log_prob);
+                oldv_v.extend_from_slice(&b.value);
             }
             let oldlp = Tensor::from_slice(&oldlp_v, an, &dev)?;
+            let oldv = Tensor::from_slice(&oldv_v, an, &dev)?;
             let adv = Tensor::from_slice(&aadv, an, &dev)?;
             let ret = Tensor::from_slice(&aret, an, &dev)?;
-            Some((cone, internal, intent, modulator, oldlp, adv, ret))
+            Some((cone, internal, intent, modulator, oldlp, oldv, adv, ret))
         } else {
             None
         };
@@ -467,20 +490,20 @@ impl JointPpoTrainer {
             let surr1 = (&ratio * &c_adv)?;
             let surr2 = (&ratio.clamp(clip_lo, clip_hi)? * &c_adv)?;
             let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
-            let value_loss = (&value_pred - &c_ret)?.sqr()?.mean_all()?;
+            let value_loss = clipped_value_loss(&value_pred, &c_ret, &c_oldv, self.config.value_clip)?;
             let entropy = self.hac.commander.log_std.affine(1.0, ent_const)?.sum_all()?;
             let cmdr_total = ((&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?
                 - entropy.affine(self.config.cmdr_entropy_coef, 0.0)?)?;
 
             // ── Ant loss (optional) ──
-            let (ant_total, ant_scalar) = if let Some((cone, internal, intent, modulator, oldlp, adv, ret)) = &ant_tensors {
+            let (ant_total, ant_scalar) = if let Some((cone, internal, intent, modulator, oldlp, oldv, adv, ret)) = &ant_tensors {
                 let new_lp = self.hac.log_prob_of_ant_modulator(cone, internal, intent, modulator)?;
                 let value_pred = self.hac.forward_ant(cone, internal, intent)?.value;
                 let ratio = (&new_lp - oldlp)?.exp()?;
                 let surr1 = (&ratio * adv)?;
                 let surr2 = (&ratio.clamp(clip_lo, clip_hi)? * adv)?;
                 let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
-                let value_loss = (&value_pred - ret)?.sqr()?.mean_all()?;
+                let value_loss = clipped_value_loss(&value_pred, ret, oldv, self.config.value_clip)?;
                 let entropy = self.hac.ant.log_std.affine(1.0, ent_const)?.sum_all()?;
                 let at = ((&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?
                     - entropy.affine(self.config.ant_entropy_coef, 0.0)?)?;
@@ -547,6 +570,8 @@ impl JointPpoTrainer {
             &rollout.commander.iter().map(|r| r.log_prob).collect::<Vec<_>>(), cn, &dev)?;
         let c_adv = Tensor::from_slice(cadv, cn, &dev)?;
         let c_ret = Tensor::from_slice(cret, cn, &dev)?;
+        let c_oldv = Tensor::from_slice(
+            &rollout.commander.iter().map(|r| r.value).collect::<Vec<_>>(), cn, &dev)?;
 
         // ── pre-cat ant tensors (data only; chunks `narrow` into these) ──
         let a_cone = Tensor::cat(&rollout.ant.iter().map(|a| a.cone.clone()).collect::<Vec<_>>(), 0)?;
@@ -554,10 +579,13 @@ impl JointPpoTrainer {
         let a_intent = Tensor::cat(&rollout.ant.iter().map(|a| a.intent.clone()).collect::<Vec<_>>(), 0)?;
         let a_mod = Tensor::cat(&rollout.ant.iter().map(|a| a.modulator.clone()).collect::<Vec<_>>(), 0)?;
         let mut oldlp_v: Vec<f32> = Vec::with_capacity(an);
+        let mut oldv_v: Vec<f32> = Vec::with_capacity(an);
         for b in &rollout.ant {
             oldlp_v.extend_from_slice(&b.log_prob);
+            oldv_v.extend_from_slice(&b.value);
         }
         let a_oldlp = Tensor::from_slice(&oldlp_v, an, &dev)?;
+        let a_oldv = Tensor::from_slice(&oldv_v, an, &dev)?;
         let a_adv = Tensor::from_slice(aadv, an, &dev)?;
         let a_ret = Tensor::from_slice(aret, an, &dev)?;
 
@@ -576,7 +604,7 @@ impl JointPpoTrainer {
             let surr1 = (&ratio * &c_adv)?;
             let surr2 = (&ratio.clamp(clip_lo, clip_hi)? * &c_adv)?;
             let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
-            let value_loss = (&value_pred - &c_ret)?.sqr()?.mean_all()?;
+            let value_loss = clipped_value_loss(&value_pred, &c_ret, &c_oldv, self.config.value_clip)?;
             let entropy = self.hac.commander.log_std.affine(1.0, ent_const)?.sum_all()?;
             let cmdr_total = ((&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?
                 - entropy.affine(self.config.cmdr_entropy_coef, 0.0)?)?;
@@ -607,6 +635,7 @@ impl JointPpoTrainer {
                 let intent_c = a_intent.narrow(0, start, len)?;
                 let mod_c = a_mod.narrow(0, start, len)?;
                 let oldlp_c = a_oldlp.narrow(0, start, len)?;
+                let oldv_c = a_oldv.narrow(0, start, len)?;
                 let adv_c = a_adv.narrow(0, start, len)?;
                 let ret_c = a_ret.narrow(0, start, len)?;
 
@@ -616,7 +645,7 @@ impl JointPpoTrainer {
                 let surr1 = (&ratio * &adv_c)?;
                 let surr2 = (&ratio.clamp(clip_lo, clip_hi)? * &adv_c)?;
                 let policy_loss = surr1.minimum(&surr2)?.mean_all()?.affine(-1.0, 0.0)?;
-                let value_loss = (&value_pred - &ret_c)?.sqr()?.mean_all()?;
+                let value_loss = clipped_value_loss(&value_pred, &ret_c, &oldv_c, self.config.value_clip)?;
                 let pv = (&policy_loss + value_loss.affine(self.config.value_coef, 0.0)?)?;
 
                 let w = (len as f64) / n;
@@ -710,31 +739,62 @@ fn clip_grad_norm(
     Ok(total_norm as f32)
 }
 
+/// M13: value loss, optionally PPO-clipped. With `clip == None` (or `<= 0`)
+/// this is plain MSE — BIT-IDENTICAL to the previous `(pred - ret).sqr().mean_all()`
+/// so the 47% baseline and chunked==monolithic equivalence are unaffected. With
+/// `Some(c)`, the predicted value is clamped to `old_value ± c` and the loss is
+/// `max(unclipped_mse, clipped_mse)` per row, then averaged (same scheme as the
+/// flat `PpoTrainer::ppo_update`). Mirrors `ppo.rs`.
+fn clipped_value_loss(
+    value_pred: &Tensor,
+    ret: &Tensor,
+    old_value: &Tensor,
+    clip: Option<f32>,
+) -> anyhow::Result<Tensor> {
+    let unclipped = (value_pred - ret)?.sqr()?;
+    match clip {
+        Some(c) if c > 0.0 => {
+            let delta = (value_pred - old_value)?;
+            let clamped = delta.clamp(-c, c)?;
+            let v_clipped = (old_value + &clamped)?;
+            let clipped_mse = (&v_clipped - ret)?.sqr()?;
+            Ok(unclipped.maximum(&clipped_mse)?.mean_all()?)
+        }
+        _ => Ok(unclipped.mean_all()?),
+    }
+}
+
 /// Standard PPO advantage normalization (zero mean, unit std).
+///
+/// M14: with fewer than 2 elements the std is meaningless and `(x-mean)/std`
+/// would collapse a singleton buffer's advantage to ~0, zeroing the policy
+/// gradient while value loss still trains. In that degenerate case we
+/// mean-subtract only (a 1-element buffer just becomes 0 after subtracting its
+/// own mean — but we skip the spurious `/std` blow-up that depends on eps).
 fn normalize_adv(adv: &[f32]) -> Vec<f32> {
-    let n = adv.len().max(1) as f32;
+    if adv.len() < 2 {
+        let mean = adv.iter().sum::<f32>() / adv.len().max(1) as f32;
+        return adv.iter().map(|x| x - mean).collect();
+    }
+    let n = adv.len() as f32;
     let mean = adv.iter().sum::<f32>() / n;
     let var = adv.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n;
     let std = (var + 1e-8).sqrt();
     adv.iter().map(|x| (x - mean) / std).collect()
 }
 
-fn colony_workers(env: &MatchEnv, k: u8) -> u32 {
-    env.sim.colonies.get(k as usize).map(|c| c.population.workers).unwrap_or(0)
-}
-fn colony_food(env: &MatchEnv, k: u8) -> f32 {
-    env.sim.colonies.get(k as usize).map(|c| c.food_stored).unwrap_or(0.0)
-}
-fn colony_queen_alive(env: &MatchEnv, k: u8) -> f32 {
-    env.sim.colonies.get(k as usize)
-        .map(|c| if c.queen_health > 0.0 { 1.0 } else { 0.0 })
-        .unwrap_or(0.0)
+/// Cumulative cross-colony losses (never reset by the sim). H7/M15: the
+/// per-window delta is the window-summed combat losses fed to `ColonyMetrics`.
+fn colony_combat_losses(env: &MatchEnv, k: u8) -> u32 {
+    env.sim.colonies.get(k as usize).map(|c| c.combat_losses).unwrap_or(0)
 }
 
 /// Decode one row of a [B, 6] post-squash action tensor into an AiDecision.
 fn row_to_decision(action_batch: &candle_core::Tensor, row: usize) -> anyhow::Result<AiDecision> {
     let r = action_batch.narrow(0, row, 1)?.squeeze(0)?; // [6]
     let v: Vec<f32> = r.to_vec1()?;
+    // L11: document the 6-dim action invariant (can't fire — dims pinned).
+    debug_assert_eq!(v.len(), 6, "row_to_decision expects 6 action dims");
     Ok(AiDecision {
         caste_ratio_worker: v[0],
         caste_ratio_soldier: v[1],
