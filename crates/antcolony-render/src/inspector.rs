@@ -108,8 +108,20 @@ fn click_select_ant(
     sim: Res<SimulationState>,
     layout: Option<Res<ModuleLayout>>,
     mut selected: ResMut<SelectedAnt>,
+    // M21: don't pick an ant when the click lands on an interactive UI node
+    // (caste/behavior triangle panels, buttons). Mirrors the over-UI guard in
+    // `editor_canvas_clicks`.
+    q_ui: Query<&Interaction>,
 ) {
     if editor.active || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    // Skip when the cursor is over an interactive UI element, so a panel click
+    // doesn't also select a phantom ant underneath it.
+    if q_ui
+        .iter()
+        .any(|i| matches!(i, Interaction::Hovered | Interaction::Pressed))
+    {
         return;
     }
     let Some(layout) = layout else {

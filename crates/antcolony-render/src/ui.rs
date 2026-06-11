@@ -25,13 +25,18 @@ impl Plugin for UiPlugin {
             .add_systems(OnEnter(AppState::Running), setup_ui)
             .add_systems(
                 Update,
-                (
-                    update_stats_text,
-                    handle_speed_keys,
-                    triangle_drag_system,
-                    update_triangle_handles,
-                )
+                (update_stats_text, triangle_drag_system, update_triangle_handles)
                     .run_if(in_state(AppState::Running)),
+            )
+            // M20: the number row 1-4 is double-bound — `handle_speed_keys`
+            // re-rates the Fixed clock and `pvp_input_keys` nudges caste. In a
+            // PvP match the speed change is unintended, so gate speed keys off
+            // while a `PvpClient` resource exists.
+            .add_systems(
+                Update,
+                handle_speed_keys
+                    .run_if(in_state(AppState::Running))
+                    .run_if(not(resource_exists::<crate::pvp_client::PvpClient>)),
             );
     }
 }
@@ -297,12 +302,15 @@ fn update_stats_text(
     let year = sim.sim.in_game_year();
     let ambient = sim.sim.ambient_temp_c();
     let cold_t = sim.sim.config.ant.hibernation_cold_threshold_c;
-    let in_diapause = if let Some(ne) = colony.nest_entrance_positions.first() {
-        let m = sim.sim.topology.module(0);
-        m.temp_at(*ne) < cold_t
-    } else {
-        false
-    };
+    // H9: module 0 (the starter TestTubeNest) can be deleted in the keeper
+    // editor while `nest_entrance_positions` is still non-empty. Use the
+    // fallible accessor so a missing module reports "not in diapause" instead
+    // of panicking in the HUD every frame.
+    let in_diapause = colony
+        .nest_entrance_positions
+        .first()
+        .and_then(|ne| sim.sim.topology.try_module(0).map(|m| m.temp_at(*ne) < cold_t))
+        .unwrap_or(false);
     let fertility_line = if colony.fertility_suppressed {
         "Fertility: SUPPRESSED  (!) Missed winter — no eggs this year"
     } else {
