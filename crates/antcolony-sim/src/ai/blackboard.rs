@@ -135,7 +135,11 @@ impl Blackboard {
     /// move to `commitments` and out of `facts`.
     pub fn prune_stale(&mut self, current_tick: u64, max_age_ticks: u64) {
         self.facts.retain(|f| match f {
-            Fact::Observation { tick, .. } => current_tick - *tick < max_age_ticks,
+            // M9: saturating_sub guards against a future-dated observation
+            // (tick > current_tick from a rewind/replay/snapshot-restore),
+            // which would otherwise underflow-panic (debug) or wrap to a
+            // huge value (release) and defeat the staleness filter.
+            Fact::Observation { tick, .. } => current_tick.saturating_sub(*tick) < max_age_ticks,
             Fact::Threat { expires_tick, .. } => *expires_tick > current_tick,
             // Goals + Hypotheses live until the arbiter handles them
             // (or until manually pruned).

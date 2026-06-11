@@ -209,6 +209,12 @@ fn run_species(species: Species, args: &CliArgs, out_root: &Path) -> anyhow::Res
                 decisions_logged += 1;
 
                 if decisions_logged % 5_000 == 0 {
+                    // H8: BufWriter does NOT flush on signal-kill (Ctrl-C /
+                    // SIGTERM), and the explicit flush at the end of the
+                    // loop is only reached on clean completion. Flush the
+                    // decisions buffer periodically so an interrupted
+                    // overnight run keeps its already-logged decisions.
+                    dec_w.flush()?;
                     tracing::info!(
                         tick = sim.tick,
                         decisions = decisions_logged,
@@ -232,6 +238,11 @@ fn run_species(species: Species, args: &CliArgs, out_root: &Path) -> anyhow::Res
 
         if sim.tick >= next_day_sample {
             log_daily(&mut day_w, &sim)?;
+            // H8: flush the low-rate daily writer every row so a signal-kill
+            // mid-run doesn't lose the buffered end-state rows an analyst
+            // cares about (BufWriter's destructor never runs on SIGTERM).
+            // Daily cadence makes this cost negligible.
+            day_w.flush()?;
             next_day_sample = next_day_sample.saturating_add(ticks_per_day);
         }
     }

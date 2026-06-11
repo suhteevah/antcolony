@@ -812,11 +812,10 @@ pub struct MlpBrain {
 
 #[derive(serde::Deserialize)]
 struct MlpWeightsFile {
-    #[allow(dead_code)]
+    // H4: these declared dims are now USED to validate the weight shapes in
+    // `MlpBrain::load` (previously read-and-discarded behind `allow(dead_code)`).
     input_dim: usize,
-    #[allow(dead_code)]
     hidden_dim: usize,
-    #[allow(dead_code)]
     output_dim: usize,
     input_mean: Vec<f32>,
     input_std: Vec<f32>,
@@ -838,6 +837,85 @@ impl MlpBrain {
         let raw = std::fs::read_to_string(path)?;
         let parsed: MlpWeightsFile = serde_json::from_str(&raw)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        // H4: validate all shapes against the declared dims BEFORE building
+        // the brain. Without this, a malformed file silently truncates
+        // (normalization zips to the shorter length) or panics out-of-bounds
+        // on the first `decide()` (relu_layer indexes `row[j]`/`b[i]`) — a
+        // crash deferred into the sim hot path. Fail cleanly at load instead.
+        let i = parsed.input_dim;
+        let h = parsed.hidden_dim;
+        let o = parsed.output_dim;
+        let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
+        let rows_all = |m: &[Vec<f32>], len: usize| m.iter().all(|r| r.len() == len);
+        if parsed.input_mean.len() != i {
+            return Err(invalid(format!(
+                "MlpBrain::load({}): input_mean.len()={} != input_dim={}",
+                path.display(),
+                parsed.input_mean.len(),
+                i
+            )));
+        }
+        if parsed.input_std.len() != i {
+            return Err(invalid(format!(
+                "MlpBrain::load({}): input_std.len()={} != input_dim={}",
+                path.display(),
+                parsed.input_std.len(),
+                i
+            )));
+        }
+        if parsed.w1.len() != h || !rows_all(&parsed.w1, i) {
+            return Err(invalid(format!(
+                "MlpBrain::load({}): w1 must be {}x{} (got {} rows)",
+                path.display(),
+                h,
+                i,
+                parsed.w1.len()
+            )));
+        }
+        if parsed.b1.len() != h {
+            return Err(invalid(format!(
+                "MlpBrain::load({}): b1.len()={} != hidden_dim={}",
+                path.display(),
+                parsed.b1.len(),
+                h
+            )));
+        }
+        if parsed.w2.len() != h || !rows_all(&parsed.w2, h) {
+            return Err(invalid(format!(
+                "MlpBrain::load({}): w2 must be {}x{} (got {} rows)",
+                path.display(),
+                h,
+                h,
+                parsed.w2.len()
+            )));
+        }
+        if parsed.b2.len() != h {
+            return Err(invalid(format!(
+                "MlpBrain::load({}): b2.len()={} != hidden_dim={}",
+                path.display(),
+                parsed.b2.len(),
+                h
+            )));
+        }
+        if parsed.w3.len() != o || !rows_all(&parsed.w3, h) {
+            return Err(invalid(format!(
+                "MlpBrain::load({}): w3 must be {}x{} (got {} rows)",
+                path.display(),
+                o,
+                h,
+                parsed.w3.len()
+            )));
+        }
+        if parsed.b3.len() != o {
+            return Err(invalid(format!(
+                "MlpBrain::load({}): b3.len()={} != output_dim={}",
+                path.display(),
+                parsed.b3.len(),
+                o
+            )));
+        }
+
         use rand::SeedableRng;
         Ok(Self {
             label: label.into(),
@@ -908,10 +986,12 @@ fn state_to_features(s: &ColonyAiState) -> Vec<f32> {
 }
 
 impl MlpBrain {
-    /// Set training-time exploration noise. Std is the per-dimension
-    /// Gaussian noise added to the sigmoid output (clamped to [0,1]).
-    /// 0.0 = deterministic (default, eval mode). >0.0 = stochastic
-    /// (PPO/REINFORCE training mode).
+    /// Set training-time exploration noise. L5: the added noise is
+    /// UNIFORM on `[-explore_std, +explore_std]` (NOT Gaussian — `rand_distr`
+    /// is not a dependency of this crate), so its effective standard
+    /// deviation is `explore_std / sqrt(3)`. Added per-dimension to the
+    /// sigmoid output and clamped to [0,1]. 0.0 = deterministic (default,
+    /// eval mode). >0.0 = stochastic (PPO/REINFORCE training mode).
     pub fn set_explore_std(&mut self, std: f32) {
         self.explore_std = std;
     }
@@ -924,20 +1004,33 @@ impl AiBrain for MlpBrain {
 
     fn decide(&mut self, state: &ColonyAiState) -> AiDecision {
         let raw = state_to_features(state);
-        // z-score normalization
+        // z-score normalization. H3: guard the divisor and the result. A
+        // zero/near-zero std (older or hand-authored weights file — the
+        // canonical trainer clamps std >= 1e-6, so well-formed weights are
+        // unaffected) would otherwise yield ±inf/NaN that propagates
+        // undetected into colony.caste_ratio. Map non-finite outputs to 0.0.
         let normalized: Vec<f32> = raw
             .iter()
             .zip(self.input_mean.iter())
             .zip(self.input_std.iter())
-            .map(|((x, m), s)| (x - m) / s)
+            .map(|((x, m), s)| {
+                let s = if s.abs() < 1e-6 { 1e-6 } else { *s };
+                let v = (x - m) / s;
+                if v.is_finite() {
+                    v
+                } else {
+                    0.0
+                }
+            })
             .collect();
         let h1 = relu_layer(&normalized, &self.w1, &self.b1);
         let h2 = relu_layer(&h1, &self.w2, &self.b2);
         let mut out = sigmoid_layer(&h2, &self.w3, &self.b3);
-        // Optional exploration noise (PPO training-time only). Each
-        // dimension gets independent Gaussian noise; result clamped
-        // to [0, 1] so caste/behavior triples stay in valid range
-        // post-normalization in the sim.
+        // Optional exploration noise (PPO training-time only). L5: each
+        // dimension gets independent UNIFORM noise on [-explore_std, std]
+        // (not Gaussian — see `set_explore_std`); result clamped to [0, 1]
+        // so caste/behavior triples stay in valid range post-normalization
+        // in the sim. Eval path (explore_std == 0) is a no-op.
         if self.explore_std > 0.0 {
             use rand::Rng;
             for x in out.iter_mut() {
@@ -1326,6 +1419,15 @@ impl MixedBrain {
         }
         if components.is_empty() {
             return Err("MixedBrain: empty spec".into());
+        }
+        // L6: validate total weight BEFORE delegating to `new` (which
+        // asserts). A spec like `defender=0` or all-negative weights would
+        // otherwise panic inside `new` instead of returning a clean error.
+        let total_weight: f32 = components.iter().map(|(_, w)| *w).sum();
+        if !(total_weight > 0.0) {
+            return Err(format!(
+                "MixedBrain: total weight must be > 0 (got {total_weight}) in spec `{spec}`"
+            ));
         }
         let label = format!("mix[{}]", label_parts.join(","));
         Ok(Self::new(label, components, seed))

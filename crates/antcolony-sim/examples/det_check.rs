@@ -58,30 +58,37 @@ fn parse_args() -> anyhow::Result<Args> {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut a = Args::default();
     let mut i = 0;
+    // M17: fetch the value following a flag without panicking on a trailing
+    // flag (`... --seed` with no value used to index `raw[i+1]` OOB).
+    let val = |raw: &[String], i: usize| -> anyhow::Result<String> {
+        raw.get(i + 1)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("flag `{}` needs a value", raw[i]))
+    };
     while i < raw.len() {
         match raw[i].as_str() {
             "--out" => {
-                a.out_dir = PathBuf::from(&raw[i + 1]);
+                a.out_dir = PathBuf::from(val(&raw, i)?);
                 i += 2;
             }
             "--ticks" => {
-                a.ticks = raw[i + 1].parse()?;
+                a.ticks = val(&raw, i)?.parse()?;
                 i += 2;
             }
             "--snapshot-every" => {
-                a.snapshot_every = raw[i + 1].parse()?;
+                a.snapshot_every = val(&raw, i)?.parse()?;
                 i += 2;
             }
             "--seed" => {
-                a.seed = raw[i + 1].parse()?;
+                a.seed = val(&raw, i)?.parse()?;
                 i += 2;
             }
             "--arena" => {
-                a.arena = raw[i + 1].parse()?;
+                a.arena = val(&raw, i)?.parse()?;
                 i += 2;
             }
             "--initial-ants" => {
-                a.initial_ants = raw[i + 1].parse()?;
+                a.initial_ants = val(&raw, i)?.parse()?;
                 i += 2;
             }
             other => anyhow::bail!("unknown arg `{other}`"),

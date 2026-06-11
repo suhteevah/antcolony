@@ -166,10 +166,13 @@ pub fn run_one(cfg: BenchRunConfig) -> BenchResult {
     let mut samples: Vec<TickSample> =
         Vec::with_capacity((target_ticks / sample_interval_ticks.max(1)) as usize + 8);
 
-    // Track starvation deaths cumulatively. ColonyState only exposes
-    // `pending_starvation_deaths` (the per-tick draw-down), so we
-    // accumulate them ourselves.
-    let mut starvation_total: u32 = 0;
+    // H5: starvation deaths are now tracked by the sim itself as a
+    // monotonic cumulative counter (`ColonyState::starvation_deaths_cumulative`),
+    // read directly at sample time inside `snapshot` (like `food_returned`).
+    // This local is retained only for the `snapshot` signature; the value
+    // it carries is unused for present colonies and serves as the fallback
+    // for the "colony missing" branch.
+    let starvation_total: u32 = 0;
 
     // Track whether colony 0 was ever missing — distinguishes a sim-init
     // failure (colony 0 never existed) from a biological extinction.
@@ -193,12 +196,6 @@ pub fn run_one(cfg: BenchRunConfig) -> BenchResult {
     let mut next_sample_tick = sample_interval_ticks;
 
     for _ in 0..target_ticks {
-        // Capture pending_starvation_deaths BEFORE tick — Simulation::tick
-        // applies them and resets the field. (This is a sim-internal
-        // detail but the only way to count without modifying core sim code.)
-        if let Some(c) = sim.colonies.get(0) {
-            starvation_total = starvation_total.saturating_add(c.pending_starvation_deaths);
-        }
         sim.tick();
 
         if sim.tick >= next_sample_tick {
@@ -302,7 +299,10 @@ fn snapshot(sim: &Simulation, _env: &Environment, starvation_total: u32) -> Snap
             c,
             queens_alive,
             total_ant_entities,
-            starvation_total,
+            // H5: read the sim's own monotonic cumulative counter (like
+            // food_returned). The bench's per-day delta logic uses it the
+            // same way it uses food_returned_cumulative.
+            c.starvation_deaths_cumulative,
         )),
         None => SnapshotOutcome::Missing(
             TickSample {
@@ -463,7 +463,15 @@ fn compute_food_economy(cfg: &BenchRunConfig, samples: &[TickSample]) -> Option<
     if !food_per_day.is_finite() || food_per_day <= 0.0 {
         return None;
     }
-    let consumed = mean_workers * food_per_day * 365.0;
+    // M10: the numerator (`returned_in_year`) only covers the actual span
+    // of the final-year window, which is partial when the run started
+    // mid-year (default `starting_day_of_year = 150` → year 5 spans only
+    // ~150 days). Dividing by a hardcoded 365 deflated the ratio to
+    // ~window/365 of truth, flipping sustainable colonies to score 0.
+    // Use the real span in in-game days between the window endpoints.
+    let window_days =
+        (year_end.in_game_day.saturating_sub(year_start.in_game_day) as f64).max(1.0);
+    let consumed = mean_workers * food_per_day * window_days;
     if !consumed.is_finite() || consumed <= 0.0 {
         return None;
     }

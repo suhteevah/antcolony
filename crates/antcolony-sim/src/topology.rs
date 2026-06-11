@@ -21,11 +21,13 @@ pub struct Topology {
 /// Four edge-center ports (east / west / south / north) — the default
 /// port set for a rectangular module.
 fn default_edge_ports(w: usize, h: usize) -> Vec<PortPos> {
+    // L4: saturating_sub avoids underflow on a degenerate 0-dim module
+    // (w==0 or h==0) — `w - 1` would wrap to usize::MAX otherwise.
     vec![
-        PortPos::new(w - 1, h / 2),
+        PortPos::new(w.saturating_sub(1), h / 2),
         PortPos::new(0, h / 2),
         PortPos::new(w / 2, 0),
-        PortPos::new(w / 2, h - 1),
+        PortPos::new(w / 2, h.saturating_sub(1)),
     ]
 }
 
@@ -407,6 +409,11 @@ impl Topology {
     pub fn try_module(&self, id: ModuleId) -> Option<&Module> {
         self.modules.iter().find(|m| m.id == id)
     }
+    /// H2: non-panicking mutable lookup for hot-path callers that may hold
+    /// a stale id (e.g. after `remove_module`).
+    pub fn try_module_mut(&mut self, id: ModuleId) -> Option<&mut Module> {
+        self.modules.iter_mut().find(|m| m.id == id)
+    }
     pub fn tube(&self, id: TubeId) -> &Tube {
         self.tubes
             .iter()
@@ -415,6 +422,11 @@ impl Topology {
     }
     pub fn try_tube(&self, id: TubeId) -> Option<&Tube> {
         self.tubes.iter().find(|t| t.id == id)
+    }
+    /// H2: non-panicking mutable lookup for hot-path callers that may hold
+    /// a stale id (e.g. after `remove_tube`).
+    pub fn try_tube_mut(&mut self, id: TubeId) -> Option<&mut Tube> {
+        self.tubes.iter_mut().find(|t| t.id == id)
     }
     pub fn tube_mut(&mut self, id: TubeId) -> &mut Tube {
         self.tubes

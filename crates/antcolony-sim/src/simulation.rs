@@ -36,6 +36,16 @@ const _DEFAULT_PORT_BLEED_RATE: f32 = 0.35;
 /// K3: per-tick relaxation rate of a cell toward its `ambient_target`.
 const TEMP_DRIFT_RATE: f32 = 0.01;
 
+/// H1: substeps an ant stays in `Fighting`/`Fleeing` after the last damage
+/// it dealt or took before `decide_next_state` returns it to normal work.
+/// `combat_tick` re-arms `state_timer = 0` on every substep an ant takes
+/// damage, so the timer only counts up once the fight is genuinely over.
+const COMBAT_COOLDOWN_SUBSTEPS: u32 = 30;
+
+/// H1: local `alarm` pheromone below this lets a combatant disengage even
+/// before the full cooldown elapses (the area is quiet again).
+const COMBAT_ALARM_CLEAR_THRESHOLD: f32 = 0.05;
+
 /// K3 fallback: how many in-game days of diapause are required per year
 /// for a species marked `hibernation_required` to keep queen fertility.
 /// Used only as a safety floor if `AntConfig::min_diapause_days` is
@@ -485,8 +495,11 @@ impl Simulation {
             .filter(|a| !matches!(a.caste, AntCaste::Queen))
         {
             let mut cone = [0.0f32; 60];
-            // 5 forward steps × 3 lateral cells × 4 channels = 60 floats.
-            // Layout: cone[channel * 15 + step * 3 + lateral]
+            // Up to 15 cone samples × 4 channels = 60 floats. L17: this is
+            // a CHANNEL-MAJOR BAG, not a structured 5×3 spatial grid.
+            // `cone[ch * 15 + i]` is the i-th hit of channel `ch` in
+            // `sample_cone`'s raster-order traversal — `i` is NOT a fixed
+            // (step, lateral) position. Matches `ai/observation.rs` layout.
             for (ch_idx, layer) in [
                 PheromoneLayer::FoodTrail,
                 PheromoneLayer::HomeTrail,
@@ -823,13 +836,11 @@ impl Simulation {
             }
             let (ux, uy) = (gx as usize, gy as usize);
             let _ = module; // release the immutable borrow before taking a mutable one
-            self.topology.module_mut(b.module_id).pheromones.deposit(
-                ux,
-                uy,
-                b.kind.layer(),
-                b.amount_per_tick,
-                max_intensity,
-            );
+            // H2: guarded by the try_module above; stay non-panicking.
+            if let Some(m) = self.topology.try_module_mut(b.module_id) {
+                m.pheromones
+                    .deposit(ux, uy, b.kind.layer(), b.amount_per_tick, max_intensity);
+            }
             b.ticks_remaining -= 1;
         }
         self.beacons.retain(|b| b.ticks_remaining > 0);
@@ -1367,28 +1378,30 @@ impl Simulation {
         // Seasonal baseline (1 substep = original Seasonal tick worth
         // of biology). Faster scales run more substeps per outer tick.
         let n = self.substep_count.max(1);
-        for _ in 0..n {
-            self.physics_substep();
+        for substep_idx in 0..n {
+            self.physics_substep(substep_idx);
         }
 
         self.tick += 1;
         if self.tick % 500 == 0 {
-            let c = &self.colonies[0];
-            tracing::info!(
-                tick = self.tick,
-                ants = self.ants.len(),
-                food_stored = c.food_stored,
-                food_returned = c.food_returned,
-                substeps = n,
-                "colony heartbeat"
-            );
+            // L2: guard against a zero-colony snapshot rather than panicking.
+            if let Some(c) = self.colonies.first() {
+                tracing::info!(
+                    tick = self.tick,
+                    ants = self.ants.len(),
+                    food_stored = c.food_stored,
+                    food_returned = c.food_returned,
+                    substeps = n,
+                    "colony heartbeat"
+                );
+            }
         }
     }
 
     /// One calibrated physics substep — Seasonal-equivalent tick worth
     /// of ant motion + pheromone dynamics. Runs N times per outer tick
     /// where N = substep_count (1 at Seasonal, 24 at Timelapse, etc).
-    fn physics_substep(&mut self) {
+    fn physics_substep(&mut self, substep_idx: u32) {
         self.temperature_tick();
         self.sense_and_decide();
         self.avenger_tick();
@@ -1396,7 +1409,7 @@ impl Simulation {
         self.beacon_tick();
         self.movement();
         self.combat_tick();
-        self.age_mortality_tick();
+        self.age_mortality_tick(substep_idx);
         self.deposit_and_interact();
         self.territory_deposit_tick();
         self.feeding_dish_tick();
@@ -1460,6 +1473,16 @@ impl Simulation {
         // decide_next_state Idle->{Exploring,Nursing} transitions gate
         // on brain-set probabilities so brain decisions actually affect
         // ant behavior (was previously dead fields).
+        //
+        // M6 (INTENTIONAL — colony-policy broadcast channel): feeding a
+        // colony-global value into a per-ant FSM transition is by design,
+        // not a locality-rule (CLAUDE.md #4) violation. It is the
+        // caste/behavior-allocation analogue of `commander_intent`: the
+        // colony broadcasts a forage/nurse policy and each ant rolls a
+        // local RNG against it. Individual ants still have no access to
+        // global map state — only this single scalar policy weight. If
+        // emergence purity is ever tightened, route allocation through a
+        // nest-cell pheromone the ant senses locally instead.
         let mut forage_by_colony: [f32; 256] = [1.0; 256];
         let mut nurse_by_colony: [f32; 256] = [0.0; 256];
         for c in &self.colonies {
@@ -1486,7 +1509,11 @@ impl Simulation {
                 if ant.is_in_transit() {
                     return (ant.heading, None);
                 }
-                let module = topology.module(ant.module_id);
+                // H2: stale module id (editor removed the module) — keep the
+                // ant's heading and make no FSM decision rather than panicking.
+                let Some(module) = topology.try_module(ant.module_id) else {
+                    return (ant.heading, None);
+                };
                 let temp = module.temp_at(ant.position);
                 let preserve_combat = matches!(
                     ant.state,
@@ -1534,6 +1561,12 @@ impl Simulation {
             .map(|c| (c.id, c.nest_entrance_positions.clone()))
             .collect();
 
+        // L1: food carried by ants that retreat into diapause is credited
+        // back to their colony (they "got home and dropped it off") instead
+        // of being silently destroyed. Collected here because the loop holds
+        // a mutable borrow of `self.ants`; applied to `self.colonies` after.
+        let mut diapause_food_credits: Vec<(u8, f32)> = Vec::new();
+
         // Apply results in serial. Mutating `self.ants` by index avoids
         // any aliasing concerns and keeps state transitions deterministic
         // in the order ants were laid out.
@@ -1566,6 +1599,12 @@ impl Simulation {
                                 ant.position = *pos;
                                 // Drop any food they were carrying — they
                                 // got home, dropped it off, then settled.
+                                // L1: credit it to the colony (deferred —
+                                // can't borrow self.colonies in this loop).
+                                if ant.food_carried > 0.0 {
+                                    diapause_food_credits
+                                        .push((ant.colony_id, ant.food_carried));
+                                }
                                 ant.food_carried = 0.0;
                                 // Snap module to the surface nest module
                                 // (id 0 by convention; underground is
@@ -1580,6 +1619,14 @@ impl Simulation {
             ant.state_timer = ant.state_timer.saturating_add(1);
             ant.age = ant.age.saturating_add(1);
         }
+
+        // L1: apply deferred diapause-retreat food credits via the normal
+        // food-accept path (cap-respecting). Mirrors a forager drop-off.
+        for (cid, food) in diapause_food_credits {
+            if let Some(colony) = self.colonies.iter_mut().find(|c| c.id == cid) {
+                colony.accept_food(food);
+            }
+        }
     }
 
     fn movement(&mut self) {
@@ -1592,7 +1639,20 @@ impl Simulation {
             let Some(transit) = ant.transit else {
                 continue;
             };
-            let tube = topology.tube(transit.tube);
+            // H2: a transit ant may reference a tube that was removed by the
+            // editor between ticks. Don't panic mid-tick — evict the ant
+            // from transit so it re-localizes onto its current module next
+            // pass (its module_id is still valid; emergence sets it on the
+            // happy path, here we just clear stale transit).
+            let Some(tube) = topology.try_tube(transit.tube) else {
+                tracing::warn!(
+                    ant = ant.id,
+                    tube = transit.tube,
+                    "transit references a removed tube — evicting from transit"
+                );
+                ant.transit = None;
+                continue;
+            };
             let speed = ant.speed(speed_cfg).max(0.1);
             let dprog = speed / tube.length_ticks.max(1) as f32;
             let new_progress = if transit.going_forward {
@@ -1606,7 +1666,16 @@ impl Simulation {
                 // Emerge.
                 let (exit_mod_id, exit_port) =
                     topology.tube_exit(transit.tube, transit.going_forward);
-                let exit_module = topology.module(exit_mod_id);
+                // H2: exit module could have been removed; don't panic.
+                let Some(exit_module) = topology.try_module(exit_mod_id) else {
+                    tracing::warn!(
+                        ant = ant.id,
+                        module = exit_mod_id,
+                        "tube exit module removed — evicting from transit"
+                    );
+                    ant.transit = None;
+                    continue;
+                };
                 let emerge_pos = exit_port.to_vec2();
                 let emerge_heading = exit_module.port_interior_heading(exit_port);
                 emerge.push((i, exit_mod_id, emerge_pos, emerge_heading));
@@ -1633,7 +1702,10 @@ impl Simulation {
             if ant.is_in_transit() {
                 continue;
             }
-            let module = topology.module(ant.module_id);
+            // H2: skip ants whose module was removed rather than panicking.
+            let Some(module) = topology.try_module(ant.module_id) else {
+                continue;
+            };
             let moving = matches!(
                 ant.state,
                 AntState::Exploring
@@ -1761,12 +1833,18 @@ impl Simulation {
                     _ => continue,
                 };
                 let amount = amount * ant.modulators.deposit_mult;
-                let tube = self.topology.tube(transit.tube);
+                // H2: stale transit tube id — skip this ant's tube deposit.
+                let Some(tube) = self.topology.try_tube(transit.tube) else {
+                    continue;
+                };
                 let idx = tube.cell_index(transit.progress);
                 tube_deposits.push((transit.tube, idx, layer_idx, amount));
                 continue;
             }
-            let module = self.topology.module(ant.module_id);
+            // H2: stale module id — skip deposit rather than panicking.
+            let Some(module) = self.topology.try_module(ant.module_id) else {
+                continue;
+            };
             let (gx, gy) = module.pheromones.world_to_grid(ant.position);
             if !module.pheromones.in_bounds(gx, gy) {
                 continue;
@@ -1793,22 +1871,18 @@ impl Simulation {
             }
         }
         for d in deposits {
-            self.topology.module_mut(d.module).pheromones.deposit(
-                d.x,
-                d.y,
-                d.layer,
-                d.amount,
-                pcfg.max_intensity,
-            );
+            // H2: module collected this tick should still exist, but guard
+            // against a mid-tick removal rather than panicking.
+            if let Some(m) = self.topology.try_module_mut(d.module) {
+                m.pheromones
+                    .deposit(d.x, d.y, d.layer, d.amount, pcfg.max_intensity);
+            }
         }
         // Apply tube deposits — collected from transit ants above.
         for (tube_id, cell_idx, layer_idx, amount) in tube_deposits {
-            self.topology.tube_mut(tube_id).deposit(
-                cell_idx,
-                layer_idx,
-                amount,
-                pcfg.max_intensity,
-            );
+            if let Some(t) = self.topology.try_tube_mut(tube_id) {
+                t.deposit(cell_idx, layer_idx, amount, pcfg.max_intensity);
+            }
         }
 
         // 2) Food pickup + nest drop-off. Iterate ants mutably.
@@ -1816,7 +1890,10 @@ impl Simulation {
             if ant.is_in_transit() {
                 continue;
             }
-            let module = self.topology.module_mut(ant.module_id);
+            // H2: stale module id — skip food pickup rather than panicking.
+            let Some(module) = self.topology.try_module_mut(ant.module_id) else {
+                continue;
+            };
             let (gx, gy) = module.world.world_to_grid(ant.position);
             if !module.world.in_bounds(gx, gy) {
                 continue;
@@ -1860,13 +1937,28 @@ impl Simulation {
             .map(|t| (t.from.module, t.from.port, t.to.module, t.to.port))
             .collect();
         for (ma, pa, mb, pb) in ends {
+            let (ax, ay) = pa.as_usize();
+            let (bx, by) = pb.as_usize();
+            // H2 + M5: both endpoints may reference a removed module, and a
+            // port carried over from a differently-sized module (snapshot
+            // load) may be out of range. Guard module existence AND cell
+            // bounds before any read/write rather than panicking/indexing
+            // past the slice.
+            let (a_ok, b_ok) = match (self.topology.try_module(ma), self.topology.try_module(mb)) {
+                (Some(am), Some(bm)) => (
+                    am.pheromones.in_bounds(ax as i64, ay as i64),
+                    bm.pheromones.in_bounds(bx as i64, by as i64),
+                ),
+                _ => continue,
+            };
+            if !a_ok || !b_ok {
+                continue;
+            }
             for layer in [
                 PheromoneLayer::FoodTrail,
                 PheromoneLayer::HomeTrail,
                 PheromoneLayer::Alarm,
             ] {
-                let (ax, ay) = pa.as_usize();
-                let (bx, by) = pb.as_usize();
                 let a = self.topology.module(ma).pheromones.read(ax, ay, layer);
                 let b = self.topology.module(mb).pheromones.read(bx, by, layer);
                 if (a - b).abs() < 1e-6 {
@@ -1985,6 +2077,12 @@ impl Simulation {
                 };
                 if ant.state != new_state {
                     ant.transition(new_state);
+                } else {
+                    // H1: already Fighting/Fleeing and took damage again —
+                    // re-arm the cooldown so `decide_next_state` only times
+                    // out of combat once the fight is genuinely over (no
+                    // fresh damage for `COMBAT_COOLDOWN_SUBSTEPS`).
+                    ant.state_timer = 0;
                 }
             } else {
                 deaths.push(DeathEvent {
@@ -2030,7 +2128,10 @@ impl Simulation {
 
         // Drop corpses as food + deposit alarm at each death site.
         for d in &deaths {
-            let module = self.topology.module_mut(d.module);
+            // H2: defensive — death module captured this tick, but guard.
+            let Some(module) = self.topology.try_module_mut(d.module) else {
+                continue;
+            };
             let (gx, gy) = module.world.world_to_grid(d.pos);
             if module.world.in_bounds(gx, gy) {
                 let (ux, uy) = (gx as usize, gy as usize);
@@ -2072,15 +2173,24 @@ impl Simulation {
     /// perturb `self.rng`'s sequence (keeping decision-pass and caste-
     /// sampling outcomes byte-identical to pre-Phase-1).
     ///
+    /// M2: this runs once per physics substep. Seeding from `self.tick`
+    /// alone produced the IDENTICAL death sequence on every substep of the
+    /// same outer tick (correlated reaping, scale-dependent effective death
+    /// probability). Fold the LOCAL 0-based substep index into the seed.
+    /// At substep_count == 1 the only index is 0 and `seed ^ 0 == seed`, so
+    /// the default 1×-scale (Seasonal) trajectory stays bit-identical and
+    /// the baseline regression tests still pass.
+    ///
     /// Queens are excluded — they die only from explicit colony events.
-    pub fn age_mortality_tick(&mut self) {
+    pub fn age_mortality_tick(&mut self, substep_idx: u32) {
         if self.ants.is_empty() {
             return;
         }
         let lifespan_ticks = self.config.colony.worker_lifespan_ticks.max(1) as f32;
         let p_die = 1.0 / lifespan_ticks;
 
-        let mut age_rng = ChaCha8Rng::seed_from_u64(self.tick.wrapping_mul(0x9E3779B97F4A7C15));
+        let seed = self.tick.wrapping_mul(0x9E3779B97F4A7C15) ^ (substep_idx as u64);
+        let mut age_rng = ChaCha8Rng::seed_from_u64(seed);
 
         let mut deaths: Vec<usize> = Vec::new();
         for (i, ant) in self.ants.iter().enumerate() {
@@ -2183,7 +2293,10 @@ impl Simulation {
                     continue;
                 }
                 let ant = &self.ants[idx];
-                let module = self.topology.module_mut(ant.module_id);
+                // H2: stale module id — skip corpse drop rather than panicking.
+                let Some(module) = self.topology.try_module_mut(ant.module_id) else {
+                    continue;
+                };
                 let (gx, gy) = module.world.world_to_grid(ant.position);
                 if module.world.in_bounds(gx, gy) {
                     let (ux, uy) = (gx as usize, gy as usize);
@@ -2374,7 +2487,10 @@ impl Simulation {
         }
 
         // Find nearest ant on the spider's module.
-        let module = self.topology.module(predator.module_id);
+        // H2: spider's module may have been removed — bail this tick.
+        let Some(module) = self.topology.try_module(predator.module_id) else {
+            return;
+        };
         let mw = module.width() as f32;
         let mh = module.height() as f32;
         let mut nearest: Option<(f32, usize, u32)> = None;
@@ -2537,7 +2653,10 @@ impl Simulation {
             let dmg = cfg.rain_flood_damage;
             if dmg > 0.0 {
                 for ant in self.ants.iter_mut() {
-                    let module = self.topology.module(ant.module_id);
+                    // H2: stale module id — skip flood check rather than panicking.
+                    let Some(module) = self.topology.try_module(ant.module_id) else {
+                        continue;
+                    };
                     if module.kind != crate::module::ModuleKind::UndergroundNest {
                         continue;
                     }
@@ -2841,7 +2960,13 @@ impl Simulation {
             if ant.carrying_soil {
                 continue;
             }
-            let module = self.topology.module(ant.module_id);
+            // H2: stale module id — drop out of Digging rather than panicking.
+            let Some(module) = self.topology.try_module(ant.module_id) else {
+                ant.dig_progress = 0;
+                ant.dig_target = None;
+                ant.transition(AntState::Exploring);
+                continue;
+            };
             let (gx, gy) = module.world.world_to_grid(ant.position);
             if !module.world.in_bounds(gx, gy) {
                 continue;
@@ -2867,8 +2992,15 @@ impl Simulation {
                 }
             }
             let Some((tx, ty)) = chosen else {
+                // M4: no adjacent Solid to dig — the ant was promoted to
+                // Digging by `assign_diggers` based on a Solid somewhere on
+                // the module, not necessarily adjacent. Without an exit it
+                // would freeze here forever (Digging isn't in the `moving`
+                // set and had no decide_next_state arm). Revert to Exploring
+                // so it can wander to a face or be re-tasked.
                 ant.dig_progress = 0;
                 ant.dig_target = None;
+                ant.transition(AntState::Exploring);
                 continue;
             };
             // If the target changed (ant shuffled), reset progress.
@@ -2895,11 +3027,10 @@ impl Simulation {
         if !flips.is_empty() {
             let current_tick = self.tick;
             for (ant_idx, mid, x, y) in &flips {
-                // Flip the tile.
-                self.topology
-                    .module_mut(*mid)
-                    .world
-                    .set(*x, *y, Terrain::Empty);
+                // Flip the tile. H2: guard against a removed module.
+                if let Some(m) = self.topology.try_module_mut(*mid) {
+                    m.world.set(*x, *y, Terrain::Empty);
+                }
                 let ant = &mut self.ants[*ant_idx];
                 ant.carrying_soil = true;
                 ant.dig_progress = 0;
@@ -2927,7 +3058,10 @@ impl Simulation {
             if !ant.carrying_soil || ant.is_in_transit() {
                 continue;
             }
-            let module = self.topology.module(ant.module_id);
+            // H2: stale module id — skip pellet drop rather than panicking.
+            let Some(module) = self.topology.try_module(ant.module_id) else {
+                continue;
+            };
             let (gx, gy) = module.world.world_to_grid(ant.position);
             if !module.world.in_bounds(gx, gy) {
                 continue;
@@ -2972,12 +3106,14 @@ impl Simulation {
             }
         }
         for (ant_idx, mid, x, y) in drops {
-            let module = self.topology.module_mut(mid);
-            let new_intensity = match module.world.get(x, y) {
-                Terrain::SoilPile(n) => (n + 1).min(KICKOUT_MAX_INTENSITY),
-                _ => 1,
-            };
-            module.world.set(x, y, Terrain::SoilPile(new_intensity));
+            // H2: guard against a removed module.
+            if let Some(module) = self.topology.try_module_mut(mid) {
+                let new_intensity = match module.world.get(x, y) {
+                    Terrain::SoilPile(n) => (n + 1).min(KICKOUT_MAX_INTENSITY),
+                    _ => 1,
+                };
+                module.world.set(x, y, Terrain::SoilPile(new_intensity));
+            }
             self.ants[ant_idx].carrying_soil = false;
             // Carrier returns to looking for work.
             self.ants[ant_idx].state = AntState::Exploring;
@@ -2996,16 +3132,19 @@ impl Simulation {
             if ant.is_in_transit() || ant.state == AntState::Diapause {
                 continue;
             }
-            let module = self.topology.module(ant.module_id);
+            // H2: stale module id — skip territory deposit rather than panicking.
+            let Some(module) = self.topology.try_module(ant.module_id) else {
+                continue;
+            };
             let (gx, gy) = module.pheromones.world_to_grid(ant.position);
             if !module.pheromones.in_bounds(gx, gy) {
                 continue;
             }
             let (ux, uy) = (gx as usize, gy as usize);
-            self.topology
-                .module_mut(ant.module_id)
-                .pheromones
-                .deposit_territory(ux, uy, ant.colony_id, DEPOSIT_AMOUNT, cap);
+            if let Some(m) = self.topology.try_module_mut(ant.module_id) {
+                m.pheromones
+                    .deposit_territory(ux, uy, ant.colony_id, DEPOSIT_AMOUNT, cap);
+            }
         }
     }
 
@@ -3369,8 +3508,12 @@ impl Simulation {
         let mut colony_diapause: Vec<(u8, bool)> = Vec::with_capacity(self.colonies.len());
         for c in &self.colonies {
             let in_diapause = if let Some(ne) = c.nest_entrance_positions.first() {
-                let m = self.topology.module(0);
-                m.temp_at(*ne) < cold_t
+                // H2: module 0 may have been deleted by the editor; treat a
+                // missing module as "not in diapause" rather than panicking.
+                self.topology
+                    .try_module(0)
+                    .map(|m| m.temp_at(*ne) < cold_t)
+                    .unwrap_or(false)
             } else {
                 false
             };
@@ -3738,7 +3881,16 @@ impl Simulation {
                 }
             }
 
-            if queen_alive && !colony.fertility_suppressed && colony.food_stored > 0.0 {
+            // M3: a hibernating queen must NOT lay eggs. Brood maturation is
+            // already paused during diapause (see the `in_diapause` guard
+            // below), so without this gate a winter queen kept laying eggs
+            // that could never mature, draining the reserves needed to reach
+            // spring. Mirror the maturation guard here.
+            if !in_diapause
+                && queen_alive
+                && !colony.fertility_suppressed
+                && colony.food_stored > 0.0
+            {
                 // Soft food-gate: when reserves are below egg_cost, scale
                 // the lay rate by what fraction of an egg we can afford.
                 // This decouples from the binary slam-shut that caused
@@ -3908,6 +4060,16 @@ impl Simulation {
                         }
                         AntCaste::Queen => {}
                     }
+                }
+            }
+            // H5: record the ants ACTUALLY killed by starvation into the
+            // monotonic cumulative counter the bench reads. `take` is the
+            // real number removed (bounded by available ants), not the
+            // requested `deaths`.
+            if take > 0 {
+                if let Some(c) = self.colonies.iter_mut().find(|c| c.id == cid) {
+                    c.starvation_deaths_cumulative =
+                        c.starvation_deaths_cumulative.saturating_add(take as u32);
                 }
             }
         }
@@ -4157,6 +4319,26 @@ fn decide_next_state(
                 None
             }
         }
+        // H1: combat recovery. An ant set to Fighting (soldiers) or
+        // Fleeing (workers/breeders) by `combat_tick` has no other exit.
+        // It disengages once the local alarm pheromone falls quiet OR the
+        // cooldown elapses since the last damage (combat_tick re-arms
+        // `state_timer = 0` each substep it takes damage). Soldiers return
+        // to Idle (ready to re-engage / be re-tasked); workers/breeders go
+        // straight back to Exploring (useful work, deliver any carried food).
+        AntState::Fighting | AntState::Fleeing => {
+            let alarm = pher.read(ux, uy, PheromoneLayer::Alarm);
+            if alarm < COMBAT_ALARM_CLEAR_THRESHOLD
+                || ant.state_timer >= COMBAT_COOLDOWN_SUBSTEPS
+            {
+                match ant.caste {
+                    AntCaste::Soldier => Some(AntState::Idle),
+                    _ => Some(AntState::Exploring),
+                }
+            } else {
+                None
+            }
+        }
         AntState::Diapause => None,
         _ => None,
     }
@@ -4261,6 +4443,99 @@ mod tests {
         let mut sim = Simulation::new(small_config(), 1);
         sim.run(100);
         assert_eq!(sim.tick, 100);
+    }
+
+    /// H1: an ant stuck in `Fighting`/`Fleeing` with no nearby enemy (and no
+    /// alarm pheromone) must recover to a normal state. Before the fix
+    /// `decide_next_state` had no exit arm and `preserve_combat` skipped the
+    /// diapause shortcut, so combatants froze forever.
+    #[test]
+    fn combat_state_recovers_within_cooldown() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 4;
+        let mut sim = Simulation::new(cfg, 11);
+        assert!(!sim.ants.is_empty());
+
+        // Force a soldier into Fighting and a worker into Fleeing. Single
+        // colony => combat_tick can't re-engage / re-arm the cooldown.
+        sim.ants[0].caste = AntCaste::Soldier;
+        sim.ants[0].state = AntState::Fighting;
+        sim.ants[0].state_timer = 0;
+        sim.ants[1].caste = AntCaste::Worker;
+        sim.ants[1].state = AntState::Fleeing;
+        sim.ants[1].state_timer = 0;
+
+        // Run comfortably longer than COMBAT_COOLDOWN_SUBSTEPS outer ticks.
+        for _ in 0..(COMBAT_COOLDOWN_SUBSTEPS as u64 + 5) {
+            sim.tick();
+        }
+
+        assert_ne!(
+            sim.ants[0].state,
+            AntState::Fighting,
+            "soldier never left Fighting"
+        );
+        assert_ne!(
+            sim.ants[1].state,
+            AntState::Fleeing,
+            "worker never left Fleeing"
+        );
+    }
+
+    /// H5: a starving colony must report >0 CUMULATIVE starvation deaths.
+    /// Before the fix the sim never wrote any starvation counter, so the
+    /// bench's `starvation_deaths_cumulative` column read 0 forever even
+    /// during visible collapse.
+    #[test]
+    fn starving_colony_reports_cumulative_deaths() {
+        let mut cfg = small_config();
+        cfg.ant.initial_count = 12;
+        // High consumption + no inflow so food can't recover.
+        cfg.colony.adult_food_consumption = 1.0;
+        cfg.colony.queen_egg_rate = 0.0;
+        let mut sim = Simulation::new(cfg, 5);
+
+        assert_eq!(sim.colonies[0].starvation_deaths_cumulative, 0);
+
+        // Drive the colony hard into deficit: no brood to cannibalize, a
+        // pre-charged accumulator so deaths fire promptly, deep negative
+        // food so it stays starving across ticks.
+        {
+            let c = &mut sim.colonies[0];
+            c.brood.clear();
+            c.food_stored = -100.0;
+            c.starvation_accumulator = 6.0;
+        }
+
+        for _ in 0..50 {
+            sim.tick();
+        }
+
+        assert!(
+            sim.colonies[0].starvation_deaths_cumulative > 0,
+            "starving colony reported 0 cumulative starvation deaths"
+        );
+    }
+
+    /// M8: a high diffusion rate must not produce negative pheromone (the
+    /// explicit-Euler `1 - 4·rate` coefficient goes negative for rate > 0.25,
+    /// which feeds NaN into ACO `pheromone^α`). The in-fn clamp keeps every
+    /// cell non-negative.
+    #[test]
+    fn high_diffusion_rate_stays_nonnegative() {
+        let mut grid = PheromoneGrid::new(16, 16);
+        // Spike one cell; neighbors stay 0 — the worst case for instability.
+        grid.deposit(8, 8, PheromoneLayer::FoodTrail, 10.0, 100.0);
+        // Way above the 0.25 stability limit.
+        for _ in 0..50 {
+            grid.diffuse(0.9);
+        }
+        for y in 0..16 {
+            for x in 0..16 {
+                let v = grid.read(x, y, PheromoneLayer::FoodTrail);
+                assert!(v >= 0.0 && v.is_finite(), "neg/NaN pheromone at ({x},{y}): {v}");
+            }
+        }
     }
 
     #[test]

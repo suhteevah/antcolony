@@ -87,10 +87,19 @@ impl PheromoneGrid {
     }
 
     pub fn read(&self, x: usize, y: usize, layer: PheromoneLayer) -> f32 {
+        // L3: guard out-of-bounds reads (consistent with deposit_territory)
+        // rather than indexing past the slice and panicking.
+        if x >= self.width || y >= self.height {
+            return 0.0;
+        }
         self.layer_slice(layer)[self.idx(x, y)]
     }
 
     pub fn deposit(&mut self, x: usize, y: usize, layer: PheromoneLayer, amount: f32, cap: f32) {
+        // L3: guard out-of-bounds deposits.
+        if x >= self.width || y >= self.height {
+            return;
+        }
         let i = self.idx(x, y);
         let slice = self.layer_slice_mut(layer);
         let v = (slice[i] + amount).min(cap);
@@ -100,6 +109,10 @@ impl PheromoneGrid {
     /// Direct overwrite of a cell. Used by port-scent bleed, which needs
     /// to set absolute values rather than accumulate.
     pub fn set_cell(&mut self, x: usize, y: usize, layer: PheromoneLayer, value: f32) {
+        // L3: guard out-of-bounds writes.
+        if x >= self.width || y >= self.height {
+            return;
+        }
         let i = self.idx(x, y);
         self.layer_slice_mut(layer)[i] = value;
     }
@@ -145,17 +158,35 @@ impl PheromoneGrid {
     }
 
     /// 5-point Laplacian diffusion, double-buffered. Applied to every layer.
+    ///
+    /// M7: uses the pre-allocated `scratch` buffer as the read source —
+    /// copy the live layer into `scratch` once per layer, read neighbors
+    /// from `scratch`, write results back into the live layer. No per-tick
+    /// heap allocation (the old code allocated a fresh full-grid `Vec` per
+    /// layer — 4× per diffuse tick — and never actually read `scratch`).
+    /// Functionally identical to the previous stencil.
+    ///
+    /// M8: explicit-Euler diffusion is unstable once `rate > 0.25` — the
+    /// `(1 - 4·rate)` coefficient goes negative, so a high cell among low
+    /// neighbors yields a NEGATIVE result that then feeds `pheromone^α`
+    /// (→ NaN) and survives the evaporate min-threshold flush. Clamp the
+    /// effective rate to the stable range `[0.0, 0.25]` here so the call
+    /// is self-contained regardless of config validation.
     pub fn diffuse(&mut self, rate: f32) {
+        let rate = rate.clamp(0.0, 0.25);
         let w = self.width;
         let h = self.height;
+        // Borrow scratch out so we can read from it while mutably borrowing
+        // the live layer slice. Restored at the end of each layer pass.
+        let mut scratch = std::mem::take(&mut self.scratch);
         for layer in [
             PheromoneLayer::FoodTrail,
             PheromoneLayer::HomeTrail,
             PheromoneLayer::Alarm,
             PheromoneLayer::ColonyScent,
         ] {
-            let src: Vec<f32> = self.layer_slice(layer).to_vec();
-            self.scratch.copy_from_slice(&src);
+            scratch.copy_from_slice(self.layer_slice(layer));
+            let src = &scratch;
             let dst = self.layer_slice_mut(layer);
             for y in 0..h {
                 for x in 0..w {
@@ -169,6 +200,7 @@ impl PheromoneGrid {
                 }
             }
         }
+        self.scratch = scratch;
     }
 
     /// Sample pheromone in a forward cone — returns `(world_pos, intensity)` for each cell inside.

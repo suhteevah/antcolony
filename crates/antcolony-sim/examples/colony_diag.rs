@@ -22,12 +22,21 @@ use antcolony_sim::{
     AntCaste, AntState, Environment, Simulation, Species, TimeScale, Topology, load_species_dir,
 };
 
-fn parse_scale(s: &str) -> TimeScale {
+/// M19: parse the `--scale` value. The empty string (flag omitted, see the
+/// `unwrap_or("")` call site) defaults to Timelapse — the legacy behavior.
+/// An UNKNOWN value is now an error rather than being silently OR'd into
+/// the Timelapse arm (a `--scale seasnal` typo used to run at 1440× and
+/// write plausible output at the wrong time scale, corrupting calibration).
+/// Mirrors `species_bench.rs::parse_scale`.
+fn parse_scale(s: &str) -> anyhow::Result<TimeScale> {
     match s.to_ascii_lowercase().as_str() {
-        "realtime" | "real" | "1x" => TimeScale::Realtime,
-        "brisk" | "10x" => TimeScale::Brisk,
-        "seasonal" | "60x" => TimeScale::Seasonal,
-        "timelapse" | "1440x" | _ => TimeScale::Timelapse,
+        "" | "timelapse" | "1440x" => Ok(TimeScale::Timelapse),
+        "realtime" | "real" | "1x" => Ok(TimeScale::Realtime),
+        "brisk" | "10x" => Ok(TimeScale::Brisk),
+        "seasonal" | "60x" => Ok(TimeScale::Seasonal),
+        other => Err(anyhow::anyhow!(
+            "unknown --scale `{other}` (expected realtime|brisk|seasonal|timelapse)"
+        )),
     }
 }
 
@@ -56,7 +65,7 @@ fn main() -> anyhow::Result<()> {
                     i += 2;
                 }
                 "--scale" => {
-                    scale_arg = parse_scale(raw_args.get(i + 1).map(|s| s.as_str()).unwrap_or(""));
+                    scale_arg = parse_scale(raw_args.get(i + 1).map(|s| s.as_str()).unwrap_or(""))?;
                     i += 2;
                 }
                 "--species" => {

@@ -666,7 +666,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     // ---- Aggregate ----
-    let n = args.matches as f32;
+    // M18: `--matches 0` would make every win-rate percent and avg_end_tick
+    // divide by zero → NaN%. Floor the divisor at 1.
+    let n = args.matches.max(1) as f32;
     println!();
     println!("=== AGGREGATE ===");
     println!(

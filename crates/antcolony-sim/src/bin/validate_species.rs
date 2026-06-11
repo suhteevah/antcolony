@@ -101,6 +101,10 @@ fn main() {
                 failures.push(failure);
             }
         }
+        // L7: stdout is block-buffered when piped, so PASS/FAIL lines can be
+        // lost on a kill while the stderr "starting" lines survive. Flush
+        // each verdict immediately. (Cheap — one flush per species file.)
+        let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
     println!();

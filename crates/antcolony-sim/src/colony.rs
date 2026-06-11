@@ -270,6 +270,23 @@ pub struct ColonyState {
     /// AntModulators). Updated via `Simulation::apply_commander_intent`.
     #[serde(default = "default_commander_intent", with = "serde_f32_64")]
     pub commander_intent: [f32; 64],
+    /// M1: fractional remainder for `food_returned`. `accept_food`
+    /// accumulates the full f32 delivery here and only bumps the integer
+    /// `food_returned` by the whole part, carrying the remainder. At the
+    /// default `food_capacity = 1.0` every delivery is exactly 1.0, so the
+    /// remainder stays 0.0 and `food_returned` is bit-identical to the old
+    /// `+= amount as u32` behavior. Sub-1.0 / >1.0 capacities no longer
+    /// lose the fractional part on every delivery.
+    #[serde(default)]
+    food_returned_frac: f32,
+    /// H5: cumulative count of adult ants killed by starvation over the
+    /// whole run. Monotonic. Incremented by the simulation at the point it
+    /// actually removes starved ants (the `starve` apply site), since
+    /// `ColonyState` cannot touch the ant vector itself. The bench reads
+    /// this CUMULATIVE field (like `food_returned`) and computes per-day
+    /// deltas. Replaces the never-written `pending_starvation_deaths`.
+    #[serde(default)]
+    pub starvation_deaths_cumulative: u32,
 }
 
 impl ColonyState {
@@ -314,6 +331,8 @@ impl ColonyState {
             effective_food_cap_cached: None,
             commander_history: arrayvec::ArrayVec::new(),
             commander_intent: [0.0; 64],
+            food_returned_frac: 0.0,
+            starvation_deaths_cumulative: 0,
         }
     }
 
@@ -365,7 +384,14 @@ impl ColonyState {
 
     pub fn accept_food(&mut self, amount: f32) {
         self.apply_food_cap_inline(amount);
-        self.food_returned += amount as u32;
+        // M1: accumulate the full fractional delivery and only credit the
+        // whole part to the u32 counter, carrying the remainder. At
+        // food_capacity = 1.0 this is bit-identical to `+= amount as u32`
+        // (amount=1.0 → whole=1, frac stays 0.0).
+        self.food_returned_frac += amount;
+        let whole = self.food_returned_frac.floor().max(0.0) as u32;
+        self.food_returned = self.food_returned.saturating_add(whole);
+        self.food_returned_frac -= whole as f32;
         // Food-inflow pulse: instantaneous bump. The exponential decay
         // is applied per-tick in colony_economy_tick so a steady
         // stream of deliveries keeps the running average high.

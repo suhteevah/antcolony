@@ -175,6 +175,29 @@ fn write_expectations_section(out: &mut String, exp: &SpeciesExpectations, sampl
     .ok();
     writeln!(out).ok();
 
+    // M11: the literature expectations are pinned to YEAR 5. Emit a caveat
+    // when the run didn't reach year 5 (rows render `n/a`) or overshot it
+    // (the year-5 sample is still the start of year 5, NOT the end of the
+    // run). The default 5-year run reaches year 5 exactly and is unaffected.
+    let max_year = samples.iter().map(|s| s.in_game_year).max().unwrap_or(0);
+    if max_year < 5 {
+        writeln!(
+            out,
+            "> **Caveat:** this run reached only year {max_year}; the year-5 \
+             expectation rows below render as `n/a` (no year-5 sample)."
+        )
+        .ok();
+        writeln!(out).ok();
+    } else if max_year > 5 {
+        writeln!(
+            out,
+            "> **Caveat:** this run spans {max_year} years; the rows below \
+             compare against the START of year 5, not the end-of-run state."
+        )
+        .ok();
+        writeln!(out).ok();
+    }
+
     let observed_year_5_workers = sample_at_year(samples, 5).map(|s| s.workers as f64);
     let observed_brood = sample_at_year(samples, 5).map(|s| (s.eggs + s.larvae + s.pupae) as f64);
     let observed_queen_alive =
@@ -269,10 +292,13 @@ fn verdict_for(er: &ExpectedRange, observed: f64) -> String {
     let game_pacing = matches!(er.citation, Citation::GamePacing(_));
     let (lo_mult, hi_mult) = er.tolerance.band();
     // Boolean special case: centroid 1.0 with Strict tolerance is the
-    // harness's encoding of "expected-true." Treat anything ≥0.5 as in-band.
+    // harness's encoding of "expected-true." M12: the encoding is strictly
+    // 0.0/1.0, so require `observed >= 1.0 - EPSILON` rather than the old
+    // inclusive `>= 0.5` (which would pass a 0.5 coin-flip on any future
+    // fractional boolean metric). The current 0/1 caller is unaffected.
     // (Documented in docs/bench-audit.md §"Tolerance bands".)
     if matches!(er.tolerance, Tolerance::Strict) && (er.centroid - 1.0).abs() < f64::EPSILON {
-        return if observed >= 0.5 {
+        return if observed >= 1.0 - f64::EPSILON {
             if game_pacing {
                 "[PACING-PASS — NOT biology]"
             } else {
@@ -316,8 +342,17 @@ fn verdict_for(er: &ExpectedRange, observed: f64) -> String {
 /// Returns `None` if the run never reached the requested year — the
 /// report renders `n/a` rather than silently substituting an earlier
 /// sample (which would render an honest-looking but wrong verdict).
+/// M11: resolve the sample representing the START of `year`.
+///
+/// The old form (`.rev().find(year >= year)`) returned the LAST sample of
+/// the whole run, so a 25-year run graded the year-25 colony against the
+/// year-5 literature centroids (spurious "[ABOVE BAND]"), and never emitted
+/// a caveat. This finds the FIRST sample whose `in_game_year == year`
+/// (start of that year). Returns `None` when the run never reached year
+/// `year` (caller renders `n/a`), so an overshooting run no longer borrows
+/// its end-state as the year-5 value.
 fn sample_at_year(samples: &[TickSample], year: u32) -> Option<&TickSample> {
-    samples.iter().rev().find(|s| s.in_game_year >= year)
+    samples.iter().find(|s| s.in_game_year == year)
 }
 
 fn first_egg_day(samples: &[TickSample]) -> Option<u32> {
