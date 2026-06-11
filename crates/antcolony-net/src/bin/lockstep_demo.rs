@@ -59,7 +59,8 @@ fn parse_args() -> anyhow::Result<Args> {
     while i < raw.len() {
         match raw[i].as_str() {
             "--role" => {
-                role = match raw[i+1].as_str() {
+                let v = raw.get(i+1).ok_or_else(|| anyhow::anyhow!("flag `{}` needs a value", raw[i]))?;
+                role = match v.as_str() {
                     "black" => PeerRole::Black,
                     "red" => PeerRole::Red,
                     "spider" => PeerRole::Spider,
@@ -67,12 +68,12 @@ fn parse_args() -> anyhow::Result<Args> {
                 };
                 i += 2;
             }
-            "--seed" => { seed = raw[i+1].parse()?; i += 2; }
-            "--ticks" => { ticks = raw[i+1].parse()?; i += 2; }
-            "--arena" => { arena = raw[i+1].parse()?; i += 2; }
-            "--initial-ants" => { initial_ants = raw[i+1].parse()?; i += 2; }
-            "--port" => { port = raw[i+1].parse()?; i += 2; }
-            "--addr" => { addr = Some(raw[i+1].clone()); i += 2; }
+            "--seed" => { seed = raw.get(i+1).ok_or_else(|| anyhow::anyhow!("flag `{}` needs a value", raw[i]))?.parse()?; i += 2; }
+            "--ticks" => { ticks = raw.get(i+1).ok_or_else(|| anyhow::anyhow!("flag `{}` needs a value", raw[i]))?.parse()?; i += 2; }
+            "--arena" => { arena = raw.get(i+1).ok_or_else(|| anyhow::anyhow!("flag `{}` needs a value", raw[i]))?.parse()?; i += 2; }
+            "--initial-ants" => { initial_ants = raw.get(i+1).ok_or_else(|| anyhow::anyhow!("flag `{}` needs a value", raw[i]))?.parse()?; i += 2; }
+            "--port" => { port = raw.get(i+1).ok_or_else(|| anyhow::anyhow!("flag `{}` needs a value", raw[i]))?.parse()?; i += 2; }
+            "--addr" => { addr = Some(raw.get(i+1).ok_or_else(|| anyhow::anyhow!("flag `{}` needs a value", raw[i]))?.clone()); i += 2; }
             other => anyhow::bail!("unknown arg `{other}`"),
         }
     }

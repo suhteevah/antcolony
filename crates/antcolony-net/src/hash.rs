@@ -73,6 +73,86 @@ pub fn sim_state_hash(sim: &Simulation) -> u64 {
         fnv_bytes(&mut h, &c.population.workers.to_le_bytes());
         fnv_bytes(&mut h, &c.population.soldiers.to_le_bytes());
         fnv_bytes(&mut h, &c.population.breeders.to_le_bytes());
+        // C1 fix (2026-06-11): fold in queen liveness. Queen death is the
+        // win condition (`simulation.rs::match_status`), so two peers can
+        // diverge on whether a colony's queen is alive while worker/
+        // soldier/breeder/food counts momentarily agree -- without this,
+        // the hash reports "in sync" through a queen-death desync.
+        // `PopulationCounts` has no queens field, so count from `sim.ants`
+        // exactly as `match_status` does. Iterates the order-stable
+        // `sim.ants` Vec, so the hash stays process-independent.
+        let queens = sim.ants.iter()
+            .filter(|a| a.colony_id == c.id && matches!(a.caste, AntCaste::Queen))
+            .count() as u32;
+        fnv_bytes(&mut h, &queens.to_le_bytes());
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use antcolony_sim::{
+        Simulation, Topology,
+        config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
+    };
+
+    /// Build the same deterministic 2-colony AI-vs-AI sim `lockstep_demo`
+    /// uses, advance a fixed number of ticks, and hash it. The sim is
+    /// byte-deterministic (verified cross-process / cross-rayon-thread),
+    /// so this hash is a stable golden value.
+    fn golden_sim() -> Simulation {
+        let q = 32usize;
+        let cfg = SimConfig {
+            world: WorldConfig { width: q, height: q, ..WorldConfig::default() },
+            pheromone: PheromoneConfig::default(),
+            ant: AntConfig { initial_count: 10, ..AntConfig::default() },
+            colony: ColonyConfig::default(),
+            combat: CombatConfig::default(),
+            hazards: HazardConfig::default(),
+        };
+        let topology = Topology::two_colony_arena((q, q), (q, q));
+        let mut sim = Simulation::new_ai_vs_ai_with_topology(cfg, topology, 42, 0, 2);
+        for _ in 0..200 {
+            sim.tick();
+        }
+        sim
+    }
+
+    /// Determinism gate: the state hash of a fixed sim must be byte-stable.
+    ///
+    /// RE-BLESSED 2026-06-11: queen liveness is now folded into the hash
+    /// (C1 fix in `sim_state_hash`), so this golden value intentionally
+    /// differs from any pre-2026-06-11 baseline. Updated to the corrected
+    /// value that includes the per-colony queen count. Do NOT weaken this
+    /// assertion -- if it fails, the sim's determinism or the hash layout
+    /// changed and that must be understood, not papered over.
+    #[test]
+    fn golden_state_hash_is_stable() {
+        let sim = golden_sim();
+        let h = sim_state_hash(&sim);
+        // Re-blessed 2026-06-11 (queen count added to hash).
+        const GOLDEN: u64 = 0xe1d1_76da_d7e1_ad50;
+        assert_eq!(
+            h, GOLDEN,
+            "state hash drifted: got {h:#018x}, expected {GOLDEN:#018x}"
+        );
+    }
+
+    /// The hash must change when a colony's queen dies while every other
+    /// hashed field is held constant -- the exact desync C1 fixes. We
+    /// remove the queen ant from one colony and confirm the hash differs.
+    #[test]
+    fn queen_death_changes_hash() {
+        let mut sim = golden_sim();
+        let before = sim_state_hash(&sim);
+        // Drop one colony's queen; keep everything else identical by
+        // re-counting populations the way the sim does is unnecessary --
+        // the hash counts queens straight from `sim.ants`.
+        let pos = sim.ants.iter().position(|a| matches!(a.caste, AntCaste::Queen))
+            .expect("fixture sim must contain at least one queen for this test to be meaningful");
+        sim.ants.remove(pos);
+        let after = sim_state_hash(&sim);
+        assert_ne!(before, after, "queen removal must change the state hash");
+    }
 }

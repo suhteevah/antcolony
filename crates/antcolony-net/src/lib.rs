@@ -19,6 +19,13 @@
 //! `RAYON_NUM_THREADS` all produce byte-identical state. The lockstep
 //! protocol can therefore use simple state hashes for desync detection.
 //!
+//! The golden state-hash baseline (`hash::tests::golden_state_hash_is_stable`)
+//! was RE-BLESSED on 2026-06-11 when the C1 fix folded per-colony queen
+//! liveness into `sim_state_hash`. That change intentionally altered every
+//! hash value (old golden `0x27abe1ad15fc6766` -> new `0xe1d176dad7e1ad50`
+//! for the fixture sim); the assertion was updated to the corrected value,
+//! not weakened.
+//!
 //! # Linux / Proton-GE
 //!
 //! Pure `std::net` + `serde_json` -- no Windows-specific deps. Should
