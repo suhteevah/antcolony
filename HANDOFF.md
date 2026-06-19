@@ -1,8 +1,51 @@
 # HANDOFF.md — Phased Implementation Spec
 
-**Last Updated:** 2026-05-31 (later) — late-training stabilizers landed: grad-norm clipping + keep-best checkpoint + early-stop
+**Last Updated:** 2026-06-19 — THREE cnc P100 runs. (1) grad-clip FIXED the late-training collapse (A1 final 0.629). (2) A2 (~95M) → NEGATIVE (single-card can't feed its batch; needs multi-GPU). (3) **A1 + combat.toml reward = NEW SOTA 0.857** (reward-only change, monotonic curve, lifted the whole field). Keeper: `bench/phase3-a1-combat/hac_best.safetensors`.
 
 This document contains everything needed to implement the ant colony simulation from scratch. Each phase is self-contained with clear inputs, outputs, and acceptance criteria. **Phases are sequential — do not skip ahead.**
+
+---
+
+## Session 2026-06-19 — Grad-clip convergence run executed on cnc P100 → late-training collapse FIXED
+
+🟢 Project Status: **THREE cnc P100 runs this session, ending with a new SOTA.** (1) The grad-norm-clipping fix WORKS — A1 + `--max-grad-norm 0.5` curve no longer peaks-then-regresses, ends at its peak **0.629** (was the prior handoff's next-step #1). (2) A2 (~95M) is a single-card dead end (OOMs above envs=4; doesn't converge at envs=4 — needs multi-GPU). (3) **A1 + `combat.toml` reward = NEW SOTA 0.857** — a reward-only change (combat_loss_penalty=0.05) that lifted almost the whole archetype field, not just combat. **Keeper: `bench/phase3-a1-combat/hac_best.safetensors`.** All GPU work on cnc per Matt's "testing on cnc only" rule; each run freed/restored the 16GB card (workhorse+aether-vision) via a signal-trapped wrapper + GO from openclaw `main`. ⚠ **The GPU card↔service assignment had FLIPPED since the prior playbook** (16GB now hosts the workhorse, not scout+embed) — caught via live `nvidia-smi` probe before it could OOM the run; see `feedback_gpu_runs_use_p100s_via_openclaw`.
+
+### The result (A1 init-fix, r6 default reward, envs=8/cycles=96/iters=100/mpe=5, max-grad-norm 0.5)
+Win-rate curve (mean vs 7-archetype bench): iter0 **0.471** / 25 0.500 / 50 0.443 / 75 0.614 / **final(100) 0.629**.
+- **Compare prior run WITHOUT clip:** iter0 0.243 / 25 0.529 / **50 0.629** / 75 0.586 / final 0.457 — it peaked at iter50 then **regressed**. With clip, the curve holds and ENDS at 0.629. Late-training collapse fixed. ✅
+- **Keep-best worked:** `hac_best.safetensors` = iter 100 @ **0.6286**, the unambiguous shippable checkpoint (≥ the prior 0.629 iter50 keeper). Early-stop left OFF (patience=0) per the prior handoff's caution that mpe=5 is too coarse to trust.
+- **Final per-archetype:** economist 0.80, breeder 0.80, forager 0.80, conservative 0.60, **aggressor 0.50, heuristic 0.50, defender 0.40**. Economy still dominated; **combat off the floor** (prior final was defender 0.10 / aggressor 0.00). Grad-clip's stabilization let the policy retain combat competence through to the end rather than washing it out.
+- **Checkpoints:** `bench/phase3-a1-gradclip/{hac_best,hac_final,hac_iter0000..0075}.safetensors` (45MB each, pulled to kokonoe, gitignored).
+
+### Operational: the cnc P100 card↔service assignment FLIPPED (stale-playbook trap, caught)
+The prior handoff/scripts assumed **16GB(UUID 17bd0d20)=scout+embed, 12GB=workhorse**. Ground truth on 2026-06-19 is **FLIPPED**: 16GB(17bd0d20)=**workhorse(10GB)+aether-vision**, 12GB(bb77bda0)=scout+embed+aether-serve. The run scripts pin to 17bd0d20 — which now hosts the workhorse — so the old "free scout+embed" recipe would have OOM'd against the workhorse. **Always probe live before freeing/pinning** (`scripts/gpu_probe_cnc.sh` maps GPU index+UUID→PID→systemd unit). Coordinated via openclaw `main`; Matt chose Option A (free the 16GB card). New scripts: `scripts/{gpu_probe_cnc.sh, run_gradclip_cnc.sh (EXIT-trap restores services even on a dropped session), wait_run_cnc.sh}`. See the updated `feedback_gpu_runs_use_p100s_via_openclaw` memory.
+
+### Also verified this session
+- **Roadmap #3 (`combat_loss_penalty` no-op) is ALREADY FIXED** — the prior handoff flagged it as still broken, but the code has the "H7 fix": `ColonyMetrics::from_sim` takes `window_combat_losses`, and `parallel_env.rs:262-266` computes it as a cumulative-counter delta over the decision window (`colony_combat_losses(cur) - base`), robust to the per-tick clear. Test `combat_loss_penalty_changes_reward_when_enabled` green. Lever still defaults 0.0 (baseline-safe). Was probably part of `cf3eb89` "11 RL-correctness audit findings."
+- All 40 trainer lib tests green on kokonoe CPU (incl. `chunked_matches_monolithic_with_grad_clip`, `chunked_ant_update_matches_monolithic`, the reward levers, `phase3_smoke`) — independent confirmation of the code that ran on cnc.
+- Git history is auto-uploader noise (the `feat/phase3-grad-clip-keepbest` branch is an ancestor of main; the grad-clip/keep-best code is already in main's working tree). Verify code state directly, not via `git log`.
+
+### A2 (larger ~95M net) attempt — NEGATIVE, single-card is the wrong venue
+Ran A2 this same session (Matt picked "A2 / bigger" for the combat axis, OK'd a longer run). **A2 does NOT fit the 16GB card at the A1 batch:** it OOM'd at envs=8 AND envs=6 — the rollout forward batches all ants/tick and is NOT chunked (chunking only bounds the *update*), so A2's bigger per-tick activation blows 16GB. An auto-fit (`scripts/run_a2_autofit_cnc.sh`) found the largest fitting config = **envs=4 / cycles=96 / chunk=2048, peak 15.66GB** (95.6% of the card; memory rock-stable, no fragmentation creep). Ran 250 iters there.
+- **Result NEGATIVE:** curve = iter0 **0.700** / 50 0.157 / 100 0.157 / 150 0.143 / 200 0.571 / final(250) **0.443** (below the 0.471 baseline). Keep-best kept **iter 0 (the UNTRAINED net)** as best — training never beat random init; it collapsed then oscillated. A2 (~95M) at the memory-forced small batch (envs=4, half A1's 8) + no LR retune is the worst case for stable RL. **A1 + grad-clip (0.629) remains the SOTA hierarchical checkpoint.** Matches the prior caveat that bigger nets regress without much more budget. A2 checkpoints not kept (best=untrained, no model value); curve log at `bench/phase3-a2/run_a2.log`.
+- **The real A2 unlock (if ever revisited): a bigger batch, which the 16GB card cannot feed → that is exactly what the deferred multi-GPU data-parallel rollout/train split would provide** (Matt's "both P100s fine" is moot until that lands — the trainer is single-GPU). Don't burn more single-card windows on A2.
+
+### Combat-reward run (A1 + combat.toml) — NEW SOTA 0.857, the session's biggest win
+Ran A1 with `--reward assets/reward/combat.toml` (r6 + `combat_loss_penalty=0.05`), **net + every other flag identical to the 0.629 grad-clip keeper** — so the move is cleanly attributable to the reward. Fit the 16GB card at the same 10.7GB (A1-sized).
+- **Curve (mean vs bench, mpe=5):** iter0 0.343 / 25 0.571 / 50 0.671 / 75 0.743 / **final(100) 0.857** — clean monotonic climb, no collapse, keep-best = iter100 @ **0.857**.
+- **Final per-archetype:** economist 1.0 / breeder 1.0 / forager 1.0 / conservative 1.0 / heuristic 0.80 / **defender 0.80** / **aggressor 0.40**. vs the no-combat A1 (econ/breeder/forager 0.80, conservative 0.60, heuristic 0.50, defender 0.40, aggressor 0.50): the combat penalty lifted **almost the entire field**, not just the combat axis — defender 0.40→0.80 as intended, and economy archetypes 0.80→1.0. Read (main concurs): `combat_loss_penalty` was correcting a reward that under-weighted survival pressure *everywhere*, not just patching one matchup.
+- **The lone holdout: aggressor 0.50→0.40** — the one archetype that *picks fights* eats the combat-loss penalty hardest, so this is plausibly the reward working as designed, not a miss.
+- **KEEPER: `bench/phase3-a1-combat/hac_best.safetensors` (iter100 @ 0.857)** — supersedes the 0.629 grad-clip checkpoint as the SOTA hierarchical brain.
+
+### What's next (priority)
+1. **`bench/phase3-a1-combat/hac_best.safetensors` (0.857) is the new SOTA — ship/distill it.** Before treating 0.857 as a headline, settle the **metric caveat**: eval.rs's coarse worker-share-at-timeout metric flatters everything (v1 itself ~51.7% near-uniform). Re-measure this checkpoint AND v1 on ONE harness (the `matchup_bench` decisive-win metric) at mpe≥50 for an honest, comparable number. See `project_ai_ceiling`.
+2. **Aggressor is the lone weak axis (0.40).** If chased: does it want a different reward shape (it's penalized for its core strategy by `combat_loss_penalty`), or is it correctly capped? Cheap A1-sized experiments: a smaller `combat_loss_penalty` (0.02?), or a combat-archetype-weighted league. Each is one ~30min 16GB-card window (coordinate via main; the `scripts/run_combat_cnc.sh` pattern + EXIT-trap restore is proven).
+3. **A2 (~95M) needs the deferred multi-GPU data-parallel split** (`multi_gpu.rs` RolloutTrainSplit) to train at envs≥8 across both P100s — single-card A2 is a dead end (OOMs above envs=4, doesn't converge at envs=4).
+2. **Honest-metric caveat (still open):** eval.rs uses the coarse worker-share-at-timeout metric under which v1 itself scores ~51.7% near-uniformly. For an apples-to-apples "A1 vs v1" headline, re-measure BOTH on the same harness (see `project_ai_ceiling`).
+3. Eval is the wall-clock cost (~5 evals × ~5min at mpe=5); the run is ~27min total now that the freed card has no contention from the stopped services. Use mpe=50 only for a final headline number.
+
+### Notes
+- The startup log says "CandleBackend: CUDA device 0 (RTX 3070 Ti expected)" — that's a stale hardcoded label; `cuda=true` + `CUDA_VISIBLE_DEVICES` pin mean it ran on the P100. Harmless; could be cleaned up.
 
 ---
 
