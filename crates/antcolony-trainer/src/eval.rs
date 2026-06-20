@@ -22,8 +22,92 @@ pub const BENCH_ARCHETYPES: [&str; 7] = [
 
 #[derive(Clone, Debug)]
 pub struct EvalReport {
+    /// eval.rs metric: timeout graded by worker-share (the harness that measured
+    /// MlpBrain v1 ~0.517 and the combat HAC 0.871).
     pub per_archetype: Vec<(String, f32)>,
     pub mean_win_rate: f32,
+    /// Decisive-win metric: a timeout is a DRAW (0.5) — only an actual queen-kill
+    /// counts. The harder, matchup_bench-comparable number (v1 ~0.50).
+    pub per_archetype_decisive: Vec<(String, f32)>,
+    pub mean_decisive_rate: f32,
+    /// How matches ended, summed across all archetypes (so worker-share wins can
+    /// be told apart from actual kills).
+    pub outcomes: OutcomeCounts,
+}
+
+/// How a single match ended, distinguishing an actual win (queen-kill) from a
+/// timeout graded by worker share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchEnd {
+    WonLeft,
+    WonRight,
+    Draw,
+    TimeoutLeftMajority,
+    TimeoutRightMajority,
+    TimeoutEven,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutcomeCounts {
+    pub won_left: usize,
+    pub won_right: usize,
+    pub draw: usize,
+    pub timeout_left: usize,
+    pub timeout_right: usize,
+    pub timeout_even: usize,
+}
+
+impl OutcomeCounts {
+    fn add(&mut self, end: MatchEnd) {
+        match end {
+            MatchEnd::WonLeft => self.won_left += 1,
+            MatchEnd::WonRight => self.won_right += 1,
+            MatchEnd::Draw => self.draw += 1,
+            MatchEnd::TimeoutLeftMajority => self.timeout_left += 1,
+            MatchEnd::TimeoutRightMajority => self.timeout_right += 1,
+            MatchEnd::TimeoutEven => self.timeout_even += 1,
+        }
+    }
+
+    fn merge(&mut self, o: &OutcomeCounts) {
+        self.won_left += o.won_left;
+        self.won_right += o.won_right;
+        self.draw += o.draw;
+        self.timeout_left += o.timeout_left;
+        self.timeout_right += o.timeout_right;
+        self.timeout_even += o.timeout_even;
+    }
+}
+
+/// Score a finished match under BOTH metrics from its terminal status + worker
+/// counts. Returns `(worker_share, decisive, how_it_ended)`.
+/// - `worker_share`: a timeout is graded by which colony has more workers (the
+///   eval.rs metric — flatters, since most matches time out near-even).
+/// - `decisive`: a timeout is a DRAW (0.5); only an actual `Won` (queen-kill)
+///   scores 1/0. This is the matchup_bench-comparable "real win" metric.
+/// The `worker_share` branch is byte-identical to the prior `play_match` scoring
+/// so the validated 0.871 reproduces exactly.
+fn score_match(status: MatchStatus, lw: f32, rw: f32) -> (f32, f32, MatchEnd) {
+    match status {
+        MatchStatus::Won { winner: 0, .. } => (1.0, 1.0, MatchEnd::WonLeft),
+        MatchStatus::Won { winner: 1, .. } => (0.0, 0.0, MatchEnd::WonRight),
+        MatchStatus::Draw { .. } => (0.5, 0.5, MatchEnd::Draw),
+        MatchStatus::InProgress => {
+            // L9: 0-vs-0 timeout is a draw under both metrics.
+            if lw == 0.0 && rw == 0.0 {
+                return (0.5, 0.5, MatchEnd::TimeoutEven);
+            }
+            let share = lw / (lw + rw).max(1.0);
+            if share > 0.5 {
+                (1.0, 0.5, MatchEnd::TimeoutLeftMajority)
+            } else if share < 0.5 {
+                (0.0, 0.5, MatchEnd::TimeoutRightMajority)
+            } else {
+                (0.5, 0.5, MatchEnd::TimeoutEven)
+            }
+        }
+        _ => (0.5, 0.5, MatchEnd::Draw),
+    }
 }
 
 fn play_match(
@@ -31,7 +115,7 @@ fn play_match(
     device: &Device,
     opp_spec: &str,
     seed: u64,
-) -> Result<f32> {
+) -> Result<(f32, f32, MatchEnd)> {
     let mut env = MatchEnv::new(seed);
     let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1))?;
 
@@ -91,24 +175,9 @@ fn play_match(
         }
     }
 
-    Ok(match env.sim.match_status() {
-        MatchStatus::Won { winner: 0, .. } => 1.0,
-        MatchStatus::Won { winner: 1, .. } => 0.0,
-        MatchStatus::Draw { .. } => 0.5,
-        MatchStatus::InProgress => {
-            let lw = env.sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0) as f32;
-            let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
-            // L9: 0-vs-0 timeout is a draw (0.5), consistent with MatchStatus::Draw —
-            // not a loss. Without this guard share = 0/1 = 0 grades as a loss.
-            if lw == 0.0 && rw == 0.0 {
-                0.5
-            } else {
-                let share = lw / (lw + rw).max(1.0);
-                if share > 0.5 { 1.0 } else if share < 0.5 { 0.0 } else { 0.5 }
-            }
-        }
-        _ => 0.5,
-    })
+    let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0) as f32;
+    let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
+    Ok(score_match(env.sim.match_status(), lw, rw))
 }
 
 /// L10: deterministic per-archetype seed salt. Folds a byte hash of the spec
@@ -129,31 +198,57 @@ pub fn evaluate_hac(
     device: &Device,
     matches_per_opp: usize,
 ) -> Result<EvalReport> {
-    let mut per_archetype = Vec::with_capacity(BENCH_ARCHETYPES.len());
-    for spec in BENCH_ARCHETYPES {
-        let mut score = 0.0f32;
-        let mut played = 0usize;
-        for m in 0..matches_per_opp {
-            // L10: fold a per-archetype byte hash into the seed so same-length
-            // archetype names (e.g. breeder/forager) don't share sim seeds and
-            // correlate their win-rate estimates.
-            let seed = 0xE7A1_u64
-                .wrapping_mul(spec_seed_salt(spec))
-                ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
-            // M16: a single bad match (e.g. a custom spec that fails to build)
-            // shouldn't abort the whole eval — log+skip it.
-            match play_match(hac, device, spec, seed) {
-                Ok(s) => { score += s; played += 1; }
-                Err(e) => tracing::error!(archetype = spec, m, error = %e, "eval match failed; skipping"),
+    use rayon::prelude::*;
+    // The 7 archetypes' matches are independent and deterministically seeded, so
+    // fan them across CPU cores (the sim is CPU-bound and the loop was otherwise
+    // single-threaded). Identical seeds => identical per-match results, so the
+    // means are byte-for-byte what the sequential version produced — this only
+    // changes speed, not the numbers. `par_iter().map().collect()` keeps order.
+    let rows: Vec<(String, f32, f32, OutcomeCounts)> = BENCH_ARCHETYPES
+        .par_iter()
+        .map(|&spec| {
+            let mut score = 0.0f32;
+            let mut decisive = 0.0f32;
+            let mut played = 0usize;
+            let mut counts = OutcomeCounts::default();
+            for m in 0..matches_per_opp {
+                // L10: fold a per-archetype byte hash into the seed so same-length
+                // archetype names (breeder/forager) don't share sim seeds.
+                let seed = 0xE7A1_u64
+                    .wrapping_mul(spec_seed_salt(spec))
+                    ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                // M16: a single bad match shouldn't abort the eval — log+skip.
+                match play_match(hac, device, spec, seed) {
+                    Ok((ws, dec, end)) => { score += ws; decisive += dec; played += 1; counts.add(end); }
+                    Err(e) => tracing::error!(archetype = spec, m, error = %e, "eval match failed; skipping"),
+                }
             }
-        }
-        let wr = score / played.max(1) as f32;
-        tracing::info!(archetype = spec, win_rate = wr, played, "eval vs archetype");
-        per_archetype.push((spec.to_string(), wr));
+            let denom = played.max(1) as f32;
+            let wr = score / denom;
+            let dwr = decisive / denom;
+            tracing::info!(archetype = spec, win_rate = wr, decisive_rate = dwr, played, "eval vs archetype");
+            (spec.to_string(), wr, dwr, counts)
+        })
+        .collect();
+
+    let mut per_archetype = Vec::with_capacity(rows.len());
+    let mut per_archetype_decisive = Vec::with_capacity(rows.len());
+    let mut outcomes = OutcomeCounts::default();
+    for (name, wr, dwr, counts) in &rows {
+        per_archetype.push((name.clone(), *wr));
+        per_archetype_decisive.push((name.clone(), *dwr));
+        outcomes.merge(counts);
     }
-    let mean = per_archetype.iter().map(|(_, w)| *w).sum::<f32>()
-        / per_archetype.len().max(1) as f32;
-    Ok(EvalReport { per_archetype, mean_win_rate: mean })
+    let n = per_archetype.len().max(1) as f32;
+    let mean = per_archetype.iter().map(|(_, w)| *w).sum::<f32>() / n;
+    let mean_decisive = per_archetype_decisive.iter().map(|(_, w)| *w).sum::<f32>() / n;
+    Ok(EvalReport {
+        per_archetype,
+        mean_win_rate: mean,
+        per_archetype_decisive,
+        mean_decisive_rate: mean_decisive,
+        outcomes,
+    })
 }
 
 /// Diagnostic eval: same play loop as `play_match`, but logs WHAT the HAC
@@ -269,10 +364,47 @@ mod tests {
         let hac = HierarchicalActorCritic::new(vb, A1).unwrap();
         let report = evaluate_hac(&hac, &device, 1).unwrap();
         assert_eq!(report.per_archetype.len(), 7);
+        assert_eq!(report.per_archetype_decisive.len(), 7);
         for (name, wr) in &report.per_archetype {
             assert!(!name.is_empty());
             assert!((0.0..=1.0).contains(wr), "{name} win-rate out of range: {wr}");
         }
+        for (name, dr) in &report.per_archetype_decisive {
+            assert!((0.0..=1.0).contains(dr), "{name} decisive-rate out of range: {dr}");
+        }
         assert!((0.0..=1.0).contains(&report.mean_win_rate));
+        assert!((0.0..=1.0).contains(&report.mean_decisive_rate));
+        // Every match counted exactly once across the outcome buckets (7 opps × 1).
+        let o = &report.outcomes;
+        let total = o.won_left + o.won_right + o.draw
+            + o.timeout_left + o.timeout_right + o.timeout_even;
+        assert_eq!(total, 7, "every played match must land in exactly one outcome bucket");
+    }
+
+    #[test]
+    fn score_match_worker_share_vs_decisive() {
+        use antcolony_sim::MatchStatus::*;
+        // Decisive win/loss: both metrics agree, counted as a real kill.
+        assert_eq!(
+            score_match(Won { winner: 0, loser: 1, ended_at_tick: 9 }, 5.0, 0.0),
+            (1.0, 1.0, MatchEnd::WonLeft)
+        );
+        assert_eq!(
+            score_match(Won { winner: 1, loser: 0, ended_at_tick: 9 }, 0.0, 5.0),
+            (0.0, 0.0, MatchEnd::WonRight)
+        );
+        // THE KEY CASE: a timeout where left out-grew right.
+        // worker-share metric scores it a WIN (1.0); decisive metric a DRAW (0.5).
+        assert_eq!(
+            score_match(InProgress, 60.0, 40.0),
+            (1.0, 0.5, MatchEnd::TimeoutLeftMajority)
+        );
+        assert_eq!(
+            score_match(InProgress, 40.0, 60.0),
+            (0.0, 0.5, MatchEnd::TimeoutRightMajority)
+        );
+        // Even / 0-vs-0 timeout: draw under both.
+        assert_eq!(score_match(InProgress, 50.0, 50.0), (0.5, 0.5, MatchEnd::TimeoutEven));
+        assert_eq!(score_match(InProgress, 0.0, 0.0), (0.5, 0.5, MatchEnd::TimeoutEven));
     }
 }

@@ -34,12 +34,31 @@ fn main() -> anyhow::Result<()> {
     let report = evaluate_hac(&trainer.hac, &device, mpe)?;
 
     println!("=== HONEST eval (mpe={mpe}) :: {ckpt} ===");
-    for (a, wr) in &report.per_archetype {
-        println!("{a:<14} {wr:.4}");
+    println!("{:<14} {:>12} {:>12}", "archetype", "worker_share", "decisive");
+    for ((a, ws), (_, dec)) in report
+        .per_archetype
+        .iter()
+        .zip(report.per_archetype_decisive.iter())
+    {
+        println!("{a:<14} {ws:>12.4} {dec:>12.4}");
     }
-    println!("{:<14} {:.4}", "MEAN", report.mean_win_rate);
+    println!(
+        "{:<14} {:>12.4} {:>12.4}",
+        "MEAN", report.mean_win_rate, report.mean_decisive_rate
+    );
+    let o = &report.outcomes;
+    println!(
+        "outcomes: won_left={} won_right={} draw={} timeout_left={} timeout_right={} timeout_even={}",
+        o.won_left, o.won_right, o.draw, o.timeout_left, o.timeout_right, o.timeout_even
+    );
+    println!(
+        "  (worker_share grades timeouts by who out-grew; decisive counts ONLY actual kills)"
+    );
     tracing::info!(
         mean_win_rate = report.mean_win_rate,
+        mean_decisive_rate = report.mean_decisive_rate,
+        won_left = o.won_left,
+        won_right = o.won_right,
         mpe,
         ckpt,
         "HONEST eval done"
