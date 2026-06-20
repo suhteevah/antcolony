@@ -251,6 +251,219 @@ pub fn evaluate_hac(
     })
 }
 
+/// Play one match with BOTH colonies driven by frozen HAC mean actions (no
+/// gradient, no sampling). Left colony uses `hac_left`, right uses
+/// `hac_right`. Returns `(worker_share, decisive, how_it_ended)` from LEFT's
+/// perspective via `score_match` — semantics are identical to `play_match`.
+fn play_match_h2h(
+    hac_left: &HierarchicalActorCritic,
+    hac_right: &HierarchicalActorCritic,
+    device: &Device,
+    seed: u64,
+) -> Result<(f32, f32, MatchEnd)> {
+    let mut env = MatchEnv::new(seed);
+
+    loop {
+        // ── Left colony commander ──
+        let rich_left = match env.sim.colony_rich_observation(0) {
+            Some(r) => r,
+            None => break,
+        };
+        let (sl, pl, hl) = rich_to_tensors(&rich_left, device)?;
+        let (action_l, intent_l, _) = hac_left.mean_commander_action(&sl, &pl, &hl)?;
+        let avl: Vec<f32> = action_l.flatten_all()?.to_vec1()?;
+        // L11: document the 6-dim action invariant (can't fire — dims pinned).
+        debug_assert_eq!(avl.len(), 6, "commander action expects 6 dims");
+        let dec_l = antcolony_sim::AiDecision {
+            caste_ratio_worker: avl[0], caste_ratio_soldier: avl[1], caste_ratio_breeder: avl[2],
+            forage_weight: avl[3], dig_weight: avl[4], nurse_weight: avl[5], research_choice: None,
+        };
+        env.sim.apply_ai_decision(0, &dec_l);
+        let ivl: Vec<f32> = intent_l.flatten_all()?.to_vec1()?;
+        let mut intent_arr_l = [0.0f32; 64];
+        intent_arr_l.copy_from_slice(&ivl);
+        env.sim.apply_commander_intent(0, &intent_arr_l);
+
+        // ── Right colony commander ──
+        // Capture the right intent tensor for use in the ant tick loop.
+        let intent_r_opt: Option<candle_core::Tensor> =
+            if let Some(rich_right) = env.sim.colony_rich_observation(1) {
+                let (sr, pr, hr) = rich_to_tensors(&rich_right, device)?;
+                let (action_r, intent_r, _) = hac_right.mean_commander_action(&sr, &pr, &hr)?;
+                let avr: Vec<f32> = action_r.flatten_all()?.to_vec1()?;
+                debug_assert_eq!(avr.len(), 6, "commander action expects 6 dims");
+                let dec_r = antcolony_sim::AiDecision {
+                    caste_ratio_worker: avr[0], caste_ratio_soldier: avr[1], caste_ratio_breeder: avr[2],
+                    forage_weight: avr[3], dig_weight: avr[4], nurse_weight: avr[5], research_choice: None,
+                };
+                env.sim.apply_ai_decision(1, &dec_r);
+                let ivr: Vec<f32> = intent_r.flatten_all()?.to_vec1()?;
+                let mut intent_arr_r = [0.0f32; 64];
+                intent_arr_r.copy_from_slice(&ivr);
+                env.sim.apply_commander_intent(1, &intent_arr_r);
+                Some(intent_r)
+            } else {
+                None
+            };
+
+        let mut done = false;
+        for _ in 0..DECISION_CADENCE {
+            // ── Left ant modulators ──
+            let obs_l = env.sim.per_ant_observations(0);
+            if !obs_l.is_empty() {
+                let (cone, internal, intent_b) = ant_obs_to_tensors(&obs_l, &intent_l, device)?;
+                let mods_t = hac_left.mean_ant_modulator(&cone, &internal, &intent_b)?;
+                let flat: Vec<f32> = mods_t.flatten_all()?.to_vec1()?;
+                let mut mods = Vec::with_capacity(obs_l.len());
+                let mut ids = Vec::with_capacity(obs_l.len());
+                for (k, o) in obs_l.iter().enumerate() {
+                    let off = k * 5;
+                    mods.push(AntModulators {
+                        alpha_mult: flat[off], beta_mult: flat[off + 1],
+                        exploration_mod: flat[off + 2], deposit_mult: flat[off + 3],
+                        state_bias: flat[off + 4],
+                    });
+                    ids.push(o.ant_id);
+                }
+                env.sim.apply_ant_modulators(0, &mods, &ids);
+            }
+
+            // ── Right ant modulators ──
+            if let Some(ref intent_r) = intent_r_opt {
+                let obs_r = env.sim.per_ant_observations(1);
+                if !obs_r.is_empty() {
+                    let (cone_r, internal_r, intent_br) =
+                        ant_obs_to_tensors(&obs_r, intent_r, device)?;
+                    let mods_tr =
+                        hac_right.mean_ant_modulator(&cone_r, &internal_r, &intent_br)?;
+                    let flat_r: Vec<f32> = mods_tr.flatten_all()?.to_vec1()?;
+                    let mut mods_r = Vec::with_capacity(obs_r.len());
+                    let mut ids_r = Vec::with_capacity(obs_r.len());
+                    for (k, o) in obs_r.iter().enumerate() {
+                        let off = k * 5;
+                        mods_r.push(AntModulators {
+                            alpha_mult: flat_r[off], beta_mult: flat_r[off + 1],
+                            exploration_mod: flat_r[off + 2], deposit_mult: flat_r[off + 3],
+                            state_bias: flat_r[off + 4],
+                        });
+                        ids_r.push(o.ant_id);
+                    }
+                    env.sim.apply_ant_modulators(1, &mods_r, &ids_r);
+                }
+            }
+
+            env.sim.tick();
+            if !matches!(env.sim.match_status(), MatchStatus::InProgress)
+                || env.sim.tick >= env.max_ticks
+            {
+                done = true;
+                break;
+            }
+        }
+        if done {
+            break;
+        }
+    }
+
+    let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0) as f32;
+    let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
+    Ok(score_match(env.sim.match_status(), lw, rw))
+}
+
+/// Combined head-to-head win-rate of checkpoint A versus checkpoint B.
+#[derive(Clone, Debug)]
+pub struct H2HReport {
+    /// A's combined win-rate (worker-share metric): average of A-as-left and A-as-right.
+    pub a_winrate_ws: f32,
+    /// A's combined win-rate (decisive metric): average of A-as-left and A-as-right decisive.
+    pub a_winrate_decisive: f32,
+    /// A's win-rate when playing left colony (worker-share).
+    pub a_as_left_ws: f32,
+    /// A's win-rate when playing right colony (worker-share).
+    pub a_as_right_ws: f32,
+    /// Total matches played (= 2 * mpe).
+    pub matches: usize,
+}
+
+/// Play `mpe` matches A=left/B=right, then `mpe` matches B=left/A=right, and
+/// return A's head-to-head win-rate under both metrics. Uses the same seeding
+/// pattern as `evaluate_hac` (`0xE7A1 * spec_seed_salt(salt)`) with distinct
+/// salts for the two sides so the two sets of `mpe` matches see different seeds.
+pub fn evaluate_h2h(
+    hac_a: &HierarchicalActorCritic,
+    hac_b: &HierarchicalActorCritic,
+    device: &Device,
+    mpe: usize,
+) -> Result<H2HReport> {
+    let salt_ab = spec_seed_salt("h2h");
+    let salt_ba = spec_seed_salt("h2h-swap");
+
+    let mut ws_a_left = 0.0f32;
+    let mut dec_a_left = 0.0f32;
+    let mut ws_a_right = 0.0f32;
+    let mut dec_a_right = 0.0f32;
+    let mut played_ab = 0usize;
+    let mut played_ba = 0usize;
+
+    // A=left, B=right
+    for m in 0..mpe {
+        let seed = 0xE7A1_u64
+            .wrapping_mul(salt_ab)
+            ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+        match play_match_h2h(hac_a, hac_b, device, seed) {
+            Ok((ws, dec, _end)) => {
+                ws_a_left += ws;
+                dec_a_left += dec;
+                played_ab += 1;
+            }
+            Err(e) => tracing::error!(m, salt = "h2h", error = %e, "h2h match (A=left) failed; skipping"),
+        }
+    }
+
+    // B=left, A=right — LEFT score belongs to B; flip to get A's score.
+    // Symmetric under 1-x: draw (0.5) maps to 0.5 correctly.
+    for m in 0..mpe {
+        let seed = 0xE7A1_u64
+            .wrapping_mul(salt_ba)
+            ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+        match play_match_h2h(hac_b, hac_a, device, seed) {
+            Ok((ws, dec, _end)) => {
+                ws_a_right += 1.0 - ws;
+                dec_a_right += 1.0 - dec;
+                played_ba += 1;
+            }
+            Err(e) => tracing::error!(m, salt = "h2h-swap", error = %e, "h2h match (B=left) failed; skipping"),
+        }
+    }
+
+    let denom_ab = played_ab.max(1) as f32;
+    let denom_ba = played_ba.max(1) as f32;
+    let mean_ws_left = ws_a_left / denom_ab;
+    let mean_ws_right = ws_a_right / denom_ba;
+    let mean_dec_left = dec_a_left / denom_ab;
+    let mean_dec_right = dec_a_right / denom_ba;
+
+    let a_winrate_ws = (mean_ws_left + mean_ws_right) / 2.0;
+    let a_winrate_decisive = (mean_dec_left + mean_dec_right) / 2.0;
+
+    tracing::info!(
+        a_winrate_ws,
+        a_winrate_decisive,
+        a_as_left_ws = mean_ws_left,
+        a_as_right_ws = mean_ws_right,
+        matches = played_ab + played_ba,
+        "evaluate_h2h complete"
+    );
+
+    Ok(H2HReport {
+        a_winrate_ws,
+        a_winrate_decisive,
+        a_as_left_ws: mean_ws_left,
+        a_as_right_ws: mean_ws_right,
+        matches: played_ab + played_ba,
+    })
+}
+
 /// Diagnostic eval: same play loop as `play_match`, but logs WHAT the HAC
 /// commands (mean caste ratios — does it ever build soldiers?) and HOW the
 /// match ends (final caste counts per colony, queen health, win/loss/timeout).
@@ -379,6 +592,53 @@ mod tests {
         let total = o.won_left + o.won_right + o.draw
             + o.timeout_left + o.timeout_right + o.timeout_even;
         assert_eq!(total, 7, "every played match must land in exactly one outcome bucket");
+    }
+
+    #[test]
+    fn evaluate_h2h_same_policy_is_symmetric() {
+        use crate::self_play::load_frozen_hac;
+        use crate::hierarchical::sizing::A1;
+        use candle_core::{DType, Device};
+        use candle_nn::{VarBuilder, VarMap};
+
+        let device = Device::Cpu;
+
+        // Build a fresh HAC and save its varmap to a temp file.
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let _hac = HierarchicalActorCritic::new(vb, A1).unwrap();
+        let dir = std::env::temp_dir().join("h2h_sym_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hac_sym.safetensors");
+        varmap.save(&path).unwrap();
+
+        // Load it twice so A and B are the SAME weights.
+        let hac_a = load_frozen_hac(&path, A1, &device).unwrap();
+        let hac_b = load_frozen_hac(&path, A1, &device).unwrap();
+
+        let report = evaluate_h2h(&hac_a, &hac_b, &device, 3).unwrap();
+
+        assert_eq!(report.matches, 6, "2 * mpe matches must be played");
+        assert!(
+            (0.0..=1.0).contains(&report.a_winrate_ws),
+            "combined ws win-rate out of [0,1]: {}",
+            report.a_winrate_ws
+        );
+        assert!(
+            (0.0..=1.0).contains(&report.a_winrate_decisive),
+            "combined decisive win-rate out of [0,1]: {}",
+            report.a_winrate_decisive
+        );
+        assert!(
+            (0.0..=1.0).contains(&report.a_as_left_ws),
+            "a_as_left_ws out of [0,1]: {}",
+            report.a_as_left_ws
+        );
+        assert!(
+            (0.0..=1.0).contains(&report.a_as_right_ws),
+            "a_as_right_ws out of [0,1]: {}",
+            report.a_as_right_ws
+        );
     }
 
     #[test]
