@@ -60,3 +60,6 @@ C:Windows*
 
 # bench harness output (regenerable; logs + per-run reports)
 /bench/
+
+# agent worktree scratch (never commit)
+.claude/worktrees/
