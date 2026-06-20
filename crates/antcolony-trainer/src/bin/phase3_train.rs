@@ -19,7 +19,7 @@
 //! off against card memory; the chunk size only fixes the update-side ceiling.)
 
 use antcolony_trainer::hierarchical::sizing::{A1, A2};
-use antcolony_trainer::{Backend, CandleBackend, Phase3Config, RewardConfig, run_phase3};
+use antcolony_trainer::{Backend, CandleBackend, OpponentSampler, Phase3Config, RewardConfig, run_phase3};
 use antcolony_trainer::JointPpoConfig;
 use std::path::PathBuf;
 
@@ -119,6 +119,12 @@ fn main() -> anyhow::Result<()> {
         reward,
         joint,
         out_dir,
+        // SP1 self-play: off by default in the CLI binary (set via Phase3Config fields when needed)
+        self_play_enabled: false,
+        snapshot_every: 25,
+        pool_cap: 8,
+        opponent_sampling: OpponentSampler::Pfsp { archetype_mix: 0.5, power: 1.0 },
+        warm_start_snapshot: None,
     };
 
     let report = run_phase3(device, sizing, cfg)?;
