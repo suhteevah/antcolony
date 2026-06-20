@@ -209,6 +209,7 @@ fn main() -> anyhow::Result<()> {
         ant_chunk_size,
         max_grad_norm,
         sota = %sota.display(),
+        reward = ?reward_path,
         out = %out_dir.display(),
         "phase3_league start"
     );
@@ -236,6 +237,22 @@ fn main() -> anyhow::Result<()> {
         joint,
         reward,
     };
+
+    // ── Warn on eval-cadence misconfiguration ─────────────────────────────
+    // If league_steps is not a multiple of eval_every_steps the final step will
+    // not be evaluated and league_best.safetensors may not reflect the final
+    // (potentially best) weights. Make league_steps a multiple of eval_every_steps
+    // to avoid missing the last-step eval.
+    if eval_every_steps > 0 && league_steps % eval_every_steps != 0 {
+        tracing::warn!(
+            league_steps,
+            eval_every_steps,
+            "league_steps is not a multiple of eval_every_steps — the final \
+             league-step will not be evaluated; league_best.safetensors may not \
+             reflect the final/best weights. Recommend setting league_steps to a \
+             multiple of eval_every_steps."
+        );
+    }
 
     // ── Run the league ────────────────────────────────────────────────────
     let mut mgr = LeagueManager::new(cfg, device)?;

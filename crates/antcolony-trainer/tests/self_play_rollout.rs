@@ -16,6 +16,7 @@
 
 use antcolony_trainer::hierarchical::sizing::A1;
 use antcolony_trainer::reward::RewardConfig;
+use antcolony_trainer::self_play::Role;
 use antcolony_trainer::ParallelEnv;
 use antcolony_trainer::{JointPpoConfig, JointPpoTrainer, OpponentSampler, SnapshotPool};
 use candle_core::Device;
@@ -34,7 +35,7 @@ fn rollout_with_snapshot_opponent_drives_both_colonies_finite() {
     // A pool that ONLY offers the snapshot (force the HAC-opponent path).
     let mut pool = SnapshotPool::with_archetypes(8, 0.1);
     pool.entries.clear(); // remove archetypes for this test
-    pool.add_snapshot("opp", &snap);
+    pool.add_snapshot("opp", &snap, Role::Main);
 
     let mut pe = ParallelEnv::new(2, 4);
     pe.self_play_enabled = true; // ON: pool-sampled opponent (the snapshot)
@@ -110,7 +111,7 @@ fn left_training_rng_unperturbed_by_self_play() {
     // ── Run B: self-play ON — a snapshot opponent sampled via a SEPARATE rng. ──
     let mut pool = SnapshotPool::with_archetypes(8, 0.1);
     pool.entries.clear();
-    pool.add_snapshot("guard_opp", &snap); // pool of exactly one snapshot
+    pool.add_snapshot("guard_opp", &snap, Role::Main); // pool of exactly one snapshot
     let mut pe_on = ParallelEnv::new(2, 4);
     pe_on.self_play_enabled = true;
     pe_on.pool = pool;
