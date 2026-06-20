@@ -56,6 +56,13 @@ fn main() -> anyhow::Result<()> {
     let mut sizing_name = "a1".to_string(); // a1 (default) | a2
     let mut reward_path: Option<PathBuf> = None;
     let mut out_dir = PathBuf::from("bench/phase3-a1");
+    // SP1 self-play flags (all default to Phase3Config defaults so existing invocations are unchanged)
+    let mut self_play_enabled = false;
+    let mut snapshot_every = 25usize;
+    let mut pool_cap = 8usize;
+    let mut opponent_sampling_str = "pfsp".to_string();
+    let mut archetype_mix = 0.5f32;
+    let mut warm_start_snapshot: Option<PathBuf> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -76,6 +83,13 @@ fn main() -> anyhow::Result<()> {
             "--sizing" => { sizing_name = next(); i += 2; }
             "--reward" => { reward_path = Some(PathBuf::from(next())); i += 2; }
             "--out" => { out_dir = PathBuf::from(next()); i += 2; }
+            // SP1 self-play flags
+            "--self-play" => { self_play_enabled = true; i += 1; }
+            "--snapshot-every" => { snapshot_every = parse_or_exit("--snapshot-every", &next()); i += 2; }
+            "--pool-cap" => { pool_cap = parse_or_exit("--pool-cap", &next()); i += 2; }
+            "--opponent-sampling" => { opponent_sampling_str = next(); i += 2; }
+            "--archetype-mix" => { archetype_mix = parse_or_exit("--archetype-mix", &next()); i += 2; }
+            "--warm-start-snapshot" => { warm_start_snapshot = Some(PathBuf::from(next())); i += 2; }
             other => { tracing::warn!(arg = other, "unknown flag, ignoring"); i += 1; }
         }
     }
@@ -93,6 +107,15 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    let opponent_sampling = match opponent_sampling_str.as_str() {
+        "uniform" => OpponentSampler::Uniform,
+        "pfsp" => OpponentSampler::Pfsp { archetype_mix, power: 1.0 },
+        other => {
+            tracing::error!(value = other, "--opponent-sampling must be 'uniform' or 'pfsp'");
+            std::process::exit(2);
+        }
+    };
+
     let backend = CandleBackend::new()?;
     let device = backend.device().clone();
     let sizing = match sizing_name.as_str() {
@@ -102,6 +125,9 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(
         cuda = backend.cuda_available(), iters, envs, rollout_cycles, ant_chunk_size,
         max_grad_norm, early_stop_patience, sizing = %sizing_name,
+        self_play = self_play_enabled, snapshot_every, pool_cap,
+        opponent_sampling = %opponent_sampling_str, archetype_mix,
+        warm_start_snapshot = ?warm_start_snapshot,
         "phase3 start"
     );
 
@@ -119,12 +145,11 @@ fn main() -> anyhow::Result<()> {
         reward,
         joint,
         out_dir,
-        // SP1 self-play: off by default in the CLI binary (set via Phase3Config fields when needed)
-        self_play_enabled: false,
-        snapshot_every: 25,
-        pool_cap: 8,
-        opponent_sampling: OpponentSampler::Pfsp { archetype_mix: 0.5, power: 1.0 },
-        warm_start_snapshot: None,
+        self_play_enabled,
+        snapshot_every,
+        pool_cap,
+        opponent_sampling,
+        warm_start_snapshot,
     };
 
     let report = run_phase3(device, sizing, cfg)?;
