@@ -181,9 +181,11 @@ pub fn run_phase3(device: Device, sizing: Sizing, cfg: Phase3Config) -> Result<P
         }
     }
 
-    // Final eval — only when eval is actually enabled (eval_every > 0).
-    // The self-play smoke sets eval_every large (>iterations) to skip all evals.
-    if cfg.eval_every > 0 {
+    // Final eval runs UNCONDITIONALLY when self-play is OFF — preserving the
+    // exact pre-self-play behavior (the byte-identical-when-off guarantee). When
+    // self-play is ON it is gated on `eval_every > 0`, so the eval-light self-play
+    // smoke (which sets eval_every = 0) skips full-match eval and stays fast.
+    if !cfg.self_play_enabled || cfg.eval_every > 0 {
         let final_ev = evaluate_hac(&trainer.hac, &trainer.device, cfg.matches_per_eval)?;
         tracing::info!(mean_win_rate = final_ev.mean_win_rate, "phase3 final eval");
         let _ = trainer.varmap.save(cfg.out_dir.join("hac_final.safetensors"));
