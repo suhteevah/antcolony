@@ -29,6 +29,7 @@ pub mod joint_ppo;
 pub mod reward;
 pub mod parallel_env;
 pub mod phase3;
+pub mod self_play;
 pub use hierarchical::{HierarchicalActorCritic, CommanderPolicy, AntPolicy, Sizing};
 pub use parallel_env::ParallelEnv;
 pub use joint_ppo::{JointPpoConfig, JointPpoTrainer, JointRollout, JointLossStats};
@@ -42,6 +43,7 @@ pub use policy::ActorCritic;
 pub use ppo::{PpoConfig, PpoTrainer};
 pub use env::{MatchEnv, Trajectory, StepRecord};
 pub use league::League;
+pub use self_play::{SnapshotPool, OpponentKind};
 
 /// Match the MlpBrain layout in crates/antcolony-sim/src/ai/brain.rs.
 /// `INPUT_DIM` and `OUTPUT_DIM` are locked by the sim's state/decision
