@@ -114,7 +114,7 @@ pub fn run_phase3(device: Device, sizing: Sizing, cfg: Phase3Config) -> Result<P
         pe.pool = SnapshotPool::with_archetypes(cfg.pool_cap, 0.1);
         pe.sampler = cfg.opponent_sampling;
         if let Some(ref p) = cfg.warm_start_snapshot {
-            pe.pool.add_snapshot("sota", p.clone());
+            pe.pool.add_snapshot("sota", p.clone(), crate::self_play::Role::Main);
             tracing::info!(path = %p.display(), "phase3: warm-start snapshot added to pool");
         }
     }
@@ -148,7 +148,7 @@ pub fn run_phase3(device: Device, sizing: Sizing, cfg: Phase3Config) -> Result<P
             match trainer.varmap.save(&snap_path) {
                 Ok(()) => {
                     tracing::info!(iter = it, path = %snap_path.display(), "phase3: snapshot saved");
-                    pe.pool.add_snapshot(format!("snap{it:04}"), snap_path);
+                    pe.pool.add_snapshot(format!("snap{it:04}"), snap_path, crate::self_play::Role::Main);
                 }
                 Err(e) => tracing::warn!(iter = it, error = %e, "phase3: snapshot save failed"),
             }

@@ -36,6 +36,16 @@ pub fn load_frozen_hac(
     Ok(trainer.hac)
 }
 
+/// Role tag for pool entries — distinguishes the main training agent's snapshots
+/// from exploiter-branch checkpoints and the fixed archetype opponents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Archetype,
+    Main,
+    MainExploiter,
+    LeagueExploiter,
+}
+
 #[derive(Clone, Debug)]
 pub enum OpponentKind {
     Archetype(String),
@@ -47,6 +57,10 @@ pub struct PoolEntry {
     pub kind: OpponentKind,
     pub win_rate_ema: f32,
     pub games: u32,
+    /// Role tag — used by SP2 to distinguish main/exploiter snapshots.
+    pub role: Role,
+    /// Protected entries are never evicted (SOTA seed, best-main, archetypes).
+    pub protected: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -64,29 +78,68 @@ impl SnapshotPool {
                 kind: OpponentKind::Archetype((*a).to_string()),
                 win_rate_ema: 0.5,
                 games: 0,
+                role: Role::Archetype,
+                protected: true,
             })
             .collect();
         Self { entries, pool_cap, ema_alpha }
     }
 
+    /// Count of evictable (non-protected, non-archetype) snapshot entries.
     pub fn snapshot_count(&self) -> usize {
-        self.entries.iter().filter(|e| matches!(e.kind, OpponentKind::Snapshot { .. })).count()
+        self.entries.iter().filter(|e| {
+            matches!(e.kind, OpponentKind::Snapshot { .. })
+                && !e.protected
+                && e.role != Role::Archetype
+        }).count()
     }
 
-    pub fn add_snapshot(&mut self, name: impl Into<String>, path: impl Into<PathBuf>) {
+    /// Add a snapshot with the given role. When the evictable count exceeds
+    /// `pool_cap`, the oldest non-protected, non-archetype entry is removed.
+    pub fn add_snapshot(&mut self, name: impl Into<String>, path: impl Into<PathBuf>, role: Role) {
+        let name: String = name.into();
+        let path: PathBuf = path.into();
+        tracing::debug!(name = %name, "add_snapshot: appending entry");
         self.entries.push(PoolEntry {
-            kind: OpponentKind::Snapshot { name: name.into(), path: path.into() },
+            kind: OpponentKind::Snapshot { name, path },
             win_rate_ema: 0.5,
             games: 0,
+            role,
+            protected: false,
         });
         while self.snapshot_count() > self.pool_cap {
-            // evict the oldest snapshot = lowest-index Snapshot entry
-            if let Some(pos) = self.entries.iter().position(|e| matches!(e.kind, OpponentKind::Snapshot { .. })) {
+            // Evict the oldest non-protected, non-archetype snapshot.
+            if let Some(pos) = self.entries.iter().position(|e| {
+                matches!(e.kind, OpponentKind::Snapshot { .. })
+                    && !e.protected
+                    && e.role != Role::Archetype
+            }) {
+                tracing::debug!(pos, "add_snapshot: evicting oldest unprotected entry");
                 self.entries.remove(pos);
             } else {
                 break;
             }
         }
+    }
+
+    /// Add a protected snapshot (SOTA seed, best-main). Protected entries are
+    /// never evicted and do not count toward `pool_cap`.
+    pub fn add_protected_snapshot(
+        &mut self,
+        name: impl Into<String>,
+        path: impl Into<PathBuf>,
+        role: Role,
+    ) {
+        let name: String = name.into();
+        let path: PathBuf = path.into();
+        tracing::debug!(name = %name, "add_protected_snapshot: appending protected entry");
+        self.entries.push(PoolEntry {
+            kind: OpponentKind::Snapshot { name, path },
+            win_rate_ema: 0.5,
+            games: 0,
+            role,
+            protected: true,
+        });
     }
 
     pub fn record_result(&mut self, idx: usize, hac_won: f32) {
@@ -170,9 +223,9 @@ mod tests {
     #[test]
     fn add_snapshot_evicts_oldest_keeps_archetypes() {
         let mut p = SnapshotPool::with_archetypes(2, 0.1);
-        p.add_snapshot("s0", "a/0.safetensors");
-        p.add_snapshot("s1", "a/1.safetensors");
-        p.add_snapshot("s2", "a/2.safetensors"); // cap=2 -> evict s0
+        p.add_snapshot("s0", "a/0.safetensors", Role::Main);
+        p.add_snapshot("s1", "a/1.safetensors", Role::Main);
+        p.add_snapshot("s2", "a/2.safetensors", Role::Main); // cap=2 -> evict s0
         assert_eq!(p.snapshot_count(), 2);
         // 7 archetypes still present
         assert_eq!(p.entries.iter().filter(|e| matches!(e.kind, OpponentKind::Archetype(_))).count(), 7);
@@ -194,7 +247,7 @@ mod tests {
     fn uniform_sampler_covers_all_entries() {
         use rand::SeedableRng;
         let mut p = SnapshotPool::with_archetypes(8, 0.1);
-        p.add_snapshot("s0", "a/0.safetensors");
+        p.add_snapshot("s0", "a/0.safetensors", Role::Main);
         let s = OpponentSampler::Uniform;
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
         let mut seen = std::collections::HashSet::new();
@@ -206,8 +259,8 @@ mod tests {
     fn pfsp_favors_losing_matchups_and_honors_mix() {
         use rand::SeedableRng;
         let mut p = SnapshotPool::with_archetypes(8, 0.1);
-        p.add_snapshot("strong", "a/strong.safetensors"); // HAC loses to it
-        p.add_snapshot("weak", "a/weak.safetensors");     // HAC beats it
+        p.add_snapshot("strong", "a/strong.safetensors", Role::Main); // HAC loses to it
+        p.add_snapshot("weak", "a/weak.safetensors", Role::Main);     // HAC beats it
         let strong_idx = p.entries.len() - 2;
         let weak_idx = p.entries.len() - 1;
         p.entries[strong_idx].win_rate_ema = 0.1; // HAC mostly loses -> high priority
@@ -235,5 +288,22 @@ mod tests {
             let i = s.sample(&p, &mut rng);
             assert!(matches!(p.entries[i].kind, OpponentKind::Archetype(_)));
         }
+    }
+
+    #[test]
+    fn add_snapshot_carries_role_and_evicts_unprotected_only() {
+        let mut p = SnapshotPool::with_archetypes(2, 0.1);
+        p.add_protected_snapshot("sota", "s/sota.st", Role::Main);
+        p.add_snapshot("e0", "s/e0.st", Role::MainExploiter);
+        p.add_snapshot("e1", "s/e1.st", Role::MainExploiter);
+        p.add_snapshot("e2", "s/e2.st", Role::LeagueExploiter); // cap=2 snapshots beyond protected? evict oldest UNPROTECTED snapshot
+        // protected sota + archetypes never evicted; oldest unprotected (e0) gone
+        let names: Vec<&str> = p.entries.iter().filter_map(|e| match &e.kind {
+            OpponentKind::Snapshot { name, .. } => Some(name.as_str()), _ => None }).collect();
+        assert!(names.contains(&"sota"), "protected snapshot kept");
+        assert!(!names.contains(&"e0"), "oldest unprotected evicted");
+        assert_eq!(p.entries.iter().filter(|e| e.role == Role::Archetype).count(), 7);
+        // role tag present
+        assert!(p.entries.iter().any(|e| e.role == Role::MainExploiter));
     }
 }
