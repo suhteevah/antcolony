@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use rand::Rng;
+
 use crate::eval::BENCH_ARCHETYPES;
 
 #[derive(Clone, Debug)]
@@ -67,6 +69,45 @@ impl SnapshotPool {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum OpponentSampler {
+    Uniform,
+    Pfsp { archetype_mix: f32, power: f32 },
+}
+
+impl OpponentSampler {
+    pub fn sample(&self, pool: &SnapshotPool, rng: &mut rand_chacha::ChaCha8Rng) -> usize {
+        match self {
+            OpponentSampler::Uniform => rng.gen_range(0..pool.entries.len().max(1)),
+            OpponentSampler::Pfsp { archetype_mix, power } => {
+                let arche: Vec<usize> = pool.entries.iter().enumerate()
+                    .filter(|(_, e)| matches!(e.kind, OpponentKind::Archetype(_)))
+                    .map(|(i, _)| i).collect();
+                let snaps: Vec<usize> = pool.entries.iter().enumerate()
+                    .filter(|(_, e)| matches!(e.kind, OpponentKind::Snapshot { .. }))
+                    .map(|(i, _)| i).collect();
+                let use_archetype = snaps.is_empty() || rng.r#gen::<f32>() < *archetype_mix;
+                if use_archetype && !arche.is_empty() {
+                    arche[rng.gen_range(0..arche.len())]
+                } else if !snaps.is_empty() {
+                    let weights: Vec<f32> = snaps.iter()
+                        .map(|&i| (1.0 - pool.entries[i].win_rate_ema).max(1e-3).powf(*power))
+                        .collect();
+                    let total: f32 = weights.iter().sum();
+                    let mut r = rng.r#gen::<f32>() * total;
+                    for (k, &w) in weights.iter().enumerate() {
+                        r -= w;
+                        if r <= 0.0 { return snaps[k]; }
+                    }
+                    *snaps.last().unwrap()
+                } else {
+                    0
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +142,52 @@ mod tests {
         assert!((p.entries[0].win_rate_ema - 0.75).abs() < 1e-6);
         assert_eq!(p.entries[0].games, 1);
         p.record_result(999, 1.0); // out of range = no-op (no panic)
+    }
+
+    #[test]
+    fn uniform_sampler_covers_all_entries() {
+        use rand::SeedableRng;
+        let mut p = SnapshotPool::with_archetypes(8, 0.1);
+        p.add_snapshot("s0", "a/0.safetensors");
+        let s = OpponentSampler::Uniform;
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..500 { seen.insert(s.sample(&p, &mut rng)); }
+        assert_eq!(seen.len(), p.entries.len());
+    }
+
+    #[test]
+    fn pfsp_favors_losing_matchups_and_honors_mix() {
+        use rand::SeedableRng;
+        let mut p = SnapshotPool::with_archetypes(8, 0.1);
+        p.add_snapshot("strong", "a/strong.safetensors"); // HAC loses to it
+        p.add_snapshot("weak", "a/weak.safetensors");     // HAC beats it
+        let strong_idx = p.entries.len() - 2;
+        let weak_idx = p.entries.len() - 1;
+        p.entries[strong_idx].win_rate_ema = 0.1; // HAC mostly loses -> high priority
+        p.entries[weak_idx].win_rate_ema = 0.9;   // HAC mostly wins  -> low priority
+        let s = OpponentSampler::Pfsp { archetype_mix: 0.0, power: 1.0 }; // snapshots only
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(7);
+        let (mut strong_n, mut weak_n) = (0u32, 0u32);
+        for _ in 0..2000 {
+            match s.sample(&p, &mut rng) {
+                i if i == strong_idx => strong_n += 1,
+                i if i == weak_idx => weak_n += 1,
+                _ => {}
+            }
+        }
+        assert!(strong_n > weak_n * 3, "PFSP must oversample the matchup we lose: strong={strong_n} weak={weak_n}");
+    }
+
+    #[test]
+    fn pfsp_empty_pool_returns_archetype() {
+        use rand::SeedableRng;
+        let p = SnapshotPool::with_archetypes(8, 0.1); // no snapshots
+        let s = OpponentSampler::Pfsp { archetype_mix: 0.5, power: 1.0 };
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(3);
+        for _ in 0..50 {
+            let i = s.sample(&p, &mut rng);
+            assert!(matches!(p.entries[i].kind, OpponentKind::Archetype(_)));
+        }
     }
 }
