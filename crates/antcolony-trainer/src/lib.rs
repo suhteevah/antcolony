@@ -30,6 +30,7 @@ pub mod reward;
 pub mod parallel_env;
 pub mod phase3;
 pub mod self_play;
+pub mod exploiter_league;
 pub use hierarchical::{HierarchicalActorCritic, CommanderPolicy, AntPolicy, Sizing};
 pub use parallel_env::ParallelEnv;
 pub use joint_ppo::{JointPpoConfig, JointPpoTrainer, JointRollout, JointLossStats};
