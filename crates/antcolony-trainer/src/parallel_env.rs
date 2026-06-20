@@ -17,9 +17,10 @@ use antcolony_sim::{AiBrain, AiDecision, MatchStatus};
 
 use crate::env::{MatchEnv, DECISION_CADENCE};
 use crate::hierarchical::obs_to_tensors::{ant_obs_to_tensors, rich_batch_to_tensors};
-use crate::hierarchical::sizing::{FIXED_INTENT_D, FIXED_MODULATOR_D};
+use crate::hierarchical::sizing::{Sizing, A1, FIXED_INTENT_D, FIXED_MODULATOR_D};
 use crate::joint_ppo::{AntBatch, CommanderRecord, JointRollout};
 use crate::reward::{compute_step_reward, ColonyMetrics, RewardConfig};
+use crate::self_play::{load_frozen_hac, OpponentKind, OpponentSampler, SnapshotPool};
 use crate::HierarchicalActorCritic;
 use crate::League;
 
@@ -27,11 +28,37 @@ pub struct ParallelEnv {
     pub n_envs: usize,
     pub rollout_cycles: usize,
     pub league: League,
+    /// SP1 self-play opponent pool (7 archetypes + capped FIFO of frozen HAC
+    /// self-snapshots). Defaults to archetypes-only so legacy callers behave
+    /// exactly as before.
+    pub pool: SnapshotPool,
+    /// How the pool is sampled to pick the single per-rollout opponent.
+    pub sampler: OpponentSampler,
+    /// Network sizing used to materialize a frozen-HAC snapshot opponent.
+    /// Must match the training HAC's sizing (default A1).
+    pub sizing: Sizing,
+    /// Index (into `pool.entries`) of the opponent chosen for the most recent
+    /// `collect_rollout`. Phase3/Task 5 reads this to call `pool.record_result`.
+    pub last_opponent_idx: usize,
+    /// Scalar in [0,1] summarizing how the LEFT (training) HAC fared against the
+    /// chosen opponent in the most recent rollout — mean over envs of
+    /// `left_workers / (left_workers + right_workers)` at rollout end
+    /// (0.5 when undefined). Feeds the PFSP EMA; not a perfect win metric.
+    pub last_hac_winshare: f32,
 }
 
 impl ParallelEnv {
     pub fn new(n_envs: usize, rollout_cycles: usize) -> Self {
-        Self { n_envs, rollout_cycles, league: League::default_pool() }
+        Self {
+            n_envs,
+            rollout_cycles,
+            league: League::default_pool(),
+            pool: SnapshotPool::with_archetypes(8, 0.1),
+            sampler: OpponentSampler::Uniform,
+            sizing: A1,
+            last_opponent_idx: 0,
+            last_hac_winshare: 0.5,
+        }
     }
 }
 
@@ -82,23 +109,64 @@ impl ParallelEnv {
         base_seed: u64,
     ) -> Result<JointRollout> {
         tracing::debug!(n_envs = self.n_envs, rollout_cycles = self.rollout_cycles, base_seed, "parallel rollout start");
+
+        // ── SP1: pick ONE opponent for the whole rollout (all envs share it) ──
+        // Sampling once (not per-env) keeps the right-side HAC a single batched
+        // forward (same frozen weights), mirroring the left side.
+        let opp_idx = if self.pool.entries.is_empty() {
+            tracing::warn!("opponent pool is empty; defaulting opponent idx to 0");
+            0
+        } else {
+            self.sampler.sample(&self.pool, rng)
+        };
+        self.last_opponent_idx = opp_idx;
+        let opp_kind = self.pool.entries.get(opp_idx).map(|e| e.kind.clone());
+
+        // If the chosen opponent is a frozen-HAC snapshot, try to load it ONCE.
+        // A bad/missing snapshot must NOT abort the run: log and fall back to the
+        // per-env archetype path (heuristic spec), mirroring the existing M16
+        // fallback. `frozen_opp` is None unless a snapshot loaded successfully.
+        let (opp_spec, frozen_opp): (String, Option<HierarchicalActorCritic>) = match &opp_kind {
+            Some(OpponentKind::Snapshot { name, path }) => {
+                match load_frozen_hac(path, self.sizing, device) {
+                    Ok(hac) => {
+                        tracing::debug!(opp_idx, %name, "snapshot opponent loaded; right colony driven by frozen HAC");
+                        // spec is unused on the snapshot path; "heuristic" is a safe
+                        // sentinel in case a per-env brain is ever needed.
+                        ("heuristic".to_string(), Some(hac))
+                    }
+                    Err(e) => {
+                        tracing::error!(opp_idx, %name, path = %path.display(), error = %e, "bad snapshot opponent; falling back to heuristic archetype");
+                        ("heuristic".to_string(), None)
+                    }
+                }
+            }
+            Some(OpponentKind::Archetype(spec)) => (spec.clone(), None),
+            None => {
+                tracing::warn!(opp_idx, "opponent idx out of range; falling back to heuristic archetype");
+                ("heuristic".to_string(), None)
+            }
+        };
+        let snapshot_path = frozen_opp.is_some();
+
         let mut envs: Vec<MatchEnv> = Vec::with_capacity(self.n_envs);
+        // Per-env archetype brains are only needed when NOT on the snapshot path.
         let mut opponents: Vec<Box<dyn AiBrain>> = Vec::with_capacity(self.n_envs);
         for i in 0..self.n_envs {
             let seed = base_seed ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15));
             envs.push(MatchEnv::new(seed));
-            let pick = (i + (base_seed as usize)) % self.league.entries.len();
-            let spec = self.league.entries[pick].spec.clone();
-            // M16: a bad league spec (typo'd --add-opp, missing snapshot) must
-            // not abort the whole run. Log it and fall back to the heuristic
-            // brain for this env so training continues. `heuristic` is hardcoded
-            // and infallible, so the unwrap_or_else can't itself fail.
-            let brain = League::make_brain(&spec, seed.wrapping_add(1)).unwrap_or_else(|e| {
-                tracing::error!(env = i, spec = %spec, error = %e, "bad league entry; falling back to heuristic");
-                League::make_brain("heuristic", seed.wrapping_add(1))
-                    .expect("heuristic brain is infallible")
-            });
-            opponents.push(brain);
+            if !snapshot_path {
+                // M16: a bad spec (typo'd --add-opp, missing snapshot) must not
+                // abort the whole run. Log it and fall back to the heuristic brain
+                // for this env so training continues. `heuristic` is hardcoded and
+                // infallible, so the unwrap_or_else can't itself fail.
+                let brain = League::make_brain(&opp_spec, seed.wrapping_add(1)).unwrap_or_else(|e| {
+                    tracing::error!(env = i, spec = %opp_spec, error = %e, "bad opponent spec; falling back to heuristic");
+                    League::make_brain("heuristic", seed.wrapping_add(1))
+                        .expect("heuristic brain is infallible")
+                });
+                opponents.push(brain);
+            }
         }
 
         let mut out = JointRollout::default();
@@ -150,9 +218,58 @@ impl ParallelEnv {
                 envs[i].sim.apply_ai_decision(0, &dec);
                 let intent = row_to_intent(&cmdr.intent, j)?;
                 envs[i].sim.apply_commander_intent(0, &intent);
-                if let Some(sr) = envs[i].sim.colony_ai_state(1) {
-                    let dr = opponents[i].decide(&sr);
-                    envs[i].sim.apply_ai_decision(1, &dr);
+            }
+
+            // ── Right colony (the opponent) commander forward ──
+            // Two mutually exclusive paths: a frozen-HAC self-snapshot drives the
+            // right colony with its own MEAN commander action (batched across
+            // active envs, mirroring the left), OR cheap per-env archetype brains
+            // drive it via `decide`. `right_intent` maps env idx -> the frozen
+            // HAC's right-colony intent tensor [1,64] for that cycle, consumed by
+            // the per-tick right ant forward below (empty on the archetype path).
+            let mut right_intent: std::collections::HashMap<usize, Tensor> =
+                std::collections::HashMap::new();
+            if let Some(frozen) = frozen_opp.as_ref() {
+                // Batch the right colony's rich observations over active envs that
+                // still have a live right colony. Envs whose right colony is gone
+                // simply get no decision this cycle (the match is effectively over
+                // for them).
+                let r_active: Vec<usize> = active
+                    .iter()
+                    .copied()
+                    .filter(|&i| envs[i].sim.colony_rich_observation(1).is_some())
+                    .collect();
+                if !r_active.is_empty() {
+                    let r_riches: Vec<_> = r_active
+                        .iter()
+                        .map(|&i| {
+                            envs[i]
+                                .sim
+                                .colony_rich_observation(1)
+                                .expect("r_active => Some: filtered by is_some() above")
+                        })
+                        .collect();
+                    let r_refs: Vec<_> = r_riches.iter().collect();
+                    let (r_state, r_pher, r_hist) = rich_batch_to_tensors(&r_refs, device)?;
+                    // MEAN action (no sampling, no gradient) — the opponent is frozen.
+                    let (r_action, r_intent_b, _r_value) =
+                        frozen.mean_commander_action(&r_state, &r_pher, &r_hist)?;
+                    for (j, &i) in r_active.iter().enumerate() {
+                        let dec = row_to_decision(&r_action, j)?;
+                        envs[i].sim.apply_ai_decision(1, &dec);
+                        let intent = row_to_intent(&r_intent_b, j)?;
+                        envs[i].sim.apply_commander_intent(1, &intent);
+                        // Keep this env's [1,64] intent row for its ant forward.
+                        right_intent.insert(i, r_intent_b.narrow(0, j, 1)?);
+                    }
+                }
+            } else {
+                // `opponents` is indexed by env idx (built for all n_envs above).
+                for &i in &active {
+                    if let Some(sr) = envs[i].sim.colony_ai_state(1) {
+                        let dr = opponents[i].decide(&sr);
+                        envs[i].sim.apply_ai_decision(1, &dr);
+                    }
                 }
             }
 
@@ -235,6 +352,71 @@ impl ParallelEnv {
                         value: val,
                     });
                 }
+
+                // ── Frozen-HAC right colony: per-tick MEAN ant modulators ──
+                // Only on the snapshot path. Batched across active envs (same
+                // weights), mirroring the left side, but written to colony 1 and
+                // NOT recorded in `out` (the right colony is not being trained).
+                if let Some(frozen) = frozen_opp.as_ref() {
+                    let mut r_cones: Vec<Tensor> = Vec::new();
+                    let mut r_internals: Vec<Tensor> = Vec::new();
+                    let mut r_intents: Vec<Tensor> = Vec::new();
+                    let mut r_index: Vec<(usize, u32)> = Vec::new();
+                    for &i in &active {
+                        if done[i] {
+                            continue;
+                        }
+                        // Need this env's right-colony intent row from the cycle's
+                        // frozen commander forward; skip if the right colony had no
+                        // observation this cycle.
+                        let Some(intent_row) = right_intent.get(&i) else {
+                            continue;
+                        };
+                        let obs = envs[i].sim.per_ant_observations(1);
+                        if obs.is_empty() {
+                            continue;
+                        }
+                        let (cone, internal, intent_b) =
+                            ant_obs_to_tensors(&obs, intent_row, device)?;
+                        for o in &obs {
+                            r_index.push((i, o.ant_id));
+                        }
+                        r_cones.push(cone);
+                        r_internals.push(internal);
+                        r_intents.push(intent_b);
+                    }
+                    if !r_index.is_empty() {
+                        let cone = Tensor::cat(&r_cones, 0)?;
+                        let internal = Tensor::cat(&r_internals, 0)?;
+                        let intent = Tensor::cat(&r_intents, 0)?;
+                        let mods_t = frozen.mean_ant_modulator(&cone, &internal, &intent)?;
+                        let mod_rows: Vec<Vec<f32>> = mods_t.to_vec2()?;
+                        let mut row = 0usize;
+                        for &i in &active {
+                            if done[i] {
+                                continue;
+                            }
+                            let mut mods: Vec<AntModulators> = Vec::new();
+                            let mut ids: Vec<u32> = Vec::new();
+                            while row < r_index.len() && r_index[row].0 == i {
+                                let m = &mod_rows[row];
+                                mods.push(AntModulators {
+                                    alpha_mult: m[0],
+                                    beta_mult: m[1],
+                                    exploration_mod: m[2],
+                                    deposit_mult: m[3],
+                                    state_bias: m[4],
+                                });
+                                ids.push(r_index[row].1);
+                                row += 1;
+                            }
+                            if !ids.is_empty() {
+                                envs[i].sim.apply_ant_modulators(1, &mods, &ids);
+                            }
+                        }
+                    }
+                }
+
                 for &i in &active {
                     if done[i] {
                         continue;
@@ -289,9 +471,28 @@ impl ParallelEnv {
                 envs[i].sim.push_commander_history(0, st, ac, reward_left);
             }
         }
+        // ── HAC win-share vs this opponent (feeds the PFSP EMA) ──
+        // Mean over envs of left_workers / (left_workers + right_workers) at
+        // rollout end. Per-env div-by-zero (both colonies wiped) is graded 0.5.
+        // The overall mean falls back to 0.5 if there are no envs.
+        let mut share_sum = 0.0f32;
+        for env in &envs {
+            let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0) as f32;
+            let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
+            let denom = lw + rw;
+            share_sum += if denom > 0.0 { lw / denom } else { 0.5 };
+        }
+        self.last_hac_winshare = if envs.is_empty() {
+            0.5
+        } else {
+            share_sum / envs.len() as f32
+        };
+
         tracing::debug!(
             commander_records = out.commander.len(),
             ant_records = out.ant.len(),
+            opponent_idx = self.last_opponent_idx,
+            hac_winshare = self.last_hac_winshare,
             "parallel rollout complete"
         );
         Ok(out)

@@ -43,7 +43,7 @@ pub use policy::ActorCritic;
 pub use ppo::{PpoConfig, PpoTrainer};
 pub use env::{MatchEnv, Trajectory, StepRecord};
 pub use league::League;
-pub use self_play::{SnapshotPool, OpponentKind};
+pub use self_play::{SnapshotPool, OpponentKind, OpponentSampler};
 
 /// Match the MlpBrain layout in crates/antcolony-sim/src/ai/brain.rs.
 /// `INPUT_DIM` and `OUTPUT_DIM` are locked by the sim's state/decision
