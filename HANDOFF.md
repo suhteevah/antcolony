@@ -1,10 +1,25 @@
 # HANDOFF.md — Phased Implementation Spec
 
-**Last Updated:** 2026-06-19 — THREE cnc P100 runs. (1) grad-clip FIXED the late-training collapse (A1 final 0.629). (2) A2 (~95M) → NEGATIVE (single-card can't feed its batch; needs multi-GPU). (3) **A1 + combat.toml reward = NEW SOTA, validated 0.871** (mpe=50; reward-only change, monotonic curve, lifted the whole field). **Dual-metric check: 0.871 worker-share ≈ 0.874 decisive, winning by actual queen-kill in 303/350 (87%) matches** — real on the hard metric, +0.37 over v1's ~0.50, NOT a timeout artifact. Keeper: `bench/phase3-a1-combat/hac_best.safetensors`.
+**Last Updated:** 2026-06-20 — **SP2 exploiter league BUILT + merged to `main` (656d212); NOT yet run.** Self-play arc this day: runs #1/#2 (combat.toml) collapsed → run #3 (terminal.toml) was the turnaround (combat_loss_penalty was the poison; reached **near-peer h2h 0.395** vs SOTA, no collapse). To EXCEED the peer plateau → built the AlphaStar exploiter league (main + main-exploiters + league-exploiters, single-GPU round-robin, terminal reward) via subagent-driven TDD (6 tasks, opus reviews; final review caught a Critical broken-test-call-site, fixed, suite green). **NEXT: SP2 15-step pilot on cnc** (`scripts/run_league_cnc.sh`) — success = `league_best.safetensors` beats SOTA on `evaluate_h2h` mpe=50. **Standing SOTA keeper unchanged: `bench/phase3-a1-combat/hac_best.safetensors` (0.871 ws / 0.874 decisive)** until league_best clears it.
+
+(Prior 2026-06-19 banner: three cnc runs — grad-clip fixed late collapse (A1 0.629); A2 ~95M NEGATIVE (single-card can't feed its batch); A1+combat.toml = the 0.871/0.874 SOTA. Full self-play + SP2 detail in `J:\llm-wiki\projects\antcolony-rl-training-log.md`.)
 
 This document contains everything needed to implement the ant colony simulation from scratch. Each phase is self-contained with clear inputs, outputs, and acceptance criteria. **Phases are sequential — do not skip ahead.**
 
 ---
+
+## Session 2026-06-20 — Self-play arc (3 runs) + SP2 exploiter league BUILT & merged (not yet run)
+
+🟢 Project Status: **SP2 exploiter-league code is on `main` (656d212), reviewed clean, awaiting its first cnc run.**
+
+**The self-play story (full detail: `llm-wiki/projects/antcolony-rl-training-log.md`):**
+- **Runs #1/#2 (combat.toml)** collapsed (forgot the bench). The PARKED-after-two-runs conclusion was wrong about WHY.
+- **Run #3 (terminal.toml)** = turnaround: no collapse, climbed above warm-start, **near-peer h2h 0.395** vs the 0.874 SOTA. Finding: `combat_loss_penalty` was poisoning self-play; the recursive-learning dream is alive but plateaus AT peer in cheap runs.
+- **Lever to exceed peer = exploiters → SP2.**
+
+**SP2 build (this session, subagent-driven-development):** new `crates/antcolony-trainer/src/exploiter_league.rs` (`Role`/protected pool entries; `exploiter_decision`; `LeagueAgent`; `LeagueManager` round-robin + promotion/reset; success-eval h2h-vs-SOTA + keep-best `league_best.safetensors`) + `src/bin/phase3_league.rs` CLI + `scripts/run_league_cnc.sh`. 6 TDD tasks, per-task review (opus on `LeagueManager`), final opus whole-branch review. **Verified invariants:** orchestration never draws from any agent's training RNG (separate `opp_rng`; seeds = `joint.seed^(step<<32)^(idx<<16)`); additive (phase3/SP1 byte-unchanged); first success-eval always keep-bests. Final review caught + fixed a Critical (2 stale `add_snapshot` call sites in `tests/self_play_rollout.rs` broke `cargo test --tests`); suite green (lib 53/53, self_play_rollout 2/2 incl the RNG guard).
+
+**▶ NEXT STEP (the run):** `scripts/run_league_cnc.sh` — 15-step pilot, warm-start from `bench/phase3-a1-combat/hac_best.safetensors` (0.874), terminal.toml, free the 16GB P100. **Blockers/checklist before launch:** (1) GPU window via openclaw `main`; (2) restore the warm-start keeper to cnc `bench/phase3-a1-combat/` from `/opt/antcolony-archive/` (a ship wipes cnc bench/); (3) ⚠ verify the cnc card↔service mapping — it FLIPPED (16GB UUID 17bd0d20 = workhorse now), probe live (`scripts/gpu_probe_cnc.sh`); (4) after the run: ledger entry + `backup_checkpoints.ps1`. **Success = `league_best` beats SOTA on `evaluate_h2h` mpe=50** → new SOTA + SP3 (multi-GPU) becomes worth it; if it stalls at peer → bump to 2 main-exploiters / longer, or conclude A1 is the plateau. Spec/plan: `docs/superpowers/{specs,plans}/2026-06-20-self-play-league-sp2*`.
 
 ## Session 2026-06-19 — Grad-clip convergence run executed on cnc P100 → late-training collapse FIXED
 
