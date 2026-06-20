@@ -1,12 +1,40 @@
 //! SP1 self-play league: the opponent pool (the 7 fixed archetypes, always
 //! present, + a capped FIFO of frozen HAC self-snapshots) and the opponent
 //! sampler. Pure logic — no candle, no sim — so it is fully unit-testable.
+//!
+//! Also provides `load_frozen_hac` for loading a checkpoint as a frozen
+//! (inference-only) `HierarchicalActorCritic` — used by the league to
+//! materialize snapshot opponents for evaluation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rand::Rng;
 
 use crate::eval::BENCH_ARCHETYPES;
+
+/// Load a saved HAC checkpoint from `path` and return the
+/// `HierarchicalActorCritic` ready for forward (mean-action) inference.
+/// No optimizer is constructed; the returned HAC is suitable for frozen
+/// opponent evaluation only.
+///
+/// Builds a fresh `JointPpoTrainer` at `sizing` with `JointPpoConfig::smoke_default()`
+/// (the config's only role here is to size the network identically to training),
+/// loads all weights from `path`, then moves the `hac` out of the trainer.
+pub fn load_frozen_hac(
+    path: &Path,
+    sizing: crate::hierarchical::sizing::Sizing,
+    device: &candle_core::Device,
+) -> anyhow::Result<crate::HierarchicalActorCritic> {
+    tracing::debug!(path = %path.display(), "load_frozen_hac: building trainer shell");
+    let mut trainer = crate::JointPpoTrainer::new(
+        device.clone(),
+        sizing,
+        crate::JointPpoConfig::smoke_default(),
+    )?;
+    trainer.varmap.load(path)?;
+    tracing::info!(path = %path.display(), "load_frozen_hac: checkpoint loaded");
+    Ok(trainer.hac)
+}
 
 #[derive(Clone, Debug)]
 pub enum OpponentKind {
@@ -111,6 +139,24 @@ impl OpponentSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_frozen_hac_round_trips_a_saved_checkpoint() {
+        use crate::hierarchical::sizing::A1;
+        use candle_core::Device;
+        let dir = std::env::temp_dir().join("sp1_frozen_hac_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hac.safetensors");
+        // save a fresh trainer's varmap
+        let t = crate::JointPpoTrainer::new(Device::Cpu, A1, crate::JointPpoConfig::smoke_default()).unwrap();
+        t.varmap.save(&path).unwrap();
+        // load it back as a frozen HAC + run one mean forward to prove it's usable
+        let hac = super::load_frozen_hac(&path, A1, &Device::Cpu).unwrap();
+        let env = crate::env::MatchEnv::new(1);
+        let rich = env.sim.colony_rich_observation(0).unwrap();
+        let (s, p, h) = crate::hierarchical::obs_to_tensors::rich_to_tensors(&rich, &Device::Cpu).unwrap();
+        let (_a, _i, _v) = hac.mean_commander_action(&s, &p, &h).unwrap();
+    }
 
     #[test]
     fn with_archetypes_seeds_seven() {
