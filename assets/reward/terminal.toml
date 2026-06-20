@@ -1,0 +1,19 @@
+# Terminal-dominant reward for the self-play recursion test (the viable form of
+# "pure terminal-reward self-play"). True pure-terminal is too sparse to learn at
+# our 480-tick training rollout — terminal win/loss rarely fires there — so:
+#   - terminal_win heavily up-weighted (winning dominates; the AlphaZero spirit),
+#   - timeout_share up-weighted (end-state worker-share matters),
+#   - a FAINT worker_delta kept as the dense gradient so the policy can still learn,
+#   - food/queen/brood/inflow OFF, and combat_loss_penalty OFF (the suspect that
+#     poisoned the two prior self-play runs).
+# Hypothesis: if self-play holds/climbs under this reward, the combat-shaping was
+# the problem; if it still collapses, self-play degradation is reward-independent
+# (a dynamics problem) and only the big SP2 league could fix it.
+worker_delta = 0.005
+food_delta = 0.0
+queen_bonus = 0.0
+terminal_win = 10.0
+timeout_share = 3.0
+brood_growth = 0.0
+food_inflow = 0.0
+combat_loss_penalty = 0.0

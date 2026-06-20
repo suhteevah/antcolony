@@ -42,18 +42,25 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib:${_nvlibs}
 export RAYON_NUM_THREADS=3
 cd /opt/antcolony-cuda || exit 97
 
-echo "=== run start (self-play SP1) $(date -Is) reward=combat.toml out=bench/phase3-sp1 ==="
-# SP1 self-play run: warm-starts from combat-reward best checkpoint, enables
-# self-play with PFSP opponent sampling (archetype_mix=0.5, pool-cap=8,
-# snapshot every 25 iters). Same iters/envs/rollout-cycles/eval cadence as
-# run_combat_cnc.sh so comparisons isolate the self-play lever only.
+echo "=== run start (self-play SP1 WARM-START validation) $(date -Is) reward=combat.toml out=bench/phase3-sp1-warmstart ==="
+# SP1 self-play WARM-START run (anti-forgetting fix): the first SP1 run started
+# the policy FRESH and forgot the archetype bench (0.314 final). This time:
+#   --warm-start-POLICY loads the 0.874 SOTA into the TRAINING policy (starts
+#     competent, refines instead of relearning),
+#   --warm-start-snapshot also seeds it into the opponent pool,
+#   --archetype-mix 0.6 anchors more matches to the fixed bench (keep general
+#     skill in the gradient).
+# 300-iter PILOT (~50min): forgetting was obvious by iter 200 last time, so this
+# conclusively shows whether warm-start holds/climbs the bench before committing
+# a full 1000-iter run. Distinct out dir so the first run's data is untouched.
 ./target/release/phase3_train \
-  --iters 1000 --envs 8 --rollout-cycles 96 --ant-chunk-size 8192 \
-  --eval-every 100 --matches-per-eval 5 --max-grad-norm 0.5 \
+  --iters 300 --envs 8 --rollout-cycles 96 --ant-chunk-size 8192 \
+  --eval-every 50 --matches-per-eval 5 --max-grad-norm 0.5 \
   --self-play --snapshot-every 25 --pool-cap 8 \
-  --opponent-sampling pfsp --archetype-mix 0.5 \
+  --opponent-sampling pfsp --archetype-mix 0.6 \
+  --warm-start-policy bench/phase3-a1-combat/hac_best.safetensors \
   --warm-start-snapshot bench/phase3-a1-combat/hac_best.safetensors \
-  --reward assets/reward/combat.toml --out bench/phase3-sp1
+  --reward assets/reward/terminal.toml --out bench/phase3-sp1-terminal
 code=$?
 echo "=== run done $(date -Is) exit=$code ==="
 echo "$code" > /opt/antcolony-cuda/run_selfplay.done
