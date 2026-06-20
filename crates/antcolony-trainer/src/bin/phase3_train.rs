@@ -63,6 +63,7 @@ fn main() -> anyhow::Result<()> {
     let mut opponent_sampling_str = "pfsp".to_string();
     let mut archetype_mix = 0.5f32;
     let mut warm_start_snapshot: Option<PathBuf> = None;
+    let mut warm_start_policy: Option<PathBuf> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -90,6 +91,7 @@ fn main() -> anyhow::Result<()> {
             "--opponent-sampling" => { opponent_sampling_str = next(); i += 2; }
             "--archetype-mix" => { archetype_mix = parse_or_exit("--archetype-mix", &next()); i += 2; }
             "--warm-start-snapshot" => { warm_start_snapshot = Some(PathBuf::from(next())); i += 2; }
+            "--warm-start-policy" => { warm_start_policy = Some(PathBuf::from(next())); i += 2; }
             other => { tracing::warn!(arg = other, "unknown flag, ignoring"); i += 1; }
         }
     }
@@ -128,6 +130,7 @@ fn main() -> anyhow::Result<()> {
         self_play = self_play_enabled, snapshot_every, pool_cap,
         opponent_sampling = %opponent_sampling_str, archetype_mix,
         warm_start_snapshot = ?warm_start_snapshot,
+        warm_start_policy = ?warm_start_policy,
         "phase3 start"
     );
 
@@ -150,6 +153,7 @@ fn main() -> anyhow::Result<()> {
         pool_cap,
         opponent_sampling,
         warm_start_snapshot,
+        warm_start_policy,
     };
 
     let report = run_phase3(device, sizing, cfg)?;

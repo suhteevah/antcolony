@@ -41,6 +41,11 @@ pub struct Phase3Config {
     pub opponent_sampling: OpponentSampler,
     /// If set, pre-load this checkpoint as the first "warm-start SOTA" snapshot.
     pub warm_start_snapshot: Option<PathBuf>,
+    /// If set, load this checkpoint's weights into the TRAINING policy at init
+    /// (before the first iteration). Different from `warm_start_snapshot`, which
+    /// only adds the checkpoint to the opponent pool without touching the training
+    /// weights. When `None` (default), behaviour is byte-identical to pre-warm-start.
+    pub warm_start_policy: Option<PathBuf>,
 }
 
 impl Phase3Config {
@@ -62,6 +67,7 @@ impl Phase3Config {
             pool_cap: 8,
             opponent_sampling: OpponentSampler::Pfsp { archetype_mix: 0.5, power: 1.0 },
             warm_start_snapshot: None,
+            warm_start_policy: None,
         }
     }
 }
@@ -84,6 +90,14 @@ pub struct Phase3Report {
 pub fn run_phase3(device: Device, sizing: Sizing, cfg: Phase3Config) -> Result<Phase3Report> {
     std::fs::create_dir_all(&cfg.out_dir).ok();
     let mut trainer = JointPpoTrainer::new(device.clone(), sizing, cfg.joint.clone())?;
+
+    // Warm-start the TRAINING policy from a checkpoint before the first iteration.
+    // This is distinct from warm_start_snapshot, which only seeds the opponent pool.
+    if let Some(ref p) = cfg.warm_start_policy {
+        trainer.varmap.load(p)?;
+        tracing::info!(path = %p.display(), warm_start_policy = ?cfg.warm_start_policy, "phase3: warm-started TRAINING policy from checkpoint");
+    }
+
     let mut opt = trainer.make_optimizer()?;
     let mut pe = ParallelEnv::new(cfg.n_envs, cfg.rollout_cycles);
 
@@ -93,6 +107,7 @@ pub fn run_phase3(device: Device, sizing: Sizing, cfg: Phase3Config) -> Result<P
             pool_cap = cfg.pool_cap,
             snapshot_every = cfg.snapshot_every,
             warm_start = ?cfg.warm_start_snapshot,
+            warm_start_policy = ?cfg.warm_start_policy,
             "phase3: self-play enabled"
         );
         pe.self_play_enabled = true;
@@ -294,5 +309,37 @@ mod tests {
         assert!(report.self_play_winrate.is_some(), "self_play_winrate should be Some when self_play_enabled");
         let wr = report.self_play_winrate.unwrap();
         assert!((0.0..=1.0).contains(&wr), "self_play_winrate={wr} out of [0,1]");
+    }
+
+    /// Verify that `warm_start_policy` loads checkpoint weights into the training
+    /// policy at init. Saves a JointPpoTrainer varmap to a temp file, then runs
+    /// 1 iteration with `warm_start_policy` pointing at it. If loading fails the
+    /// run errors; if the field is wired correctly it succeeds.
+    #[test]
+    fn phase3_warm_start_policy_loads_weights() {
+        use crate::joint_ppo::JointPpoTrainer;
+
+        let tmp = std::env::temp_dir().join("antcolony_p3_warm_start_policy");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let ckpt = tmp.join("source_weights.safetensors");
+
+        // Build a trainer, save its weights to a file we'll warm-start from.
+        let source_trainer = JointPpoTrainer::new(Device::Cpu, A1, crate::joint_ppo::JointPpoConfig::smoke_default())
+            .expect("JointPpoTrainer::new failed");
+        source_trainer.varmap.save(&ckpt).expect("varmap.save failed");
+        assert!(ckpt.exists(), "checkpoint file must exist before warm-start");
+
+        // Run phase3 with warm_start_policy set, minimal config, no evals.
+        let out = tmp.join("out");
+        let mut cfg = Phase3Config::smoke(out.clone());
+        cfg.iterations = 1;
+        cfg.eval_every = 0;         // skip eval — keep it fast
+        cfg.self_play_enabled = false;
+        cfg.warm_start_policy = Some(ckpt);
+
+        let result = run_phase3(Device::Cpu, A1, cfg);
+        assert!(result.is_ok(), "run_phase3 with warm_start_policy failed: {:?}", result.err());
+        let report = result.unwrap();
+        assert_eq!(report.losses.len(), 1, "expected 1 iter loss record");
     }
 }
