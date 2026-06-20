@@ -10,6 +10,7 @@
 
 use anyhow::Result;
 use candle_core::{Device, Tensor};
+use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use antcolony_sim::ai::observation::AntModulators;
@@ -28,6 +29,15 @@ pub struct ParallelEnv {
     pub n_envs: usize,
     pub rollout_cycles: usize,
     pub league: League,
+    /// Master switch for SP1 self-play opponent selection. Defaults to `false`
+    /// so legacy callers (phase3) are BYTE-IDENTICAL to the pre-Task-4 path:
+    /// per-env round-robin league opponents driven by `decide`, and the
+    /// training `rng` is NEVER touched for opponent selection. When `true`,
+    /// `collect_rollout` samples ONE pool opponent per rollout (archetype or
+    /// frozen-HAC snapshot) via a SEPARATE, independently-seeded RNG, so the
+    /// training `rng` stream is identical to the `false` case for the same
+    /// seed. Task 5 flips this from `Phase3Config::self_play_enabled`.
+    pub self_play_enabled: bool,
     /// SP1 self-play opponent pool (7 archetypes + capped FIFO of frozen HAC
     /// self-snapshots). Defaults to archetypes-only so legacy callers behave
     /// exactly as before.
@@ -53,6 +63,7 @@ impl ParallelEnv {
             n_envs,
             rollout_cycles,
             league: League::default_pool(),
+            self_play_enabled: false,
             pool: SnapshotPool::with_archetypes(8, 0.1),
             sampler: OpponentSampler::Uniform,
             sizing: A1,
@@ -97,9 +108,20 @@ fn colony_combat_losses(env: &MatchEnv, k: u8) -> u32 {
 
 impl ParallelEnv {
     /// Collect one parallel rollout. Creates `n_envs` fresh matches (left =
-    /// HAC, right = league-sampled opponent), runs up to `rollout_cycles`
-    /// commander cycles, and returns left-colony records bucketed by env.
-    /// `base_seed` decorrelates this rollout's env/opponent seeds.
+    /// HAC training colony), runs up to `rollout_cycles` commander cycles, and
+    /// returns left-colony records bucketed by env. `base_seed` decorrelates
+    /// this rollout's env/opponent seeds.
+    ///
+    /// Right-colony (opponent) selection is GATED on `self_play_enabled`:
+    /// - `false` (default): per-env league round-robin
+    ///   (`(i + base_seed) % league.entries.len()`), each env driven by its own
+    ///   `make_brain(spec).decide`. Nothing is drawn from the training `rng` for
+    ///   opponent selection — this is byte-identical to the pre-Task-4 path.
+    /// - `true`: ONE pool opponent is sampled per rollout (archetype or
+    ///   frozen-HAC snapshot) using a SEPARATE, independently-seeded RNG. The
+    ///   training `rng` (consumed only by `sample_commander`/`sample_ant`) is
+    ///   therefore identical to the `false` case for the same seed, preserving
+    ///   the "byte-identical with self-play OFF" Global Constraint.
     pub fn collect_rollout(
         &mut self,
         hac: &HierarchicalActorCritic,
@@ -108,44 +130,64 @@ impl ParallelEnv {
         reward: &RewardConfig,
         base_seed: u64,
     ) -> Result<JointRollout> {
-        tracing::debug!(n_envs = self.n_envs, rollout_cycles = self.rollout_cycles, base_seed, "parallel rollout start");
+        tracing::debug!(n_envs = self.n_envs, rollout_cycles = self.rollout_cycles, base_seed, self_play_enabled = self.self_play_enabled, "parallel rollout start");
 
-        // ── SP1: pick ONE opponent for the whole rollout (all envs share it) ──
-        // Sampling once (not per-env) keeps the right-side HAC a single batched
-        // forward (same frozen weights), mirroring the left side.
-        let opp_idx = if self.pool.entries.is_empty() {
-            tracing::warn!("opponent pool is empty; defaulting opponent idx to 0");
-            0
+        // ── SP1: pick the rollout opponent, GATED on `self_play_enabled` ──
+        //
+        // CRITICAL backward-compat constraint: with self-play OFF this path must
+        // be byte-identical to the pre-Task-4 code, and the training `rng` (which
+        // the LEFT path's `sample_commander`/`sample_ant` consume) must NEVER be
+        // perturbed by opponent selection. So when ON we sample from a SEPARATE,
+        // independently-seeded RNG derived from `base_seed` — never the passed-in
+        // training `rng`. The training `rng` stream is therefore identical across
+        // both modes for the same seed.
+        let opp_idx = if self.self_play_enabled && !self.pool.entries.is_empty() {
+            // Separate, deterministic opponent RNG seeded from base_seed only.
+            // Distinct from the env-seed mixing constant so the two streams don't
+            // alias. NOTHING here touches the training `rng`.
+            let mut opp_rng = ChaCha8Rng::seed_from_u64(
+                base_seed.wrapping_mul(0x9E3779B97F4A7C15) ^ 0x5F1A_5EED_0DD0_0FF5,
+            );
+            self.sampler.sample(&self.pool, &mut opp_rng)
         } else {
-            self.sampler.sample(&self.pool, rng)
+            // self-play OFF (or empty pool): no pool sampling at all. The pre-Task-4
+            // contract sets these to fixed values; round-robin selection happens
+            // per-env below and does not draw from any rng.
+            0
         };
         self.last_opponent_idx = opp_idx;
-        let opp_kind = self.pool.entries.get(opp_idx).map(|e| e.kind.clone());
+
+        // On the self-play path a snapshot opponent may be a frozen HAC; resolve
+        // it ONCE. With self-play OFF, `frozen_opp` is always None and `opp_kind`
+        // is unused (the round-robin league brains drive the right colony).
+        let opp_kind = if self.self_play_enabled {
+            self.pool.entries.get(opp_idx).map(|e| e.kind.clone())
+        } else {
+            None
+        };
 
         // If the chosen opponent is a frozen-HAC snapshot, try to load it ONCE.
         // A bad/missing snapshot must NOT abort the run: log and fall back to the
         // per-env archetype path (heuristic spec), mirroring the existing M16
         // fallback. `frozen_opp` is None unless a snapshot loaded successfully.
-        let (opp_spec, frozen_opp): (String, Option<HierarchicalActorCritic>) = match &opp_kind {
+        let (opp_spec, frozen_opp): (Option<String>, Option<HierarchicalActorCritic>) = match &opp_kind {
             Some(OpponentKind::Snapshot { name, path }) => {
                 match load_frozen_hac(path, self.sizing, device) {
                     Ok(hac) => {
                         tracing::debug!(opp_idx, %name, "snapshot opponent loaded; right colony driven by frozen HAC");
-                        // spec is unused on the snapshot path; "heuristic" is a safe
-                        // sentinel in case a per-env brain is ever needed.
-                        ("heuristic".to_string(), Some(hac))
+                        (None, Some(hac))
                     }
                     Err(e) => {
                         tracing::error!(opp_idx, %name, path = %path.display(), error = %e, "bad snapshot opponent; falling back to heuristic archetype");
-                        ("heuristic".to_string(), None)
+                        // Fall back to a single shared heuristic spec for all envs.
+                        (Some("heuristic".to_string()), None)
                     }
                 }
             }
-            Some(OpponentKind::Archetype(spec)) => (spec.clone(), None),
-            None => {
-                tracing::warn!(opp_idx, "opponent idx out of range; falling back to heuristic archetype");
-                ("heuristic".to_string(), None)
-            }
+            // Self-play ON + archetype entry: one shared archetype spec for all envs.
+            Some(OpponentKind::Archetype(spec)) => (Some(spec.clone()), None),
+            // Self-play OFF (opp_kind == None): per-env round-robin handled below.
+            None => (None, None),
         };
         let snapshot_path = frozen_opp.is_some();
 
@@ -155,18 +197,30 @@ impl ParallelEnv {
         for i in 0..self.n_envs {
             let seed = base_seed ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15));
             envs.push(MatchEnv::new(seed));
-            if !snapshot_path {
-                // M16: a bad spec (typo'd --add-opp, missing snapshot) must not
-                // abort the whole run. Log it and fall back to the heuristic brain
-                // for this env so training continues. `heuristic` is hardcoded and
-                // infallible, so the unwrap_or_else can't itself fail.
-                let brain = League::make_brain(&opp_spec, seed.wrapping_add(1)).unwrap_or_else(|e| {
-                    tracing::error!(env = i, spec = %opp_spec, error = %e, "bad opponent spec; falling back to heuristic");
-                    League::make_brain("heuristic", seed.wrapping_add(1))
-                        .expect("heuristic brain is infallible")
-                });
-                opponents.push(brain);
+            if snapshot_path {
+                continue;
             }
+            // Pick this env's opponent spec:
+            // - self-play OFF: pre-Task-4 per-env league round-robin (byte-identical).
+            // - self-play ON (archetype / snapshot-load-failed): the single shared
+            //   spec sampled once above (all envs use it).
+            let spec = match &opp_spec {
+                Some(s) => s.clone(),
+                None => {
+                    let pick = (i + (base_seed as usize)) % self.league.entries.len();
+                    self.league.entries[pick].spec.clone()
+                }
+            };
+            // M16: a bad spec (typo'd --add-opp, missing snapshot) must not
+            // abort the whole run. Log it and fall back to the heuristic brain
+            // for this env so training continues. `heuristic` is hardcoded and
+            // infallible, so the unwrap_or_else can't itself fail.
+            let brain = League::make_brain(&spec, seed.wrapping_add(1)).unwrap_or_else(|e| {
+                tracing::error!(env = i, spec = %spec, error = %e, "bad opponent spec; falling back to heuristic");
+                League::make_brain("heuristic", seed.wrapping_add(1))
+                    .expect("heuristic brain is infallible")
+            });
+            opponents.push(brain);
         }
 
         let mut out = JointRollout::default();
@@ -472,19 +526,21 @@ impl ParallelEnv {
             }
         }
         // ── HAC win-share vs this opponent (feeds the PFSP EMA) ──
+        // Only meaningful on the self-play path (PFSP needs it). With self-play
+        // OFF we keep the pre-Task-4 contract and report the neutral 0.5 sentinel.
         // Mean over envs of left_workers / (left_workers + right_workers) at
         // rollout end. Per-env div-by-zero (both colonies wiped) is graded 0.5.
         // The overall mean falls back to 0.5 if there are no envs.
-        let mut share_sum = 0.0f32;
-        for env in &envs {
-            let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0) as f32;
-            let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
-            let denom = lw + rw;
-            share_sum += if denom > 0.0 { lw / denom } else { 0.5 };
-        }
-        self.last_hac_winshare = if envs.is_empty() {
+        self.last_hac_winshare = if !self.self_play_enabled || envs.is_empty() {
             0.5
         } else {
+            let mut share_sum = 0.0f32;
+            for env in &envs {
+                let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0) as f32;
+                let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
+                let denom = lw + rw;
+                share_sum += if denom > 0.0 { lw / denom } else { 0.5 };
+            }
             share_sum / envs.len() as f32
         };
 
