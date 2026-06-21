@@ -184,7 +184,7 @@ fn play_match(
 /// (FNV-1a-ish) into the multiplier so same-LENGTH names (breeder/forager,
 /// aggressor/economist/heuristic) no longer share sim seeds. Always non-zero
 /// (`| 1`) so the seed multiplier never collapses to 0.
-fn spec_seed_salt(spec: &str) -> u64 {
+pub(crate) fn spec_seed_salt(spec: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in spec.bytes() {
         h ^= b as u64;

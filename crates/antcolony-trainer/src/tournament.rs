@@ -38,6 +38,255 @@ pub fn build_contender(id: &str, spec: &str, device: &Device, sizing: Sizing) ->
     Ok(Contender { id: id.to_string(), spec: spec.to_string(), controller })
 }
 
+/// Configuration for a round-robin tournament.
+pub struct TournamentConfig {
+    /// (id, spec) pairs — one per contender.
+    pub contenders: Vec<(String, String)>,
+    /// Matches per ordered pair (i-left/j-right direction). Total per unordered
+    /// pair = `2 * mpe` (both sides played).
+    pub mpe: usize,
+    /// Tick limit per match (passed through to `play_pair`).
+    pub max_ticks: u64,
+    /// Id of the contender whose Elo is pegged to `anchor_elo`. If not found,
+    /// the mean Elo is anchored instead.
+    pub anchor_id: String,
+    /// Elo value to pin the anchor to (e.g. 1000.0).
+    pub anchor_elo: f64,
+    /// Minimum decisive-win margin for a 3-cycle to be reported.
+    pub cycle_margin: f32,
+    /// Neural-net sizing preset (used when building HAC contenders).
+    pub sizing: Sizing,
+}
+
+impl TournamentConfig {
+    /// Lightweight smoke default: 3 scripted archetypes, mpe=1, 1500 ticks.
+    pub fn smoke() -> Self {
+        TournamentConfig {
+            contenders: vec![
+                ("aggro".into(), "aggressor".into()),
+                ("econ".into(), "economist".into()),
+                ("def".into(), "defender".into()),
+            ],
+            mpe: 1,
+            max_ticks: 1500,
+            anchor_id: "econ".into(),
+            anchor_elo: 1000.0,
+            cycle_margin: 0.55,
+            sizing: crate::hierarchical::sizing::A1,
+        }
+    }
+}
+
+/// Full result of a round-robin tournament.
+pub struct TournamentResult {
+    /// Contender ids in enrollment order.
+    pub ids: Vec<String>,
+    /// Contender specs in enrollment order.
+    pub specs: Vec<String>,
+    /// `win_matrix[i][j]` = i's mean decisive score vs j over `2*mpe` games;
+    /// diagonal is `f32::NAN`.
+    pub win_matrix: Vec<Vec<f32>>,
+    /// `ws_matrix[i][j]` = i's mean worker-share score vs j; same layout.
+    pub ws_matrix: Vec<Vec<f32>>,
+    /// `games[i][j]` = total games played between i and j (symmetric).
+    pub games: Vec<Vec<usize>>,
+    /// Bradley-Terry Elo ratings in enrollment order.
+    pub elo: Vec<f64>,
+    /// Mean of finite entries in `win_matrix[i][*]` for each contender.
+    pub winrate_vs_field: Vec<f32>,
+    /// Detected 3-cycles `(i, j, k)` where i beats j beats k beats i,
+    /// each edge by `> cycle_margin`.
+    pub cycles: Vec<(usize, usize, usize)>,
+}
+
+/// Run a full round-robin tournament. Every unordered pair `(i, j)` with
+/// `i < j` is played `cfg.mpe` times i-left/j-right and `cfg.mpe` times
+/// j-left/i-right (rayon-parallel over pairings). Each pairing builds its
+/// own two `Contender`s so no `Controller` crosses thread boundaries.
+///
+/// A pairing whose `build_contender` fails is logged and skipped; the
+/// corresponding matrix cells stay `f32::NAN` and `games 0`, so the
+/// tournament continues. No `.unwrap()` or early abort for a single bad pair.
+pub fn run_tournament(cfg: &TournamentConfig, device: &Device) -> Result<TournamentResult> {
+    use rayon::prelude::*;
+
+    let n = cfg.contenders.len();
+    let ids: Vec<String> = cfg.contenders.iter().map(|(id, _)| id.clone()).collect();
+    let specs: Vec<String> = cfg.contenders.iter().map(|(_, sp)| sp.clone()).collect();
+
+    // Build the N*(N-1)/2 unordered pairings.
+    let mut pairings: Vec<(usize, usize)> = Vec::new();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            pairings.push((i, j));
+        }
+    }
+
+    tracing::info!(
+        contenders = n,
+        pairings = pairings.len(),
+        mpe = cfg.mpe,
+        max_ticks = cfg.max_ticks,
+        "tournament: starting round-robin"
+    );
+
+    // Per-pairing result: (i, j, dec_i_sum, ws_i_sum, played).
+    // `dec_i_sum` is i's total decisive score across 2*mpe matches;
+    // `ws_i_sum` is the same for worker-share. `played` is how many
+    // individual matches actually completed without error.
+    let pairing_results: Vec<(usize, usize, f32, f32, usize)> = pairings
+        .par_iter()
+        .map(|&(i, j)| {
+            let id_i = &ids[i];
+            let id_j = &ids[j];
+            let spec_i = &specs[i];
+            let spec_j = &specs[j];
+
+            // Each pairing builds its own controllers (no shared &mut across threads).
+            let ci_res = build_contender(id_i, spec_i, device, cfg.sizing);
+            let cj_res = build_contender(id_j, spec_j, device, cfg.sizing);
+
+            let (mut ci, mut cj) = match (ci_res, cj_res) {
+                (Ok(a), Ok(b)) => (a, b),
+                (Err(e), _) => {
+                    tracing::warn!(id = id_i, spec = spec_i, error = %e,
+                        "tournament: build_contender failed for left; skipping pair ({i},{j})");
+                    return (i, j, f32::NAN, f32::NAN, 0);
+                }
+                (_, Err(e)) => {
+                    tracing::warn!(id = id_j, spec = spec_j, error = %e,
+                        "tournament: build_contender failed for right; skipping pair ({i},{j})");
+                    return (i, j, f32::NAN, f32::NAN, 0);
+                }
+            };
+
+            let mut dec_i = 0.0f32;
+            let mut ws_i = 0.0f32;
+            let mut played = 0usize;
+
+            // Half 1: i is LEFT, j is RIGHT. Seed salt "{id_i}:{id_j}:L".
+            let salt_ij = crate::eval::spec_seed_salt(&format!("{}:{}:L", id_i, id_j));
+            for m in 0..cfg.mpe {
+                let seed = 0xE7A1_u64
+                    .wrapping_mul(salt_ij)
+                    ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                match crate::eval::play_pair(
+                    &mut ci.controller,
+                    &mut cj.controller,
+                    device,
+                    seed,
+                    cfg.max_ticks,
+                ) {
+                    Ok((ws, dec, _end)) => {
+                        // i's scores come directly from play_pair (i is left).
+                        dec_i += dec;
+                        ws_i += ws;
+                        played += 1;
+                    }
+                    Err(e) => tracing::warn!(
+                        i, j, m, error = %e,
+                        "tournament: play_pair (i-left) failed; skipping match"
+                    ),
+                }
+            }
+
+            // Half 2: j is LEFT, i is RIGHT. Seed salt "{id_j}:{id_i}:L".
+            // play_pair returns LEFT's score; i is right, so i's score = 1 - left_score.
+            let salt_ji = crate::eval::spec_seed_salt(&format!("{}:{}:L", id_j, id_i));
+            for m in 0..cfg.mpe {
+                let seed = 0xE7A1_u64
+                    .wrapping_mul(salt_ji)
+                    ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                match crate::eval::play_pair(
+                    &mut cj.controller,
+                    &mut ci.controller,
+                    device,
+                    seed,
+                    cfg.max_ticks,
+                ) {
+                    Ok((ws, dec, _end)) => {
+                        // i is right; flip left's score to get i's score.
+                        dec_i += 1.0 - dec;
+                        ws_i += 1.0 - ws;
+                        played += 1;
+                    }
+                    Err(e) => tracing::warn!(
+                        i, j, m, error = %e,
+                        "tournament: play_pair (j-left) failed; skipping match"
+                    ),
+                }
+            }
+
+            let total = (cfg.mpe * 2) as f32;
+            let mean_dec = if played > 0 { dec_i / total } else { f32::NAN };
+            let mean_ws = if played > 0 { ws_i / total } else { f32::NAN };
+
+            tracing::debug!(
+                i, id = id_i, j, id_j = id_j,
+                mean_decisive = mean_dec, mean_ws = mean_ws, played,
+                "tournament: pairing done"
+            );
+
+            (i, j, mean_dec, mean_ws, played)
+        })
+        .collect();
+
+    // Assemble matrices single-threaded.
+    let nan_row = vec![f32::NAN; n];
+    let mut win_matrix: Vec<Vec<f32>> = vec![nan_row.clone(); n];
+    let mut ws_matrix: Vec<Vec<f32>> = vec![nan_row; n];
+    let mut games: Vec<Vec<usize>> = vec![vec![0usize; n]; n];
+
+    for (i, j, mean_dec, mean_ws, played) in pairing_results {
+        // diagonal stays NAN; only fill off-diagonal.
+        win_matrix[i][j] = mean_dec;
+        win_matrix[j][i] = if mean_dec.is_finite() { 1.0 - mean_dec } else { f32::NAN };
+        ws_matrix[i][j] = mean_ws;
+        ws_matrix[j][i] = if mean_ws.is_finite() { 1.0 - mean_ws } else { f32::NAN };
+        games[i][j] = played;
+        games[j][i] = played;
+    }
+
+    // Diagonal: NAN (by construction from nan_row; games diagonal stays 0).
+
+    // Bradley-Terry Elo — find anchor index.
+    let anchor_idx = ids.iter().position(|id| id == &cfg.anchor_id);
+    let elo = bradley_terry_elo(&win_matrix, &games, anchor_idx, cfg.anchor_elo);
+
+    // winrate_vs_field[i] = mean of finite win_matrix[i][j] for j != i.
+    let winrate_vs_field: Vec<f32> = (0..n)
+        .map(|i| {
+            let (sum, cnt) = (0..n)
+                .filter(|&j| j != i)
+                .filter_map(|j| {
+                    let v = win_matrix[i][j];
+                    if v.is_finite() { Some(v) } else { None }
+                })
+                .fold((0.0f32, 0usize), |(s, c), v| (s + v, c + 1));
+            if cnt > 0 { sum / cnt as f32 } else { f32::NAN }
+        })
+        .collect();
+
+    let cycles = find_cycles(&win_matrix, cfg.cycle_margin);
+
+    tracing::info!(
+        contenders = n,
+        ?cycles,
+        "tournament: complete"
+    );
+
+    Ok(TournamentResult {
+        ids,
+        specs,
+        win_matrix,
+        ws_matrix,
+        games,
+        elo,
+        winrate_vs_field,
+        cycles,
+    })
+}
+
 /// Find distinct 3-cycles (i beats j beats k beats i), each edge by `> margin`.
 /// Each cycle reported once with its smallest index first.
 pub fn find_cycles(win_matrix: &[Vec<f32>], margin: f32) -> Vec<(usize, usize, usize)> {
@@ -105,6 +354,34 @@ mod tests {
     use super::*;
     use candle_core::Device;
     use crate::hierarchical::sizing::A1;
+
+    #[test]
+    fn run_tournament_scripted_smoke() {
+        let dev = Device::Cpu;
+        let cfg = TournamentConfig {
+            contenders: vec![
+                ("aggro".into(), "aggressor".into()),
+                ("econ".into(), "economist".into()),
+                ("def".into(), "defender".into()),
+            ],
+            mpe: 1,
+            max_ticks: 1500,
+            anchor_id: "econ".into(),
+            anchor_elo: 1000.0,
+            cycle_margin: 0.55,
+            sizing: crate::hierarchical::sizing::A1,
+        };
+        let r = run_tournament(&cfg, &dev).unwrap();
+        assert_eq!(r.ids.len(), 3);
+        assert_eq!(r.elo.len(), 3);
+        // every off-diagonal pair played 2*mpe games; symmetric
+        for i in 0..3 { for j in 0..3 { if i != j {
+            assert_eq!(r.games[i][j], 2);
+            assert!((r.win_matrix[i][j] + r.win_matrix[j][i] - 1.0).abs() < 1e-5, "symmetric");
+        }}}
+        assert!(r.elo.iter().all(|e| e.is_finite()));
+        assert!((r.elo[1] - 1000.0).abs() < 1e-6, "anchor econ pegged");
+    }
 
     #[test]
     fn build_contender_resolves_scripted_and_hac() {
