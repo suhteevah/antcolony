@@ -184,7 +184,7 @@ fn play_match(
 /// (FNV-1a-ish) into the multiplier so same-LENGTH names (breeder/forager,
 /// aggressor/economist/heuristic) no longer share sim seeds. Always non-zero
 /// (`| 1`) so the seed multiplier never collapses to 0.
-fn spec_seed_salt(spec: &str) -> u64 {
+pub(crate) fn spec_seed_salt(spec: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in spec.bytes() {
         h ^= b as u64;
@@ -352,6 +352,158 @@ fn play_match_h2h(
                 }
             }
 
+            env.sim.tick();
+            if !matches!(env.sim.match_status(), MatchStatus::InProgress)
+                || env.sim.tick >= env.max_ticks
+            {
+                done = true;
+                break;
+            }
+        }
+        if done {
+            break;
+        }
+    }
+
+    let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0) as f32;
+    let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
+    Ok(score_match(env.sim.match_status(), lw, rw))
+}
+
+/// Outcome of one side's commander phase for a decision cycle. `Hac` carries
+/// the captured commander-intent tensor so the same cycle's ant phase can
+/// modulate; `Scripted` ran (or skipped) its colony-level decision; `Gone`
+/// means the colony no longer exists (`colony_rich_observation` returned
+/// `None`) and the match must end — exactly as `play_match`/`play_match_h2h`
+/// break the loop on a missing HAC colony.
+enum CommanderResult {
+    Gone,
+    Hac(candle_core::Tensor),
+    Scripted,
+}
+
+/// Run one colony's commander phase for this decision cycle.
+///
+/// HAC side: `colony_rich_observation` → `rich_to_tensors` →
+/// `mean_commander_action` → `apply_ai_decision` + `apply_commander_intent`,
+/// keeping the `intent` tensor for the ant phase. If the colony is gone returns
+/// `CommanderResult::Gone` (the caller ends the match) — matching the
+/// break-on-`None` behavior of the existing HAC drive loops.
+///
+/// Scripted side: `colony_ai_state` → `brain.decide` → `apply_ai_decision`. A
+/// `None` ai-state just skips this side's decision (mirrors `play_match`'s
+/// `if let Some(sr)`), and is NOT a match-ending condition.
+///
+/// No RNG is drawn here (the sim's per-tick RNG is internal), so applying both
+/// sides' commander decisions before the tick loop is deterministic.
+fn commander_phase(
+    ctrl: &mut crate::tournament::Controller,
+    side: u8,
+    env: &mut MatchEnv,
+    device: &Device,
+) -> Result<CommanderResult> {
+    use crate::tournament::Controller;
+    match ctrl {
+        Controller::Hac(hac) => {
+            let rich = match env.sim.colony_rich_observation(side) {
+                Some(r) => r,
+                None => return Ok(CommanderResult::Gone),
+            };
+            let (s, p, h) = rich_to_tensors(&rich, device)?;
+            let (action, intent, _v) = hac.mean_commander_action(&s, &p, &h)?;
+            let av: Vec<f32> = action.flatten_all()?.to_vec1()?;
+            debug_assert_eq!(av.len(), 6, "commander action expects 6 dims");
+            let dec = antcolony_sim::AiDecision {
+                caste_ratio_worker: av[0], caste_ratio_soldier: av[1], caste_ratio_breeder: av[2],
+                forage_weight: av[3], dig_weight: av[4], nurse_weight: av[5], research_choice: None,
+            };
+            env.sim.apply_ai_decision(side, &dec);
+            let iv: Vec<f32> = intent.flatten_all()?.to_vec1()?;
+            let mut intent_arr = [0.0f32; 64];
+            intent_arr.copy_from_slice(&iv);
+            env.sim.apply_commander_intent(side, &intent_arr);
+            Ok(CommanderResult::Hac(intent))
+        }
+        Controller::Scripted(brain) => {
+            if let Some(sr) = env.sim.colony_ai_state(side) {
+                let dr = brain.decide(&sr);
+                env.sim.apply_ai_decision(side, &dr);
+            }
+            Ok(CommanderResult::Scripted)
+        }
+    }
+}
+
+/// Apply one HAC colony's per-ant modulators for the current tick. No-op for a
+/// scripted side (the sim runs its default ant behavior) — keeps the scripted
+/// drive byte-identical to `play_match`'s "no per-ant modulators for the
+/// scripted opponent" path.
+fn ant_phase(
+    ctrl: &crate::tournament::Controller,
+    side: u8,
+    cmd: &CommanderResult,
+    env: &mut MatchEnv,
+    device: &Device,
+) -> Result<()> {
+    use crate::tournament::Controller;
+    if let (Controller::Hac(hac), CommanderResult::Hac(intent)) = (ctrl, cmd) {
+        let obs = env.sim.per_ant_observations(side);
+        if !obs.is_empty() {
+            let (cone, internal, intent_b) = ant_obs_to_tensors(&obs, intent, device)?;
+            let mods_t = hac.mean_ant_modulator(&cone, &internal, &intent_b)?;
+            let flat: Vec<f32> = mods_t.flatten_all()?.to_vec1()?;
+            let mut mods = Vec::with_capacity(obs.len());
+            let mut ids = Vec::with_capacity(obs.len());
+            for (k, o) in obs.iter().enumerate() {
+                let off = k * 5;
+                mods.push(AntModulators {
+                    alpha_mult: flat[off], beta_mult: flat[off + 1], exploration_mod: flat[off + 2],
+                    deposit_mult: flat[off + 3], state_bias: flat[off + 4],
+                });
+                ids.push(o.ant_id);
+            }
+            env.sim.apply_ant_modulators(side, &mods, &ids);
+        }
+    }
+    Ok(())
+}
+
+/// Heterogeneous match runner: play ANY `Controller` (HAC or scripted) as the
+/// left colony vs ANY `Controller` as the right over the 2-colony engine.
+/// Generalizes `play_match` (HAC-vs-scripted) and `play_match_h2h` (HAC-vs-HAC)
+/// to a per-side `Controller`. Returns `(left_worker_share, left_decisive,
+/// MatchEnd)` from LEFT's perspective via `score_match` — same convention as
+/// the existing runners; the scheduler derives right's scores as `1.0 - left`.
+///
+/// Drive order per decision cycle (identical structure to the existing fns,
+/// which keeps the sim's per-tick RNG unaffected and the run deterministic for
+/// a fixed `seed`): both sides' commander phase first, then `DECISION_CADENCE`
+/// ticks each applying both sides' ant modulators before `tick()`. A HAC side
+/// whose colony has vanished (`CommanderResult::Gone`) ends the match; a
+/// scripted side with no ai-state simply skips its decision.
+pub fn play_pair(
+    left: &mut crate::tournament::Controller,
+    right: &mut crate::tournament::Controller,
+    device: &Device,
+    seed: u64,
+    max_ticks: u64,
+) -> Result<(f32, f32, MatchEnd)> {
+    let mut env = MatchEnv::new(seed);
+    env.max_ticks = max_ticks;
+    loop {
+        let cl = commander_phase(left, 0u8, &mut env, device)?;
+        if matches!(cl, CommanderResult::Gone) {
+            break;
+        }
+        let cr = commander_phase(right, 1u8, &mut env, device)?;
+        if matches!(cr, CommanderResult::Gone) {
+            break;
+        }
+
+        let mut done = false;
+        for _ in 0..DECISION_CADENCE {
+            ant_phase(left, 0u8, &cl, &mut env, device)?;
+            ant_phase(right, 1u8, &cr, &mut env, device)?;
             env.sim.tick();
             if !matches!(env.sim.match_status(), MatchStatus::InProgress)
                 || env.sim.tick >= env.max_ticks
@@ -666,5 +818,16 @@ mod tests {
         // Even / 0-vs-0 timeout: draw under both.
         assert_eq!(score_match(InProgress, 50.0, 50.0), (0.5, 0.5, MatchEnd::TimeoutEven));
         assert_eq!(score_match(InProgress, 0.0, 0.0), (0.5, 0.5, MatchEnd::TimeoutEven));
+    }
+
+    #[test]
+    fn play_pair_scripted_vs_scripted_runs_and_scores() {
+        use crate::tournament::Controller;
+        let dev = candle_core::Device::Cpu;
+        let mut a = Controller::Scripted(crate::League::make_brain("aggressor", 1).unwrap());
+        let mut b = Controller::Scripted(crate::League::make_brain("economist", 2).unwrap());
+        let (ws, dec, _end) = super::play_pair(&mut a, &mut b, &dev, 12345, 2000).unwrap();
+        assert!((0.0..=1.0).contains(&ws));
+        assert!((0.0..=1.0).contains(&dec));
     }
 }
