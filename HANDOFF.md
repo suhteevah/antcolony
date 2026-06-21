@@ -8,6 +8,38 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## ⮕ SESSION HANDOFF — 2026-06-20
+
+**Last Updated:** 2026-06-20
+
+**Project Status:** 🟢 PvP tournament yardstick built + merged to `main` (4479d50), tree clean, ready to RUN on cnc. (SP2 exploiter league also built+merged this day; its pilot ran NEGATIVE.)
+
+**What Was Done This Session:**
+- **SP2 exploiter league** — built via SDD (6 tasks, `crates/antcolony-trainer/src/exploiter_league.rs` + `bin/phase3_league` + `scripts/run_league_cnc.sh`), merged (656d212). **Pilot RAN on cnc → NEGATIVE:** main degraded (h2h vs SOTA 0.1875→0.0), **0 exploiter promotions** (the league's lever never fired) → degenerated to drifting self-play. 3rd self-play drift confirmation. Archived cnc `/opt/antcolony-archive/phase3-sp2/`.
+- **Pivot (Matt's call): "switch the yardstick first."** Brainstorm→spec→plan→build of a **PvP tournament yardstick**: a round-robin Elo ladder ranking every brain head-to-head over the 2-colony engine (vs the saturated 7-archetype bench). Built via SDD (6 tasks), merged (4479d50). NOT yet run.
+- **GPU finding:** the P100 loafs during these runs (~34-44% util, ~45W/250W, flat 43°C) — the **CPU sim is the bottleneck**, not the GPU. Matt authorized **kicking the FULL fleet** for training/eval runs (free all cores; RAYON=nproc). Recorded in `feedback_gpu_runs_use_p100s_via_openclaw`.
+- Everything committed + pushed (antcolony main `75ae059`; wiki training-log).
+
+**Current State:**
+- **Working:** combat SOTA `bench/phase3-a1-combat/hac_best.safetensors` (0.871 ws / 0.874 decisive) is the standing keeper. Tournament code green (4/4 tournament tests, eval byte-identical, bin builds CPU-only). SP2 league code green + merged.
+- **Built, not run:** the PvP tournament (`bin/tournament`).
+- **Stubbed/negative:** SP2 league degrades the main (don't rerun as-is); 3 self-play attempts all drift off the fixed bench.
+
+**Blocking Issues:** None. The tournament run needs a cnc window (coordinate via openclaw main + cloud-fallback check; full-fleet-kick OK).
+
+**What's Next (prioritized):**
+1. **Run the PvP tournament on cnc** — build the bin (`cargo build --release -p antcolony-trainer --bin tournament`, NO `--features cuda`), pull `sp1-terminal`/`sp2` checkpoints from `/opt/antcolony-archive/` into cnc `bench/`, then `scripts/run_tournament_cnc.sh` (full-fleet-kick, RAYON=nproc, CPU). Read `bench/tournament/ladder.md`: does the 0.874 SOTA actually top the ladder vs v1 + the self-play/league brains, and are there cycles? → tells us if the bench was the wrong target.
+2. Based on the ladder: if SOTA dominates + no cycles → bench was right, recursive self-learning is at A1's ceiling → pivot to shipping the SOTA into the game runtime. If cycles / a self-play brain ranks high → the bench WAS wrong → population-based training against the ladder becomes the play.
+3. (Deferred) N-colony FFA; SP2 tuned rerun (exploiters need 40-60 iters/step + lower promote bar — they never engaged).
+
+**Notes for Next Session:**
+- ⚠ **cnc card↔service mapping FLIPPED** (16GB UUID 17bd0d20 = workhorse); always probe live (`scripts/gpu_probe_cnc.sh`). But the tournament is **CPU** — no GPU pin needed; just full-fleet-kick to free cores.
+- ⚠ **A ship to cnc wipes `/opt/antcolony-cuda/bench/`** — restore keepers from `/opt/antcolony-archive/` first.
+- ⚠ Subagents this session twice created stray worktree branches off the wrong base + didn't merge back (caught both times via ff-merge). After any SDD task, verify the commit landed on the feature branch (`git log` on HEAD).
+- Full detail: `llm-wiki/projects/antcolony-rl-training-log.md` (append-only ledger) + `project_ai_ceiling` memory. Spec/plan: `docs/superpowers/{specs,plans}/2026-06-20-pvp-tournament-yardstick*`.
+
+---
+
 ## Session 2026-06-20 — Self-play arc (3 runs) + SP2 exploiter league BUILT & merged (not yet run)
 
 🟢 Project Status: **SP2 exploiter-league code is on `main` (656d212), reviewed clean, awaiting its first cnc run.**
