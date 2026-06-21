@@ -27,12 +27,14 @@ pub struct Contender {
 
 /// Build a contender from a spec. `"hac:<path>"` loads a frozen HAC checkpoint;
 /// any other spec (`"heuristic"`, `"mlp:<path>"`, `"mix:..."`, archetype names)
-/// resolves via `League::make_brain`.
-pub fn build_contender(id: &str, spec: &str, device: &Device, sizing: Sizing) -> Result<Contender> {
+/// resolves via `League::make_brain`. `seed` is forwarded to `League::make_brain`
+/// for scripted brains so each call starts from a clean, deterministically-seeded
+/// state; the `"hac:"` path ignores `seed` (HAC is stateless).
+pub fn build_contender(id: &str, spec: &str, device: &Device, sizing: Sizing, seed: u64) -> Result<Contender> {
     let controller = if let Some(path) = spec.strip_prefix("hac:") {
         Controller::Hac(load_frozen_hac(&PathBuf::from(path), sizing, device)?)
     } else {
-        Controller::Scripted(League::make_brain(spec, 0)?)
+        Controller::Scripted(League::make_brain(spec, seed)?)
     };
     tracing::info!(id, spec, hac = matches!(controller, Controller::Hac(_)), "tournament: contender built");
     Ok(Contender { id: id.to_string(), spec: spec.to_string(), controller })
@@ -143,8 +145,10 @@ pub fn run_tournament(cfg: &TournamentConfig, device: &Device) -> Result<Tournam
             let spec_j = &specs[j];
 
             // Each pairing builds its own controllers (no shared &mut across threads).
-            let ci_res = build_contender(id_i, spec_i, device, cfg.sizing);
-            let cj_res = build_contender(id_j, spec_j, device, cfg.sizing);
+            // Seed 0 is fine here: HAC ignores it, and scripted brains will be
+            // rebuilt fresh per match below (see per-match rebuild logic).
+            let ci_res = build_contender(id_i, spec_i, device, cfg.sizing, 0);
+            let cj_res = build_contender(id_j, spec_j, device, cfg.sizing, 0);
 
             let (mut ci, mut cj) = match (ci_res, cj_res) {
                 (Ok(a), Ok(b)) => (a, b),
@@ -170,6 +174,30 @@ pub fn run_tournament(cfg: &TournamentConfig, device: &Device) -> Result<Tournam
                 let seed = 0xE7A1_u64
                     .wrapping_mul(salt_ij)
                     ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                // Scripted brains carry mutable RNG / FSM state that is NOT reset
+                // between matches. Rebuild them fresh from a deterministic per-match
+                // seed so match N never sees carry-over from match N-1. HAC is
+                // stateless — reuse the loaded weights to avoid a per-match reload.
+                if matches!(ci.controller, Controller::Scripted(_)) {
+                    match build_contender(id_i, spec_i, device, cfg.sizing, seed) {
+                        Ok(fresh) => ci = fresh,
+                        Err(e) => {
+                            tracing::warn!(id = id_i, m, error = %e,
+                                "tournament: scripted rebuild failed; skipping match");
+                            continue;
+                        }
+                    }
+                }
+                if matches!(cj.controller, Controller::Scripted(_)) {
+                    match build_contender(id_j, spec_j, device, cfg.sizing, seed.wrapping_add(1)) {
+                        Ok(fresh) => cj = fresh,
+                        Err(e) => {
+                            tracing::warn!(id = id_j, m, error = %e,
+                                "tournament: scripted rebuild failed; skipping match");
+                            continue;
+                        }
+                    }
+                }
                 match crate::eval::play_pair(
                     &mut ci.controller,
                     &mut cj.controller,
@@ -197,6 +225,27 @@ pub fn run_tournament(cfg: &TournamentConfig, device: &Device) -> Result<Tournam
                 let seed = 0xE7A1_u64
                     .wrapping_mul(salt_ji)
                     ^ ((m as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                // Same per-match rebuild logic as Half 1 (sides are swapped here).
+                if matches!(cj.controller, Controller::Scripted(_)) {
+                    match build_contender(id_j, spec_j, device, cfg.sizing, seed) {
+                        Ok(fresh) => cj = fresh,
+                        Err(e) => {
+                            tracing::warn!(id = id_j, m, error = %e,
+                                "tournament: scripted rebuild failed; skipping match");
+                            continue;
+                        }
+                    }
+                }
+                if matches!(ci.controller, Controller::Scripted(_)) {
+                    match build_contender(id_i, spec_i, device, cfg.sizing, seed.wrapping_add(1)) {
+                        Ok(fresh) => ci = fresh,
+                        Err(e) => {
+                            tracing::warn!(id = id_i, m, error = %e,
+                                "tournament: scripted rebuild failed; skipping match");
+                            continue;
+                        }
+                    }
+                }
                 match crate::eval::play_pair(
                     &mut cj.controller,
                     &mut ci.controller,
@@ -292,6 +341,9 @@ pub fn run_tournament(cfg: &TournamentConfig, device: &Device) -> Result<Tournam
 
 /// Find distinct 3-cycles (i beats j beats k beats i), each edge by `> margin`.
 /// Each cycle reported once with its smallest index first.
+///
+/// `margin` must be `>= 0.5`; below 0.5 a triple could be double-reported because
+/// `beats(a,b)` and `beats(b,a)` could both hold simultaneously.
 pub fn find_cycles(win_matrix: &[Vec<f32>], margin: f32) -> Vec<(usize, usize, usize)> {
     let n = win_matrix.len();
     let beats = |a: usize, b: usize| win_matrix[a][b].is_finite() && win_matrix[a][b] > margin;
@@ -389,17 +441,17 @@ mod tests {
     #[test]
     fn build_contender_resolves_scripted_and_hac() {
         let dev = Device::Cpu;
-        // scripted archetype
-        let c = build_contender("aggro", "aggressor", &dev, A1).unwrap();
+        // scripted archetype — seed forwarded to League::make_brain
+        let c = build_contender("aggro", "aggressor", &dev, A1, 0).unwrap();
         assert_eq!(c.id, "aggro");
         assert!(matches!(c.controller, Controller::Scripted(_)));
-        // hac from a freshly-saved A1 varmap
+        // hac from a freshly-saved A1 varmap — seed ignored by HAC path
         let dir = std::env::temp_dir().join("tourney_build_contender");
         std::fs::create_dir_all(&dir).unwrap();
         let ck = dir.join("hac.safetensors");
         let t = crate::JointPpoTrainer::new(Device::Cpu, A1, crate::JointPpoConfig::smoke_default()).unwrap();
         t.varmap.save(&ck).unwrap();
-        let h = build_contender("sota", &format!("hac:{}", ck.display()), &dev, A1).unwrap();
+        let h = build_contender("sota", &format!("hac:{}", ck.display()), &dev, A1, 0).unwrap();
         assert_eq!(h.id, "sota");
         assert!(matches!(h.controller, Controller::Hac(_)));
     }

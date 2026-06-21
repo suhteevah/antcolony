@@ -419,6 +419,7 @@ fn commander_phase(
             };
             env.sim.apply_ai_decision(side, &dec);
             let iv: Vec<f32> = intent.flatten_all()?.to_vec1()?;
+            debug_assert_eq!(iv.len(), 64, "commander intent expects 64 dims");
             let mut intent_arr = [0.0f32; 64];
             intent_arr.copy_from_slice(&iv);
             env.sim.apply_commander_intent(side, &intent_arr);
