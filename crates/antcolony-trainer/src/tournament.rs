@@ -217,9 +217,12 @@ pub fn run_tournament(cfg: &TournamentConfig, device: &Device) -> Result<Tournam
                 }
             }
 
-            let total = (cfg.mpe * 2) as f32;
-            let mean_dec = if played > 0 { dec_i / total } else { f32::NAN };
-            let mean_ws = if played > 0 { ws_i / total } else { f32::NAN };
+            // Normalize by ACTUAL completed matches (`played`), not the scheduled
+            // `2*mpe`: a failed match must not deflate i's score (and inflate j's
+            // via the mirror). `games[i][j]` also stores `played`, so the matrix
+            // and the game-counts stay consistent for Bradley-Terry.
+            let mean_dec = if played > 0 { dec_i / played as f32 } else { f32::NAN };
+            let mean_ws = if played > 0 { ws_i / played as f32 } else { f32::NAN };
 
             tracing::debug!(
                 i, id = id_i, j, id_j = id_j,
