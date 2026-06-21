@@ -38,6 +38,26 @@ pub fn build_contender(id: &str, spec: &str, device: &Device, sizing: Sizing) ->
     Ok(Contender { id: id.to_string(), spec: spec.to_string(), controller })
 }
 
+/// Find distinct 3-cycles (i beats j beats k beats i), each edge by `> margin`.
+/// Each cycle reported once with its smallest index first.
+pub fn find_cycles(win_matrix: &[Vec<f32>], margin: f32) -> Vec<(usize, usize, usize)> {
+    let n = win_matrix.len();
+    let beats = |a: usize, b: usize| win_matrix[a][b].is_finite() && win_matrix[a][b] > margin;
+    let mut out = Vec::new();
+    for i in 0..n {
+        for j in 0..n {
+            for k in 0..n {
+                if i == j || j == k || i == k { continue; }
+                // canonical: i is the smallest of the three
+                if i < j && i < k && beats(i, j) && beats(j, k) && beats(k, i) {
+                    out.push((i, j, k));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Bradley-Terry strengths via MM iteration, returned on the Elo scale.
 /// `win_matrix[i][j]` = i's mean score vs j in [0,1] (diag ignored); `games[i][j]`
 /// = number of games i-vs-j. `anchor_idx` (if set) is pegged to `anchor_elo`;
@@ -121,5 +141,23 @@ mod tests {
         let ge = vec![vec![0, 10], vec![10, 0]];
         let eloe = bradley_terry_elo(&we, &ge, None, 1000.0);
         assert!((eloe[0] - eloe[1]).abs() < 1e-3, "equal: {eloe:?}");
+    }
+
+    #[test]
+    fn find_cycles_detects_rps_and_ignores_transitive() {
+        // A beats B beats C beats A (rock-paper-scissors)
+        let cyc = vec![
+            vec![f32::NAN, 0.7, 0.3],
+            vec![0.3, f32::NAN, 0.7],
+            vec![0.7, 0.3, f32::NAN],
+        ];
+        assert_eq!(find_cycles(&cyc, 0.55).len(), 1, "one 3-cycle");
+        // strict dominance A>B>C: no cycle
+        let tr = vec![
+            vec![f32::NAN, 0.8, 0.9],
+            vec![0.2, f32::NAN, 0.8],
+            vec![0.1, 0.2, f32::NAN],
+        ];
+        assert!(find_cycles(&tr, 0.55).is_empty(), "transitive: no cycle");
     }
 }
