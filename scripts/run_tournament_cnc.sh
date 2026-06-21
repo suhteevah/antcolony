@@ -22,7 +22,6 @@
 
 set -uo pipefail
 
-GPU_UUID=GPU-17bd0d20-0ddd-ad47-0db1-7857ffc89096
 SERVICES="openclaw-inference-workhorse openclaw-inference-scout openclaw-inference-embed aether-vision aether-serve"
 
 restore() {
@@ -43,16 +42,10 @@ trap 'restore; exit 129' HUP
 echo "=== pre-stop state: $(systemctl is-active $SERVICES | tr '\n' ' ') ==="
 echo "=== stopping full fleet to free cores for CPU-bound tournament $(date -Is) ==="
 sudo systemctl stop $SERVICES
-for i in $(seq 1 20); do
-  used=$(nvidia-smi --id=$GPU_UUID --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
-  echo "card used=${used}MiB (try $i)"
-  [ "${used:-99999}" -lt 1500 ] && break
-  sleep 2
-done
+sleep 3   # let the inference processes release CPU + RAM
+echo "=== post-stop state: $(systemctl is-active $SERVICES | tr '\n' ' ') ==="
 
-export CUDA_VISIBLE_DEVICES=$GPU_UUID
-_nvlibs=$(echo /opt/ml-venv/lib/python3.13/site-packages/nvidia/*/lib | tr ' ' ':')
-export LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib:${_nvlibs}
+# CPU-only tournament: no GPU pin, no CUDA libs (bin built without --features cuda).
 export RAYON_NUM_THREADS=$(nproc)
 cd /opt/antcolony-cuda || exit 97
 
