@@ -4,7 +4,9 @@
 
 use antcolony_sim::{
     AiBrain, AiDecision, ColonyAiState, MatchStatus, Simulation, Topology,
-    config::{AntConfig, ColonyConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
+    config::{AntConfig, ColonyConfig, ColonySimConfig, CombatConfig, HazardConfig, PheromoneConfig, SimConfig, WorldConfig},
+    environment::Environment,
+    species::Species,
 };
 
 pub const DECISION_CADENCE: u64 = 5;
@@ -83,6 +85,59 @@ impl MatchEnv {
             prev_queens_alive,
             prev_food,
         }
+    }
+
+    /// Cross-species match: colony 0 = `species_a`, colony 1 = `species_b`.
+    /// Shares the bench arena fixture (32×32) and the AI-vs-AI symmetry
+    /// (both colonies flagged AI-controlled) so only species + brains differ.
+    ///
+    /// Does NOT perform a snapshot round-trip — the sim is constructed fresh
+    /// via `Simulation::new_two_colony_cross_species`, so no species identity
+    /// is lost through the default-slice snapshot path.
+    pub fn new_cross_species(species_a: &Species, species_b: &Species, seed: u64) -> Self {
+        // Bench arena environment — same as `new`.
+        let env = Environment {
+            world_width: 32,
+            world_height: 32,
+            ..Environment::default()
+        };
+
+        // Global arena/pheromone/hazard config from species_a; override world
+        // dims to 32×32 so the arena is the same fixed bench fixture regardless
+        // of what the species TOML says.
+        let mut global = species_a.apply(&env);
+        global.world = WorldConfig { width: 32, height: 32, ..WorldConfig::default() };
+
+        // Per-colony biology from each species.
+        let cfg_a: ColonySimConfig = species_a.apply_colony(&env);
+        let cfg_b: ColonySimConfig = species_b.apply_colony(&env);
+
+        let topology = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_two_colony_cross_species(
+            global, cfg_a, cfg_b, topology, seed, 0, 2,
+        );
+
+        // Match `new_ai_vs_ai_with_topology`: flip colony 0 to AI-controlled.
+        if let Some(c0) = sim.colonies.get_mut(0) {
+            c0.is_ai_controlled = true;
+        }
+
+        let prev_workers = [
+            sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0),
+            sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0),
+        ];
+        let prev_queens_alive = [1, 1];
+        let prev_food = [
+            sim.colonies.get(0).map(|c| c.food_stored).unwrap_or(0.0),
+            sim.colonies.get(1).map(|c| c.food_stored).unwrap_or(0.0),
+        ];
+        tracing::info!(
+            species_a = %species_a.id,
+            species_b = %species_b.id,
+            seed,
+            "MatchEnv::new_cross_species constructed"
+        );
+        Self { sim, max_ticks: 10_000, prev_workers, prev_queens_alive, prev_food }
     }
 
     pub fn observe(&self, colony_id: u8) -> Option<ColonyAiState> {
@@ -409,6 +464,36 @@ mod env_tests {
         let c1 = env.sim.colonies.get(1).unwrap().commander_intent;
         // Random input → row 0 ≠ row 1 with probability ~1.
         assert_ne!(c0, c1, "commander intents should differ across colonies after random write");
+    }
+
+    #[test]
+    fn new_cross_species_builds_two_distinct_species_colonies() {
+        use antcolony_sim::species::Species;
+        let bc = Species::load_from_file(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/species/brachyponera_chinensis.toml")
+        ).expect("load bc");
+        let ar = Species::load_from_file(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/species/aphaenogaster_rudis.toml")
+        ).expect("load ar");
+        let env = MatchEnv::new_cross_species(&bc, &ar, 0xC0FFEE);
+        assert_eq!(env.sim.colony_configs.len(), 2);
+        assert_eq!(env.sim.colony_cfg(0).species_id, "brachyponera_chinensis");
+        assert_eq!(env.sim.colony_cfg(1).species_id, "aphaenogaster_rudis");
+        // The two species differ in per-worker attack (asymmetry is live).
+        assert_ne!(
+            env.sim.colony_cfg(0).combat.worker_attack,
+            env.sim.colony_cfg(1).combat.worker_attack
+        );
+        // Both colonies present, both queens alive at t=0.
+        assert!(env.sim.colonies.len() == 2);
+    }
+
+    #[test]
+    fn new_match_env_unchanged_smoke() {
+        // Guard: MatchEnv::new still builds the symmetric 32×32 / 10-ant fixture.
+        let env = MatchEnv::new(0xb1a5_e1);
+        assert_eq!(env.sim.colonies.len(), 2);
+        assert_eq!(env.max_ticks, 10_000);
     }
 
     #[test]
