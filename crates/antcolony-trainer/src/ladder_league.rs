@@ -140,6 +140,40 @@ pub fn winrate_vs_pool(
 /// so `winrate_vs_pool` need not thread sizing through every call.
 fn pool_sizing(_pool: &SnapshotPool) -> Sizing { crate::hierarchical::sizing::A1 }
 
+/// Outcome of the two-part gate evaluation: candidate must meet BOTH the standing
+/// bar (mean winrate-vs-pool) and the head-to-head margin over the current SOTA.
+#[derive(Clone, Copy, Debug)]
+pub struct GateOutcome {
+    pub passed: bool,
+    pub winrate_vs_pool: f32,
+    pub h2h_vs_sota: f32,
+}
+
+/// PASS iff the candidate meets BOTH the standing bar (mean winrate-vs-pool) and
+/// the head-to-head margin over the current SOTA. `>=` on both so exact-threshold
+/// candidates promote.
+pub fn gate_decision(winrate_vs_pool: f32, standing_bar: f32, h2h_vs_sota: f32, gate_margin: f32) -> bool {
+    winrate_vs_pool >= standing_bar && h2h_vs_sota >= gate_margin
+}
+
+/// Evaluate the candidate against the frozen pool at the honest `mpe` and apply
+/// the two-part pass test. The candidate is NOT in the pool, so nothing is
+/// excluded.
+pub fn gate(
+    candidate: &HierarchicalActorCritic,
+    pool: &SnapshotPool,
+    sota_name: &str,
+    standing_bar: f32,
+    gate_margin: f32,
+    device: &candle_core::Device,
+    mpe: usize,
+) -> Result<GateOutcome> {
+    let score = winrate_vs_pool(candidate, pool, None, sota_name, device, mpe)?;
+    let passed = gate_decision(score.winrate_vs_pool, standing_bar, score.h2h_vs_sota, gate_margin);
+    tracing::info!(passed, score.winrate_vs_pool, standing_bar, score.h2h_vs_sota, gate_margin, "ladder: gate evaluated");
+    Ok(GateOutcome { passed, winrate_vs_pool: score.winrate_vs_pool, h2h_vs_sota: score.h2h_vs_sota })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +237,14 @@ mod tests {
         assert!(!score.per_opp.iter().any(|(n, _)| n == "sota"), "self not scored");
         assert!((0.0..=1.0).contains(&score.winrate_vs_pool));
         assert!((0.0..=1.0).contains(&score.h2h_vs_sota));
+    }
+
+    #[test]
+    fn gate_decision_requires_both_bar_and_margin() {
+        // bar=0.60, margin=0.55
+        assert!(gate_decision(0.62, 0.60, 0.57, 0.55), "above bar AND clear h2h -> pass");
+        assert!(!gate_decision(0.62, 0.60, 0.51, 0.55), "coin-flip h2h fails despite winrate");
+        assert!(!gate_decision(0.58, 0.60, 0.70, 0.55), "below standing bar fails despite big h2h");
+        assert!(gate_decision(0.60, 0.60, 0.55, 0.55), "exactly at both thresholds passes (>=)");
     }
 }
