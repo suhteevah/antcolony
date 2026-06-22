@@ -47,7 +47,7 @@ pub use ppo::{PpoConfig, PpoTrainer};
 pub use env::{MatchEnv, Trajectory, StepRecord};
 pub use league::League;
 pub use self_play::{SnapshotPool, OpponentKind, OpponentSampler};
-pub use ladder_league::{LadderConfig, LadderContender, LadderReport};
+pub use ladder_league::{LadderConfig, LadderContender, LadderReport, RoundOutcome, train_round};
 
 /// Match the MlpBrain layout in crates/antcolony-sim/src/ai/brain.rs.
 /// `INPUT_DIM` and `OUTPUT_DIM` are locked by the sim's state/decision

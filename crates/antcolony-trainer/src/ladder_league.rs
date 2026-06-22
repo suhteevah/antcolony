@@ -13,7 +13,7 @@ use anyhow::Result;
 use crate::eval::{evaluate_hac, evaluate_h2h};
 use crate::hierarchical::sizing::Sizing;
 use crate::reward::RewardConfig;
-use crate::self_play::{load_frozen_hac, OpponentKind, Role, SnapshotPool};
+use crate::self_play::{load_frozen_hac, OpponentKind, OpponentSampler, Role, SnapshotPool};
 use crate::HierarchicalActorCritic;
 use crate::JointPpoConfig;
 
@@ -174,10 +174,126 @@ pub fn gate(
     Ok(GateOutcome { passed, winrate_vs_pool: score.winrate_vs_pool, h2h_vs_sota: score.h2h_vs_sota })
 }
 
+/// Outcome of one best-response training round.
+#[derive(Clone, Debug)]
+pub struct RoundOutcome {
+    /// Path to the kept (or fallback-final) candidate checkpoint.
+    pub candidate_path: PathBuf,
+    /// Best h2h worker-share winrate vs SOTA seen during the round (or final if no checkpoint cleared the floor).
+    pub best_train_h2h: f32,
+    /// Archetype-bench mean winrate at the iteration that set `best_train_h2h` (or final if floor was never cleared).
+    pub best_train_bench: f32,
+    /// `true` iff at least one iteration cleared the `keepbest_arch_floor` and set a keep-best checkpoint.
+    pub kept: bool,
+}
+
+/// Train one best-response round: warm-start from `sota_path`, PFSP against the
+/// FROZEN pool, terminal reward. Keep-best on h2h-vs-SOTA gated by an archetype
+/// floor. Never adds/removes pool entries (PFSP EMA updates only).
+pub fn train_round(
+    cfg: &LadderConfig,
+    sota_path: &std::path::Path,
+    pool: &mut SnapshotPool,
+    round: usize,
+    device: &candle_core::Device,
+) -> Result<RoundOutcome> {
+    let round_dir = cfg.out_dir.join(format!("round_{round:02}"));
+    std::fs::create_dir_all(&round_dir)?;
+    let candidate_path = round_dir.join("candidate.safetensors");
+
+    // Fresh trainer warm-started from the current SOTA.
+    let mut trainer = crate::JointPpoTrainer::new(device.clone(), cfg.sizing, cfg.joint.clone())?;
+    trainer.varmap.load(sota_path)?;
+    let mut opt = trainer.make_optimizer()?;
+    tracing::info!(round, ?sota_path, "ladder: round trainer warm-started from SOTA");
+
+    // ParallelEnv driven against the FROZEN pool via PFSP. n_envs from joint.matches_per_iter.
+    let mut pe = crate::ParallelEnv::new(cfg.joint.matches_per_iter.max(1), cfg.joint.rollout_cycles);
+    pe.self_play_enabled = true;
+    pe.pool = pool.clone();                  // a working copy; the caller's set stays frozen
+    pe.sampler = OpponentSampler::Pfsp { archetype_mix: cfg.archetype_mix, power: cfg.pfsp_power };
+    pe.sizing = cfg.sizing;
+
+    let sota_hac = load_frozen_hac(sota_path, cfg.sizing, device)?;
+
+    let mut best_h2h = f32::NEG_INFINITY;
+    let mut best_bench = 0.0f32;
+    let mut kept = false;
+
+    for it in 0..cfg.iters_per_round {
+        let base_seed = round_seed(cfg.joint.seed, round, it);
+        let roll = pe.collect_rollout(&trainer.hac, device, &mut trainer.rng, &cfg.reward, base_seed)?;
+        // PFSP feedback (EMA only; opponent SET unchanged because we operate on the clone).
+        pe.pool.record_result(pe.last_opponent_idx, pe.last_hac_winshare);
+        let stats = trainer.joint_update(&mut opt, &roll)?;
+
+        if cfg.eval_every > 0 && it % cfg.eval_every == 0 {
+            let bench = evaluate_hac(&trainer.hac, device, cfg.train_mpe)?;
+            let h2h = evaluate_h2h(&trainer.hac, &sota_hac, device, cfg.train_mpe)?;
+            tracing::info!(round, it, loss = stats.total, bench = bench.mean_win_rate,
+                           h2h = h2h.a_winrate_ws, "ladder: round eval");
+            // Keep-best on h2h, ELIGIBLE only above the archetype floor.
+            let eligible = bench.mean_win_rate >= cfg.keepbest_arch_floor;
+            if eligible && h2h.a_winrate_ws > best_h2h {
+                trainer.varmap.save(&candidate_path)?;
+                best_h2h = h2h.a_winrate_ws;
+                best_bench = bench.mean_win_rate;
+                kept = true;
+                tracing::info!(round, it, best_h2h, best_bench, "ladder: new round keep-best saved");
+            }
+        }
+    }
+
+    // If nothing ever cleared the floor, fall back to saving the final policy so
+    // the gate still has a checkpoint to judge (it will simply fail the gate).
+    if !kept {
+        trainer.varmap.save(&candidate_path)?;
+        let bench = evaluate_hac(&trainer.hac, device, cfg.train_mpe)?;
+        let h2h = evaluate_h2h(&trainer.hac, &sota_hac, device, cfg.train_mpe)?;
+        best_h2h = h2h.a_winrate_ws;
+        best_bench = bench.mean_win_rate;
+        tracing::warn!(round, best_h2h, best_bench, "ladder: no checkpoint cleared the floor; saved final policy");
+    }
+
+    Ok(RoundOutcome { candidate_path, best_train_h2h: best_h2h, best_train_bench: best_bench, kept })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::self_play::OpponentKind;
+
+    #[test]
+    fn train_round_smoke_keeps_a_candidate_and_does_not_change_pool_set() {
+        use candle_core::Device;
+        use crate::hierarchical::sizing::A1;
+        let dir = std::env::temp_dir().join("ladder_train_round_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sota_p = dir.join("sota.safetensors");
+        { let t = crate::JointPpoTrainer::new(Device::Cpu, A1, crate::JointPpoConfig::smoke_default()).unwrap();
+          t.varmap.save(&sota_p).unwrap(); }
+        let cs = vec![LadderContender { id: "sota".into(), spec: format!("hac:{}", sota_p.display()) }];
+        let mut pool = build_frozen_pool(&cs, 0.1);
+        let set_before: Vec<String> = pool.entries.iter().map(|e| format!("{:?}", e.kind)).collect();
+
+        let mut joint = crate::JointPpoConfig::smoke_default();
+        joint.rollout_cycles = 4;
+        let cfg = LadderConfig {
+            sota_path: sota_p.clone(),
+            initial_contenders: cs.clone(),
+            iters_per_round: 2, eval_every: 1, train_mpe: 1, gate_mpe: 1,
+            gate_margin: 0.55, keepbest_arch_floor: 0.0, // floor 0.0 so the keep can't be blocked in the smoke
+            archetype_mix: 0.5, pfsp_power: 1.0, no_improve_stop: 2, max_rounds: 8,
+            out_dir: dir.clone(), sizing: A1, joint, reward: crate::RewardConfig::default(),
+        };
+        let outcome = train_round(&cfg, &sota_p, &mut pool, 1, &Device::Cpu).unwrap();
+        assert!(outcome.candidate_path.exists(), "kept candidate checkpoint must exist on disk");
+        assert!(outcome.kept, "with floor=0.0 a candidate is always eligible to be kept");
+        // Frozen-set invariant: the opponent SET (kinds) is unchanged (EMA may differ).
+        let set_after: Vec<String> = pool.entries.iter().map(|e| format!("{:?}", e.kind)).collect();
+        assert_eq!(set_before, set_after, "train_round must not add/remove pool entries");
+    }
 
     #[test]
     fn round_seed_is_deterministic_and_distinct() {
