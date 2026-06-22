@@ -9,9 +9,12 @@
 
 use std::path::PathBuf;
 
+use anyhow::Result;
+use crate::eval::{evaluate_hac, evaluate_h2h};
 use crate::hierarchical::sizing::Sizing;
 use crate::reward::RewardConfig;
-use crate::self_play::{Role, SnapshotPool};
+use crate::self_play::{load_frozen_hac, OpponentKind, Role, SnapshotPool};
+use crate::HierarchicalActorCritic;
 use crate::JointPpoConfig;
 
 #[derive(Clone, Debug)]
@@ -85,6 +88,58 @@ pub fn build_frozen_pool(contenders: &[LadderContender], ema_alpha: f32) -> Snap
     pool
 }
 
+/// Per-opponent winrate breakdown and aggregate pool score for a candidate brain.
+#[derive(Clone, Debug)]
+pub struct PoolScore {
+    /// Mean worker-share winrate over all pool opponents (archetypes + non-excluded HAC snapshots).
+    pub winrate_vs_pool: f32,
+    /// Head-to-head worker-share winrate vs the entry named `sota_name` (0.5 if absent).
+    pub h2h_vs_sota: f32,
+    /// Per-opponent (name, winrate) pairs — one entry per archetype + one per included snapshot.
+    pub per_opp: Vec<(String, f32)>,
+}
+
+/// Mean worker-share winrate of `hac` over every pool opponent (each archetype
+/// and each HAC snapshot is one opponent), skipping the entry named
+/// `exclude_name` (so a brain that lives in the pool doesn't score itself).
+/// `h2h_vs_sota` is the winrate vs the entry named `sota_name` (0.5 if absent).
+pub fn winrate_vs_pool(
+    hac: &HierarchicalActorCritic,
+    pool: &SnapshotPool,
+    exclude_name: Option<&str>,
+    sota_name: &str,
+    device: &candle_core::Device,
+    mpe: usize,
+) -> Result<PoolScore> {
+    // Archetypes in one shot via evaluate_hac (per-archetype worker-share).
+    let bench = evaluate_hac(hac, device, mpe)?;
+    let mut per_opp: Vec<(String, f32)> = bench.per_archetype.clone();
+    let mut h2h_vs_sota = 0.5f32;
+
+    for e in &pool.entries {
+        if let OpponentKind::Snapshot { name, path } = &e.kind {
+            if exclude_name == Some(name.as_str()) {
+                continue;
+            }
+            let opp = load_frozen_hac(path, pool_sizing(pool), device)?;
+            let r = evaluate_h2h(hac, &opp, device, mpe)?;
+            if name == sota_name {
+                h2h_vs_sota = r.a_winrate_ws;
+            }
+            per_opp.push((name.clone(), r.a_winrate_ws));
+        }
+    }
+
+    let n = per_opp.len().max(1) as f32;
+    let winrate_vs_pool = per_opp.iter().map(|(_, w)| *w).sum::<f32>() / n;
+    tracing::info!(winrate_vs_pool, h2h_vs_sota, opponents = per_opp.len(), "ladder: winrate_vs_pool computed");
+    Ok(PoolScore { winrate_vs_pool, h2h_vs_sota, per_opp })
+}
+
+/// All ladder HAC opponents are A1 (the project's compact target). Centralized
+/// so `winrate_vs_pool` need not thread sizing through every call.
+fn pool_sizing(_pool: &SnapshotPool) -> Sizing { crate::hierarchical::sizing::A1 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +175,33 @@ mod tests {
         let names: Vec<&str> = pool.entries.iter().filter_map(|e| match &e.kind {
             OpponentKind::Snapshot { name, .. } => Some(name.as_str()), _ => None }).collect();
         assert!(names.contains(&"sota") && names.contains(&"sp1term"));
+    }
+
+    #[test]
+    fn winrate_vs_pool_excludes_self_and_reports_h2h() {
+        use candle_core::Device;
+        use crate::hierarchical::sizing::A1;
+        let dir = std::env::temp_dir().join("ladder_wvp_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Save two fresh HAC checkpoints to act as "sota" and "other".
+        let sota_p = dir.join("sota.safetensors");
+        let other_p = dir.join("other.safetensors");
+        for p in [&sota_p, &other_p] {
+            let t = crate::JointPpoTrainer::new(Device::Cpu, A1, crate::JointPpoConfig::smoke_default()).unwrap();
+            t.varmap.save(p).unwrap();
+        }
+        let cs = vec![
+            LadderContender { id: "sota".into(), spec: format!("hac:{}", sota_p.display()) },
+            LadderContender { id: "other".into(), spec: format!("hac:{}", other_p.display()) },
+        ];
+        let pool = build_frozen_pool(&cs, 0.1);
+        let cand = crate::self_play::load_frozen_hac(&sota_p, A1, &Device::Cpu).unwrap();
+        // Evaluate "sota" itself vs pool, excluding its own entry: must NOT include a self-match.
+        let score = winrate_vs_pool(&cand, &pool, Some("sota"), "sota", &Device::Cpu, 1).unwrap();
+        // 7 archetypes + "other" = 8 opponents (self "sota" excluded).
+        assert_eq!(score.per_opp.len(), 8, "self entry must be excluded");
+        assert!(!score.per_opp.iter().any(|(n, _)| n == "sota"), "self not scored");
+        assert!((0.0..=1.0).contains(&score.winrate_vs_pool));
+        assert!((0.0..=1.0).contains(&score.h2h_vs_sota));
     }
 }
