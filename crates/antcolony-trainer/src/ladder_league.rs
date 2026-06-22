@@ -263,7 +263,14 @@ pub fn train_round(
 pub struct LadderLeague {
     pub cfg: LadderConfig,
     pub pool: SnapshotPool,
+    /// Training device (GPU on cnc) — used ONLY by `train_round`'s forward/backward.
     pub device: candle_core::Device,
+    /// Eval device (CPU) — used for the standing bar, the per-round gate, and the
+    /// confirmation tournament. Keeping these off the training GPU prevents the
+    /// eval inference from accumulating CUDA pool memory and OOM-ing `train_round`
+    /// (the spec's "gate runs on CPU+rayon like the tournament"). Many independent
+    /// full-match evals also parallelize better on CPU than serialized on the GPU.
+    pub eval_device: candle_core::Device,
     pub sota_path: PathBuf,
     pub standing_bar: f32,
     /// Pool entry id of the current SOTA brain. Starts as "sota" (the seed), advances on each
@@ -280,11 +287,14 @@ impl LadderLeague {
         if cfg.gate_mpe == 0 {
             anyhow::bail!("LadderConfig.gate_mpe must be > 0");
         }
+        // Eval (standing bar, gate, confirmation tournament) runs on CPU to keep it off the
+        // training GPU — see the `eval_device` field doc.
+        let eval_device = candle_core::Device::Cpu;
         let pool = build_frozen_pool(&cfg.initial_contenders, 0.1);
         // Initial standing bar = the SOTA's winrate-vs-pool (excluding its own "sota" entry).
-        let sota_hac = load_frozen_hac(&cfg.sota_path, cfg.sizing, &device)?;
-        let bar = winrate_vs_pool(&sota_hac, &pool, Some("sota"), "sota", &device, cfg.gate_mpe)?;
-        tracing::info!(standing_bar = bar.winrate_vs_pool, "ladder: initial standing bar computed");
+        let sota_hac = load_frozen_hac(&cfg.sota_path, cfg.sizing, &eval_device)?;
+        let bar = winrate_vs_pool(&sota_hac, &pool, Some("sota"), "sota", &eval_device, cfg.gate_mpe)?;
+        tracing::info!(standing_bar = bar.winrate_vs_pool, "ladder: initial standing bar computed (eval on CPU)");
         Ok(Self {
             sota_path: cfg.sota_path.clone(),
             standing_bar: bar.winrate_vs_pool,
@@ -292,6 +302,7 @@ impl LadderLeague {
             cfg,
             pool,
             device,
+            eval_device,
         })
     }
 
@@ -305,9 +316,10 @@ impl LadderLeague {
             rounds_run = round;
             tracing::info!(round, standing_bar = self.standing_bar, sota_path = ?self.sota_path, "ladder: ===== round start =====");
             let outcome = train_round(&self.cfg, &self.sota_path, &mut self.pool, round, &self.device)?;
-            let candidate = load_frozen_hac(&outcome.candidate_path, self.cfg.sizing, &self.device)?;
+            // Gate evaluation runs on the CPU eval device (off the training GPU).
+            let candidate = load_frozen_hac(&outcome.candidate_path, self.cfg.sizing, &self.eval_device)?;
             let g = gate(&candidate, &self.pool, &self.current_sota_name, self.standing_bar,
-                         self.cfg.gate_margin, &self.device, self.cfg.gate_mpe)?;
+                         self.cfg.gate_margin, &self.eval_device, self.cfg.gate_mpe)?;
             best_h2h_over_seed = best_h2h_over_seed.max(g.h2h_vs_sota);
 
             if g.passed {
@@ -329,7 +341,7 @@ impl LadderLeague {
                     contenders, mpe: self.cfg.gate_mpe, max_ticks: 10_000,
                     anchor_id: "heuristic".into(), anchor_elo: 1000.0, cycle_margin: 0.55, sizing: self.cfg.sizing,
                 };
-                let tres = crate::tournament::run_tournament(&tcfg, &self.device)?;
+                let tres = crate::tournament::run_tournament(&tcfg, &self.eval_device)?;
                 match confirm_rank(&tres, &name) {
                     Some((0, elo, ncyc)) => {
                         self.sota_path = outcome.candidate_path.clone();
