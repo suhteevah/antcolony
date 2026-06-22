@@ -258,6 +258,69 @@ pub fn train_round(
     Ok(RoundOutcome { candidate_path, best_train_h2h: best_h2h, best_train_bench: best_bench, kept })
 }
 
+pub struct LadderLeague {
+    pub cfg: LadderConfig,
+    pub pool: SnapshotPool,
+    pub device: candle_core::Device,
+    pub sota_path: PathBuf,
+    pub standing_bar: f32,
+}
+
+impl LadderLeague {
+    pub fn new(cfg: LadderConfig, device: candle_core::Device) -> Result<Self> {
+        std::fs::create_dir_all(&cfg.out_dir)?;
+        let pool = build_frozen_pool(&cfg.initial_contenders, 0.1);
+        // Initial standing bar = the SOTA's winrate-vs-pool (excluding its own "sota" entry).
+        let sota_hac = load_frozen_hac(&cfg.sota_path, cfg.sizing, &device)?;
+        let bar = winrate_vs_pool(&sota_hac, &pool, Some("sota"), "sota", &device, cfg.gate_mpe)?;
+        tracing::info!(standing_bar = bar.winrate_vs_pool, "ladder: initial standing bar computed");
+        Ok(Self { sota_path: cfg.sota_path.clone(), standing_bar: bar.winrate_vs_pool, cfg, pool, device })
+    }
+
+    pub fn run(&mut self) -> Result<LadderReport> {
+        let mut no_improve = 0usize;
+        let mut promotions = 0usize;
+        let mut best_h2h_over_seed = f32::NEG_INFINITY;
+        let mut rounds_run = 0usize;
+
+        for round in 1..=self.cfg.max_rounds {
+            rounds_run = round;
+            tracing::info!(round, standing_bar = self.standing_bar, sota_path = ?self.sota_path, "ladder: ===== round start =====");
+            let outcome = train_round(&self.cfg, &self.sota_path, &mut self.pool, round, &self.device)?;
+            let candidate = load_frozen_hac(&outcome.candidate_path, self.cfg.sizing, &self.device)?;
+            let g = gate(&candidate, &self.pool, "sota", self.standing_bar,
+                         self.cfg.gate_margin, &self.device, self.cfg.gate_mpe)?;
+            best_h2h_over_seed = best_h2h_over_seed.max(g.h2h_vs_sota);
+
+            if g.passed {
+                // Promote: add as a protected frozen opponent, advance SOTA, raise the bar.
+                let name = format!("ladder_r{round:02}");
+                self.pool.add_protected_snapshot(name.clone(), outcome.candidate_path.clone(), Role::Main);
+                self.sota_path = outcome.candidate_path.clone();
+                self.standing_bar = g.winrate_vs_pool;
+                promotions += 1;
+                no_improve = 0;
+                tracing::info!(round, name = %name, new_bar = self.standing_bar, h2h = g.h2h_vs_sota, "ladder: PROMOTED");
+            } else {
+                no_improve += 1;
+                tracing::info!(round, no_improve, h2h = g.h2h_vs_sota, wr = g.winrate_vs_pool, "ladder: candidate did not pass the gate");
+            }
+
+            if let Some(reason) = should_stop(no_improve, self.cfg.no_improve_stop, round, self.cfg.max_rounds) {
+                tracing::info!(round, reason, promotions, "ladder: ===== STOP =====");
+                return Ok(LadderReport {
+                    rounds_run, promotions, final_sota_path: self.sota_path.clone(),
+                    best_h2h_over_seed, stopped_reason: reason.to_string(),
+                });
+            }
+        }
+        Ok(LadderReport {
+            rounds_run, promotions, final_sota_path: self.sota_path.clone(),
+            best_h2h_over_seed, stopped_reason: "max_rounds".to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +425,35 @@ mod tests {
         assert!(!gate_decision(0.62, 0.60, 0.51, 0.55), "coin-flip h2h fails despite winrate");
         assert!(!gate_decision(0.58, 0.60, 0.70, 0.55), "below standing bar fails despite big h2h");
         assert!(gate_decision(0.60, 0.60, 0.55, 0.55), "exactly at both thresholds passes (>=)");
+    }
+
+    #[test]
+    fn ladder_league_runs_two_rounds_and_reports() {
+        use candle_core::Device;
+        use crate::hierarchical::sizing::A1;
+        let dir = std::env::temp_dir().join("ladder_league_smoke");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sota_p = dir.join("seed_sota.safetensors");
+        { let t = crate::JointPpoTrainer::new(Device::Cpu, A1, crate::JointPpoConfig::smoke_default()).unwrap();
+          t.varmap.save(&sota_p).unwrap(); }
+        let cs = vec![LadderContender { id: "sota".into(), spec: format!("hac:{}", sota_p.display()) }];
+
+        let mut joint = crate::JointPpoConfig::smoke_default();
+        joint.rollout_cycles = 4;
+        let cfg = LadderConfig {
+            sota_path: sota_p.clone(), initial_contenders: cs,
+            iters_per_round: 1, eval_every: 1, train_mpe: 1, gate_mpe: 1,
+            gate_margin: 2.0,                 // impossible margin -> guarantees NO promotion -> stops on no_improve
+            keepbest_arch_floor: 0.0, archetype_mix: 0.5, pfsp_power: 1.0,
+            no_improve_stop: 2, max_rounds: 8,
+            out_dir: dir.clone(), sizing: A1, joint, reward: crate::RewardConfig::default(),
+        };
+        let mut league = LadderLeague::new(cfg, Device::Cpu).unwrap();
+        assert!((0.0..=1.0).contains(&league.standing_bar), "initial bar is a winrate");
+        let report = league.run().unwrap();
+        assert_eq!(report.promotions, 0, "impossible margin -> no promotions");
+        assert_eq!(report.stopped_reason, "no_improve");
+        assert_eq!(report.rounds_run, 2, "stops after no_improve_stop=2 failed rounds");
     }
 }
