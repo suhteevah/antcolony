@@ -1,4 +1,4 @@
-//! Species definition — the biology and encyclopedia data that drives how
+//! Species definition -- the biology and encyclopedia data that drives how
 //! a colony behaves. Authored in TOML, one file per species.
 //!
 //! The `Species` is **species-authentic biology** (14-day larval period,
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::colony::CasteRatio;
 use crate::config::{
-    AntConfig, ColonyConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig,
+    AntConfig, ColonyConfig, CombatConfig, ColonySimConfig, PheromoneConfig, SimConfig, WorldConfig,
 };
 use crate::environment::Environment;
 use crate::error::SimError;
@@ -20,7 +20,7 @@ use crate::species_extended::{
     Substrate, default_schema_version,
 };
 
-/// Phase B hook #1 — recruitment-style → trail-deposit-strength scalar.
+/// Phase B hook #1 -- recruitment-style -> trail-deposit-strength scalar.
 ///
 /// Mass recruiters lay strong trails that self-amplify into chemical
 /// "roads"; tandem-running species drop little or no trail at all.
@@ -28,10 +28,10 @@ use crate::species_extended::{
 /// this factor at config-bake time delivers the per-species behavior
 /// without per-tick branching in the deposit loop.
 ///
-/// Values are sim-pacing — no published "X% as much pheromone" figure
+/// Values are sim-pacing -- no published "X% as much pheromone" figure
 /// for any genus because tandem species typically don't deposit
-/// detectable food trails at all (Hölldobler & Wilson 1990 ch. 7).
-/// Phase B hook #3 — convert a species-specified trail half-life
+/// detectable food trails at all (Holldobler & Wilson 1990 ch. 7).
+/// Phase B hook #3 -- convert a species-specified trail half-life
 /// (in in-game seconds) to the per-substep evaporation rate that
 /// `pheromone::evaporate` reads. Calibration: each sim substep is
 /// 2 in-game seconds (Seasonal baseline). The default
@@ -88,7 +88,7 @@ pub struct Biology {
     pub hibernation_required: bool,
     /// Minimum in-game days of diapause required per year for the
     /// queen's fertility to remain viable. Only consulted when
-    /// `hibernation_required = true`. Defaults to 60 if absent — that
+    /// `hibernation_required = true`. Defaults to 60 if absent -- that
     /// covers Lasius and most temperate beginners. Cold-temperate
     /// species (Camponotus, Formica) want higher (~90-120); short-cycle
     /// mediterranean species (Aphaenogaster) can run lower.
@@ -130,7 +130,7 @@ pub struct CombatProfile {
     pub soldier_attack: f32,
     pub worker_health: f32,
     pub soldier_health: f32,
-    /// 0..1 — chase radius multiplier for main-game AI. Ignored in keeper mode.
+    /// 0..1 -- chase radius multiplier for main-game AI. Ignored in keeper mode.
     pub aggression: f32,
 }
 
@@ -167,7 +167,7 @@ pub struct Encyclopedia {
 /// TOMLs that omit the `[forage]` block continue to load with legacy behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForageProfile {
-    /// Ecological niche label — informational only, used for analytics.
+    /// Ecological niche label -- informational only, used for analytics.
     #[serde(default)]
     pub niche: String,
     /// Mean food clusters spawned per in-game day at peak season.
@@ -283,11 +283,155 @@ impl Species {
         format!("{} {}", self.genus, self.species_epithet)
     }
 
+    /// Build the per-colony config slice for this species at the given
+    /// environment. Returns a `ColonySimConfig` containing the ant/colony/combat
+    /// configs plus metadata (species_id, clade, weapon, recruitment_scalar,
+    /// predates_ants). Does NOT set world/pheromone/hazards -- those are global
+    /// and live on `SimConfig` (one shared arena, one shared pheromone field).
+    ///
+    /// This is the load-bearing extractor for cross-species 1v1: each side of
+    /// the arena calls `apply_colony` with its own species, then the shared
+    /// world/pheromone is built once from the host species's `apply`.
+    pub fn apply_colony(&self, env: &Environment) -> ColonySimConfig {
+        let recruitment_scalar = recruitment_deposit_scalar(self.behavior.recruitment);
+
+        let ant = AntConfig {
+            speed_worker: 2.0 * self.appearance.speed_multiplier,
+            speed_soldier: 1.5 * self.appearance.speed_multiplier,
+            speed_queen: 0.0,
+            sense_radius: 5,
+            sense_angle: 60.0,
+            exploration_rate: 0.15,
+            alpha: 1.0,
+            beta: 2.0,
+            // Phase B hook #11 (lite) -- seed-dispersing species carry
+            // larger food packets per trip. Seeds with elaiosomes are
+            // an order of magnitude bigger than typical insect prey
+            // chunks (Beattie 1985); even the lite version (no
+            // Food::Seed Terrain variant yet) captures the foraging
+            // throughput advantage. Aphaenogaster rudis is the only
+            // myrmecochore in the current pool.
+            food_capacity: if self.diet_extended.seed_dispersal {
+                1.5
+            } else {
+                1.0
+            },
+            initial_count: self.growth.initial_workers as usize,
+            worker_size_mm: self.appearance.size_mm,
+            polymorphic: self.biology.polymorphic,
+            hibernation_cold_threshold_c: 10.0,
+            hibernation_warm_threshold_c: 12.0,
+            hibernation_required: self.biology.hibernation_required,
+            min_diapause_days: self.biology.min_diapause_days,
+            nocturnal: matches!(
+                self.behavior.diel_activity,
+                crate::species_extended::DielActivity::Nocturnal
+            ),
+            sting_potency: self.combat_extended.sting_potency,
+            // Phase B hook #7 -- species-specific dig rate. Camponotus
+            // (0.5) digs slower in any substrate; Pogonomyrmex (1.3)
+            // digs faster. Compounds with the per-tile substrate rate
+            // already applied in `dig_tick`.
+            species_dig_multiplier: self.substrate.dig_speed_multiplier,
+        };
+
+        // queen_egg_rate is fraction-of-egg-per-tick.
+        // eggs_per_day / in_game_seconds_per_day / in_game_seconds_per_tick
+        // Simplified: rate_per_tick = eggs_per_day / ticks_per_in_game_day.
+        let ticks_per_day = env.in_game_seconds_to_ticks(86_400).max(1) as f32;
+        // Phase B hook #12 -- honeydew_dependent species without nearby aphid
+        // sources grow more slowly (flat 20% penalty until aphid entities exist).
+        let honeydew_penalty: f32 = if self.diet_extended.honeydew_dependent {
+            0.8
+        } else {
+            1.0
+        };
+        // Phase B hook #10b -- polygyne queen-count scales colony egg-laying rate.
+        use crate::species_extended::QueenCount;
+        let polygyne_factor: f32 = match self.colony_structure.queen_count {
+            QueenCount::Monogyne => 1.0,
+            QueenCount::FacultativelyPolygyne => 1.3,
+            QueenCount::ObligatePolygyne => 2.0,
+        };
+        let queen_egg_rate =
+            self.growth.queen_eggs_per_day * honeydew_penalty * polygyne_factor / ticks_per_day;
+        let adult_food_consumption = self.growth.food_per_adult_per_day / ticks_per_day;
+        // Postmortem fix #5: stochastic worker mortality. Convert
+        // species TOML `worker_lifespan_months` to ticks at this
+        // env's time scale. Floor at 1.0 month equivalent to avoid
+        // unstoppable die-off if a TOML accidentally sets 0.
+        let worker_lifespan_ticks =
+            (self.biology.worker_lifespan_months.max(0.1) * 30.0 * ticks_per_day) as u32;
+
+        // Maturation: each stage runs from egg->larva->pupa->adult.
+        let egg_ticks = env.in_game_seconds_to_ticks(self.growth.egg_maturation_seconds);
+        let larva_ticks = env.in_game_seconds_to_ticks(self.growth.larva_maturation_seconds);
+        let pupa_ticks = env.in_game_seconds_to_ticks(self.growth.pupa_maturation_seconds);
+
+        let colony = ColonyConfig {
+            initial_workers: self.growth.initial_workers,
+            initial_food: 200.0,
+            egg_cost: self.growth.egg_cost_food,
+            // Three independent stage durations, mapped 1:1 from the
+            // species TOML's egg/larva/pupa_maturation_seconds.
+            egg_stage_ticks: egg_ticks as u32,
+            larva_stage_ticks: larva_ticks as u32,
+            pupa_stage_ticks: pupa_ticks as u32,
+            adult_food_consumption,
+            soldier_food_multiplier: 1.5,
+            queen_egg_rate,
+            target_population: self.growth.target_population,
+            worker_lifespan_ticks,
+            // Task C3: wire species TOML `diet_extended.food_storage_cap`
+            // into the per-colony override that `ColonyState::new` reads.
+            // `None` falls back to the runtime default.
+            food_storage_cap: self.diet_extended.food_storage_cap,
+            ..ColonyConfig::default()
+        };
+
+        let combat = CombatConfig {
+            worker_attack: self.combat.worker_attack,
+            soldier_attack: self.combat.soldier_attack,
+            worker_health: self.combat.worker_health,
+            soldier_health: self.combat.soldier_health,
+            venom_resistance: self.combat_extended.venom_resistance.clamp(0.0, 0.9),
+            ..CombatConfig::default()
+        };
+
+        tracing::debug!(
+            species = %self.id,
+            scale = env.time_scale.label(),
+            queen_egg_rate,
+            adult_food_consumption,
+            egg_ticks = colony.egg_stage_ticks,
+            larva_ticks = colony.larva_stage_ticks,
+            pupa_ticks = colony.pupa_stage_ticks,
+            clade = ?crate::clade::clade_from_genus(&self.genus),
+            "Species::apply_colony built per-colony slice"
+        );
+
+        ColonySimConfig {
+            ant,
+            colony,
+            combat,
+            species_id: self.id.clone(),
+            clade: crate::clade::clade_from_genus(&self.genus),
+            weapon: self.combat_extended.weapon,
+            recruitment_scalar,
+            predates_ants: self.diet_extended.predates_ants,
+        }
+    }
+
     /// Convert species biology + player environment into a tick-denominated `SimConfig`.
     ///
     /// This is where in-game seconds meet sim ticks. All downstream sim code
     /// operates in ticks; nothing inside the sim loop needs to know about
     /// TimeScale or real-time seconds.
+    ///
+    /// Delegates per-colony computation to `apply_colony`; this method
+    /// assembles the global world/pheromone/hazards fields and installs the
+    /// colony slice. Byte-identical to the old monolithic implementation for
+    /// all existing species TOMLs (venom_resistance defaults to 0.0).
     pub fn apply(&self, env: &Environment) -> SimConfig {
         let world = WorldConfig {
             width: env.world_width,
@@ -310,167 +454,44 @@ impl Species {
         // per-substep rates here remain biologically correct at any
         // player-selected scale.
         //
-        // Phase B hook #1 — recruitment style scales trail deposit
-        // strength. Mass recruiters (Lasius, Tetramorium, Tapinoma)
-        // get the calibrated baseline; tandem-runners (Camponotus) and
-        // individual foragers deposit much less. This is what makes
-        // trails self-amplify into "roads" for mass recruiters and
-        // stay faint individual breadcrumbs for tandem species.
-        // Cross-ref: docs/biology.md "Trail pheromone half-life and
-        // species variance"; biology-roadmap.md §"Phase B sim hooks" #1.
+        // Phase B hook #1 -- recruitment style scales trail deposit strength.
+        // Mass recruiters (Lasius, Tetramorium, Tapinoma) get the calibrated
+        // baseline; tandem-runners (Camponotus) and individual foragers deposit
+        // much less. This is what makes trails self-amplify into "roads" for
+        // mass recruiters and stay faint individual breadcrumbs for tandem species.
         let recruitment_scalar = recruitment_deposit_scalar(self.behavior.recruitment);
         let mut pheromone = PheromoneConfig::default();
         pheromone.deposit_food_trail *= recruitment_scalar;
         pheromone.deposit_home_trail *= recruitment_scalar;
 
-        // Phase B hook #3 — per-species trail evaporation override.
+        // Phase B hook #3 -- per-species trail evaporation override.
         // When a species TOML supplies `behavior.trail_half_life_seconds`,
         // convert that to per-substep evaporation rate; otherwise leave
-        // the default. Matches measured species variance (Lasius ~2820s
-        // per Beckers/Deneubourg vs. ~60s for tandem-recruiters).
+        // the default.
         if let Some(half_life) = self.behavior.trail_half_life_seconds {
             pheromone.evaporation_rate = evaporation_rate_from_half_life_seconds(half_life);
         }
 
-        let ant = AntConfig {
-            speed_worker: 2.0 * self.appearance.speed_multiplier,
-            speed_soldier: 1.5 * self.appearance.speed_multiplier,
-            speed_queen: 0.0,
-            sense_radius: 5,
-            sense_angle: 60.0,
-            exploration_rate: 0.15,
-            alpha: 1.0,
-            beta: 2.0,
-            // Phase B hook #11 (lite) — seed-dispersing species carry
-            // larger food packets per trip. Seeds with elaiosomes are
-            // an order of magnitude bigger than typical insect prey
-            // chunks (Beattie 1985); even the lite version (no
-            // Food::Seed Terrain variant yet) captures the foraging
-            // throughput advantage. Aphaenogaster rudis is the only
-            // myrmecochore in the current pool.
-            // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #11.
-            food_capacity: if self.diet_extended.seed_dispersal {
-                1.5
-            } else {
-                1.0
-            },
-            initial_count: self.growth.initial_workers as usize,
-            worker_size_mm: self.appearance.size_mm,
-            polymorphic: self.biology.polymorphic,
-            hibernation_cold_threshold_c: 10.0,
-            hibernation_warm_threshold_c: 12.0,
-            hibernation_required: self.biology.hibernation_required,
-            min_diapause_days: self.biology.min_diapause_days,
-            nocturnal: matches!(
-                self.behavior.diel_activity,
-                crate::species_extended::DielActivity::Nocturnal
-            ),
-            sting_potency: self.combat_extended.sting_potency,
-            // Phase B hook #7 — species-specific dig rate. Camponotus
-            // (0.5) digs slower in any substrate; Pogonomyrmex (1.3)
-            // digs faster. Compounds with the per-tile substrate rate
-            // already applied in `dig_tick`.
-            species_dig_multiplier: self.substrate.dig_speed_multiplier,
-        };
-
-        // queen_egg_rate is fraction-of-egg-per-tick.
-        // eggs_per_day / in_game_seconds_per_day / in_game_seconds_per_tick
-        // Simplified: rate_per_tick = eggs_per_day / ticks_per_in_game_day.
-        let ticks_per_day = env.in_game_seconds_to_ticks(86_400).max(1) as f32;
-        // Phase B hook #12 — honeydew_dependent species without nearby
-        // aphid sources grow more slowly. Aphid-colony entities are a
-        // Phase C feature; until then, the simplest defensible
-        // interpretation is a flat 20% growth penalty for honeydew-
-        // obligates (Formica rufa documented as ~200kg honeydew/yr at
-        // mature mound from Cinara/Lachnus aphid herds — losing that
-        // resource collapses the carb supply driving brood production).
-        // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #12.
-        let honeydew_penalty: f32 = if self.diet_extended.honeydew_dependent {
-            0.8
-        } else {
-            1.0
-        };
-        // Phase B hook #10b — polygyne queen-count scales the colony's
-        // total egg-laying rate. The species TOML's queen_eggs_per_day
-        // is per-queen (Formica's 50/day is the suppressed per-queen
-        // rate inside polygyne mounds; cited in growth comment), so a
-        // colony with multiple queens lays more eggs per tick. Scaling
-        // is sub-linear (mature polygyne mounds carry 100+ queens but
-        // the brood pipeline saturates well below n×); 2.0 captures
-        // the ecologically meaningful boost without runaway growth.
-        // Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #10.
-        use crate::species_extended::QueenCount;
-        let polygyne_factor: f32 = match self.colony_structure.queen_count {
-            QueenCount::Monogyne => 1.0,
-            QueenCount::FacultativelyPolygyne => 1.3,
-            QueenCount::ObligatePolygyne => 2.0,
-        };
-        let queen_egg_rate =
-            self.growth.queen_eggs_per_day * honeydew_penalty * polygyne_factor / ticks_per_day;
-        let adult_food_consumption = self.growth.food_per_adult_per_day / ticks_per_day;
-        // Postmortem fix #5: stochastic worker mortality. Convert
-        // species TOML `worker_lifespan_months` to ticks at this
-        // env's time scale. Pre-fix the field was unread; workers
-        // never died of age. Floor at 1.0 month equivalent to avoid
-        // unstoppable die-off if a TOML accidentally sets 0.
-        let worker_lifespan_ticks =
-            (self.biology.worker_lifespan_months.max(0.1) * 30.0 * ticks_per_day) as u32;
-
-        // Maturation: each stage runs from egg→larva→pupa→adult.
-        let egg_ticks = env.in_game_seconds_to_ticks(self.growth.egg_maturation_seconds);
-        let larva_ticks = env.in_game_seconds_to_ticks(self.growth.larva_maturation_seconds);
-        let pupa_ticks = env.in_game_seconds_to_ticks(self.growth.pupa_maturation_seconds);
-
-        let colony = ColonyConfig {
-            initial_workers: self.growth.initial_workers,
-            initial_food: 200.0,
-            egg_cost: self.growth.egg_cost_food,
-            // Three independent stage durations, mapped 1:1 from the
-            // species TOML's egg/larva/pupa_maturation_seconds. Pre-fix
-            // these were folded into two fields and the pupa stage
-            // reused the larva duration, compressing the egg→adult
-            // pipeline by ~30%.
-            egg_stage_ticks: egg_ticks as u32,
-            larva_stage_ticks: larva_ticks as u32,
-            pupa_stage_ticks: pupa_ticks as u32,
-            adult_food_consumption,
-            soldier_food_multiplier: 1.5,
-            queen_egg_rate,
-            target_population: self.growth.target_population,
-            worker_lifespan_ticks,
-            // Task C3: wire species TOML `diet_extended.food_storage_cap`
-            // into the per-colony override that `ColonyState::new` reads.
-            // `None` falls back to the runtime default.
-            food_storage_cap: self.diet_extended.food_storage_cap,
-            ..ColonyConfig::default()
-        };
-
-        let combat = CombatConfig {
-            worker_attack: self.combat.worker_attack,
-            soldier_attack: self.combat.soldier_attack,
-            worker_health: self.combat.worker_health,
-            soldier_health: self.combat.soldier_health,
-            ..CombatConfig::default()
-        };
+        let slice = self.apply_colony(env);
 
         let cfg = SimConfig {
             world,
             pheromone,
-            ant,
-            colony,
-            combat,
+            ant: slice.ant.clone(),
+            colony: slice.colony.clone(),
+            combat: slice.combat.clone(),
             hazards: crate::config::HazardConfig::default(),
         };
 
         tracing::info!(
             species = %self.id,
             scale = env.time_scale.label(),
-            ticks_per_day,
-            queen_egg_rate,
-            adult_food_consumption,
+            queen_egg_rate = cfg.colony.queen_egg_rate,
+            adult_food_consumption = cfg.colony.adult_food_consumption,
             egg_ticks = cfg.colony.egg_stage_ticks,
             larva_ticks = cfg.colony.larva_stage_ticks,
             pupa_ticks = cfg.colony.pupa_stage_ticks,
+            clade = ?slice.clade,
             "Species::apply folded biology into SimConfig"
         );
 
@@ -501,10 +522,10 @@ pub fn load_species_dir<P: AsRef<std::path::Path>>(dir: P) -> Result<Vec<Species
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
 
-    // Phase B hook #13 — validate host_species_required references.
+    // Phase B hook #13 -- validate host_species_required references.
     // Parasitic founders (e.g. Formica rufa requires Formica fusca per
     // Borowiec et al. 2021 PNAS) need their host species present in the
-    // pool. Log a warning if the host is missing — colonies of the
+    // pool. Log a warning if the host is missing -- colonies of the
     // parasitic species will still spawn (sim is degraded gracefully)
     // but the founding sequence is biologically incomplete.
     let loaded_ids: std::collections::HashSet<&str> = out.iter().map(|s| s.id.as_str()).collect();
@@ -514,7 +535,7 @@ pub fn load_species_dir<P: AsRef<std::path::Path>>(dir: P) -> Result<Vec<Species
                 tracing::warn!(
                     parasitic = %sp.id,
                     missing_host = %host,
-                    "Phase B hook #13: parasitic species's required host species not loaded — \
+                    "Phase B hook #13: parasitic species's required host species not loaded -- \
                      founding sequence will be biologically incomplete"
                 );
             } else {
@@ -590,9 +611,9 @@ keeper_notes = "Docile, hardy, forgiving."
         let very_short = evaporation_rate_from_half_life_seconds(10);
         assert!(
             very_short > baseline,
-            "shorter half-life ⇒ higher decay rate"
+            "shorter half-life => higher decay rate"
         );
-        assert!(baseline > lasius, "Lasius long half-life ⇒ low decay rate");
+        assert!(baseline > lasius, "Lasius long half-life => low decay rate");
         // Half-life formula sanity: ~0.5 of pheromone left after `H/2`
         // substeps when rate matches.
         let r = evaporation_rate_from_half_life_seconds(20); // 10 substeps to half-life
@@ -718,7 +739,7 @@ keeper_notes = "Docile, hardy, forgiving."
 
     #[test]
     fn species_loads_without_forage_block_uses_defaults() {
-        // Sample TOML omits `[forage]` — Species should still load,
+        // Sample TOML omits `[forage]` -- Species should still load,
         // and the forage profile should be the legacy no-respawn default.
         let s = Species::load_from_str(sample_toml()).expect("parse");
         assert_eq!(s.forage.peak_food_per_day, 0.0);
@@ -799,7 +820,7 @@ keeper_notes = "Docile, hardy, forgiving."
 
         // 1) The real on-disk TOML for P. occidentalis declares
         //    food_storage_cap = 45000.0 inside [diet_extended].
-        //    (Recalibrated 2026-05-18 attempt4: 30 food/worker × 1500
+        //    (Recalibrated 2026-05-18 attempt4: 30 food/worker x 1500
         //    verifier year-2 ceiling. Was 300000 from the mature
         //    target_population overshoot.)
         let toml_str = include_str!("../../../assets/species/pogonomyrmex_occidentalis.toml");
@@ -838,11 +859,36 @@ keeper_notes = "Docile, hardy, forgiving."
         let species = Species::load_from_str(sample_toml()).expect("parse sample");
         assert!(
             species.diet_extended.food_storage_cap.is_none(),
-            "sample_toml has no [diet_extended] block — cap should default to None"
+            "sample_toml has no [diet_extended] block -- cap should default to None"
         );
         let cfg = species.apply(&Environment::default());
         assert_eq!(cfg.colony.food_storage_cap, None);
         let sim = crate::simulation::Simulation::new(cfg, 7);
         assert_eq!(sim.colonies[0].food_storage_cap_override, None);
+    }
+
+    #[test]
+    fn apply_colony_is_bit_identical_to_apply_slices() {
+        use crate::environment::Environment;
+        let s = Species::load_from_str(sample_toml()).expect("parse");
+        let env = Environment::default();
+        let full = s.apply(&env);
+        let slice = s.apply_colony(&env);
+        assert_eq!(format!("{:?}", full.ant), format!("{:?}", slice.ant));
+        assert_eq!(format!("{:?}", full.colony), format!("{:?}", slice.colony));
+        assert_eq!(format!("{:?}", full.combat), format!("{:?}", slice.combat));
+        assert_eq!(slice.species_id, s.id);
+    }
+
+    #[test]
+    fn apply_colony_populates_clade_weapon_predation() {
+        use crate::environment::Environment;
+        let toml = include_str!("../../../assets/species/brachyponera_chinensis.toml");
+        let s = Species::load_from_str(toml).expect("parse bc");
+        let slice = s.apply_colony(&Environment::default());
+        assert_eq!(slice.clade, crate::clade::Clade::Ponerinae);
+        assert_eq!(slice.weapon, crate::species_extended::Weapon::Sting);
+        assert!(slice.predates_ants, "brachyponera_chinensis.toml has predates_ants = true");
+        assert_eq!(slice.species_id, "brachyponera_chinensis");
     }
 }

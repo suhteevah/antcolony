@@ -56,6 +56,11 @@ const DEFAULT_MIN_DIAPAUSE_DAYS: u32 = 60;
 #[derive(Debug, Clone)]
 pub struct Simulation {
     pub config: SimConfig,
+    /// Per-colony config slice indexed by colony id. `len() == colonies.len()`.
+    /// For single-colony and legacy two-colony sims, every entry is
+    /// `ColonySimConfig::from(&config)` so combat/economy reading per-colony
+    /// is byte-identical to reading the shared `config`.
+    pub colony_configs: Vec<crate::config::ColonySimConfig>,
     pub topology: Topology,
     pub ants: Vec<Ant>,
     pub colonies: Vec<ColonyState>,
@@ -162,7 +167,9 @@ impl Simulation {
         topology.module_mut(0).world.place_nest(pw / 2, ph / 2, 0);
 
         let next_ant_id = ants.len() as u32;
+        let colony_slice = crate::config::ColonySimConfig::from(&config);
         Self {
+            colony_configs: vec![colony_slice],
             config,
             topology,
             ants,
@@ -187,31 +194,87 @@ impl Simulation {
     /// topology. Colony 0 (black) is the player by default; colony 1
     /// (red) is AI-controlled. For AI-vs-AI mode use
     /// [`Self::new_ai_vs_ai_with_topology`] which flips colony 0 to
-    /// AI as well — same body, different default for `is_ai_controlled`.
+    /// AI as well.
+    ///
+    /// Delegates to `new_two_colony_cross_species` with equal configs --
+    /// byte-identical to the old monolithic implementation.
     pub fn new_two_colony_with_topology(
         config: SimConfig,
+        topology: Topology,
+        seed: u64,
+        nest_black_module: ModuleId,
+        nest_red_module: ModuleId,
+    ) -> Self {
+        let slice = crate::config::ColonySimConfig::from(&config);
+        Self::new_two_colony_cross_species(
+            config,
+            slice.clone(),
+            slice,
+            topology,
+            seed,
+            nest_black_module,
+            nest_red_module,
+        )
+    }
+
+    /// Cross-species two-colony constructor. Black and red colonies may have
+    /// different per-colony configs (ant/colony/combat + species metadata).
+    /// `world_pheromone_hazards` provides the shared arena/pheromone/hazard
+    /// settings; per-colony biology comes from `cfg_black` / `cfg_red`.
+    ///
+    /// When `cfg_black == cfg_red == ColonySimConfig::from(&world_pheromone_hazards)`
+    /// the output is bit-identical to the old `new_two_colony_with_topology`.
+    pub fn new_two_colony_cross_species(
+        world_pheromone_hazards: SimConfig,
+        cfg_black: crate::config::ColonySimConfig,
+        cfg_red: crate::config::ColonySimConfig,
         mut topology: Topology,
         seed: u64,
         nest_black_module: ModuleId,
         nest_red_module: ModuleId,
     ) -> Self {
         assert!(!topology.is_empty(), "at least one module required");
+
+        // Fit tube bore to the larger of the two species.
+        let max_size = cfg_black.ant.worker_size_mm.max(cfg_red.ant.worker_size_mm);
+        let poly = cfg_black.ant.polymorphic || cfg_red.ant.polymorphic;
+        topology.fit_bore_to_species(max_size, poly);
+
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
+
+        // Build per-colony view SimConfigs (world/pheromone/hazards shared;
+        // ant/colony/combat from the per-colony slice).
+        let view_black = SimConfig {
+            world: world_pheromone_hazards.world.clone(),
+            pheromone: world_pheromone_hazards.pheromone.clone(),
+            ant: cfg_black.ant.clone(),
+            colony: cfg_black.colony.clone(),
+            combat: cfg_black.combat.clone(),
+            hazards: world_pheromone_hazards.hazards.clone(),
+        };
+        let view_red = SimConfig {
+            world: world_pheromone_hazards.world.clone(),
+            pheromone: world_pheromone_hazards.pheromone.clone(),
+            ant: cfg_red.ant.clone(),
+            colony: cfg_red.colony.clone(),
+            combat: cfg_red.combat.clone(),
+            hazards: world_pheromone_hazards.hazards.clone(),
+        };
 
         // Black colony (player).
         let black_mod = topology.module(nest_black_module);
         let (bw, bh) = (black_mod.width(), black_mod.height());
         let black_nest = Vec2::new(bw as f32 * 0.5, bh as f32 * 0.5);
-        let mut c_black = ColonyState::new(0, config.colony.initial_food, black_nest);
+        let mut c_black = ColonyState::new(0, view_black.colony.initial_food, black_nest);
         // C3: per-species food storage cap.
-        c_black.food_storage_cap_override = config.colony.food_storage_cap;
+        c_black.food_storage_cap_override = view_black.colony.food_storage_cap;
 
         let dist = CasteRatio {
             worker: 1.0,
             soldier: 0.0,
             breeder: 0.0,
         };
-        let mut black_ants = spawn_initial_ants(&config, &mut rng, black_nest, 0, dist, 0);
+        let mut black_ants = spawn_initial_ants(&view_black, &mut rng, black_nest, 0, dist, 0);
         for a in black_ants.iter_mut() {
             a.module_id = nest_black_module;
         }
@@ -220,11 +283,11 @@ impl Simulation {
         let red_mod = topology.module(nest_red_module);
         let (rw, rh) = (red_mod.width(), red_mod.height());
         let red_nest = Vec2::new(rw as f32 * 0.5, rh as f32 * 0.5);
-        let mut c_red = ColonyState::new(1, config.colony.initial_food, red_nest);
+        let mut c_red = ColonyState::new(1, view_red.colony.initial_food, red_nest);
         // C3: per-species food storage cap.
-        c_red.food_storage_cap_override = config.colony.food_storage_cap;
+        c_red.food_storage_cap_override = view_red.colony.food_storage_cap;
         c_red.is_ai_controlled = true;
-        // Red colonies lean defensive — more soldiers by default.
+        // Red colonies lean defensive -- more soldiers by default.
         c_red.caste_ratio = CasteRatio {
             worker: 0.65,
             soldier: 0.3,
@@ -232,7 +295,8 @@ impl Simulation {
         };
 
         let id_offset = black_ants.len() as u32;
-        let mut red_ants = spawn_initial_ants(&config, &mut rng, red_nest, 1, dist, id_offset);
+        let mut red_ants =
+            spawn_initial_ants(&view_red, &mut rng, red_nest, 1, dist, id_offset);
         for a in red_ants.iter_mut() {
             a.module_id = nest_red_module;
         }
@@ -269,8 +333,10 @@ impl Simulation {
             ants = ants.len(),
             black = c_black.adult_total() + 1, // +queen
             red = c_red.adult_total() + 1,
+            black_species = %cfg_black.species_id,
+            red_species = %cfg_red.species_id,
             seed,
-            "Simulation::new_two_colony_with_topology"
+            "Simulation::new_two_colony_cross_species"
         );
 
         let next_ant_id = ants.len() as u32;
@@ -285,7 +351,8 @@ impl Simulation {
         }
 
         Self {
-            config,
+            colony_configs: vec![cfg_black, cfg_red],
+            config: world_pheromone_hazards,
             topology,
             ants,
             colonies: vec![c_black, c_red],
@@ -675,6 +742,15 @@ impl Simulation {
         sim
     }
 
+    /// Per-colony config for `colony_id`. Falls back to colony 0's slice if
+    /// the id is out of range (defensive; never panics in sim paths).
+    #[inline]
+    pub fn colony_cfg(&self, colony_id: u8) -> &crate::config::ColonySimConfig {
+        self.colony_configs
+            .get(colony_id as usize)
+            .unwrap_or(&self.colony_configs[0])
+    }
+
     /// Expose the internal predator-id counter for snapshotting.
     #[inline]
     pub fn next_predator_id_value(&self) -> u32 {
@@ -948,7 +1024,14 @@ impl Simulation {
         }
 
         let rng = ChaCha8Rng::seed_from_u64(environment.seed);
+        // Build per-colony slices from the shared config (legacy snapshots have
+        // no cross-species per-colony data; all colonies share the same config).
+        let colony_configs: Vec<crate::config::ColonySimConfig> = colonies
+            .iter()
+            .map(|_| crate::config::ColonySimConfig::from(&cfg))
+            .collect();
         let sim = Self {
+            colony_configs,
             config: cfg,
             topology,
             ants,
@@ -7081,5 +7164,49 @@ mod tests {
             "queen must lay SOME eggs even when food < egg_cost \
              (post-fix throttle should yield trickle laying)"
         );
+    }
+
+    #[test]
+    fn cross_species_with_equal_cfg_is_byte_identical_to_legacy_two_colony() {
+        let config = SimConfig::default();
+        let topo = || crate::topology::Topology::two_colony_arena((24, 24), (32, 32));
+
+        let mut legacy = Simulation::new_two_colony_with_topology(
+            config.clone(), topo(), 4242, 0, 2);
+        let cfg_slice = crate::config::ColonySimConfig::from(&config);
+        let mut xspec = Simulation::new_two_colony_cross_species(
+            config.clone(), cfg_slice.clone(), cfg_slice, topo(), 4242, 0, 2,
+        );
+
+        legacy.run(300);
+        xspec.run(300);
+
+        assert_eq!(legacy.tick, xspec.tick);
+        assert_eq!(legacy.ants.len(), xspec.ants.len());
+        let key = |s: &Simulation| {
+            let mut ants: Vec<_> = s.ants.iter()
+                .map(|a| (a.id, a.colony_id, a.position.x.to_bits(), a.position.y.to_bits(),
+                          a.health.to_bits(), a.state, a.caste, a.module_id)).collect();
+            ants.sort_by_key(|t| (t.0, t.1));
+            let cols: Vec<_> = s.colonies.iter()
+                .map(|c| (c.id, c.food_stored.to_bits(), c.queen_health.to_bits(),
+                          c.population.workers, c.population.soldiers, c.population.breeders,
+                          c.combat_kills, c.combat_losses)).collect();
+            (ants, cols)
+        };
+        assert_eq!(key(&legacy), key(&xspec),
+            "cross-species(equal cfg) must be byte-identical to legacy two-colony");
+    }
+
+    #[test]
+    fn new_ai_vs_ai_still_byte_identical_after_delegation() {
+        let config = SimConfig::default();
+        let mut a = Simulation::new_ai_vs_ai_with_topology(
+            config.clone(), crate::topology::Topology::two_colony_arena((24,24),(32,32)), 7, 0, 2);
+        let mut b = Simulation::new_ai_vs_ai_with_topology(
+            config, crate::topology::Topology::two_colony_arena((24,24),(32,32)), 7, 0, 2);
+        a.run(200); b.run(200);
+        assert_eq!(a.ants.len(), b.ants.len());
+        assert_eq!(a.colonies[0].queen_health.to_bits(), b.colonies[0].queen_health.to_bits());
     }
 }

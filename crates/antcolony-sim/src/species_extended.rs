@@ -229,6 +229,12 @@ pub struct CombatExtended {
     /// Boulay 2024 (L. niger) — aggression depends on intruder identity.
     #[serde(default)]
     pub context_aggression: bool,
+    /// Fraction of incoming venom-typed damage this colony shrugs off.
+    /// Models species-level acclimation to alien-venom chemistry (e.g.
+    /// N. fulva detox counter vs Solenopsis invicta). Clamped [0, 0.9]
+    /// by `Species::apply_colony`. 0.0 = no resistance (back-compat).
+    #[serde(default)]
+    pub venom_resistance: f32,
 }
 
 // Manual Default — same reason as Substrate above (serde attribute does
@@ -242,6 +248,7 @@ impl Default for CombatExtended {
             soldier_size_categories: Vec::new(),
             major_attack_multiplier: 1.0,
             context_aggression: false,
+            venom_resistance: 0.0,
         }
     }
 }
@@ -272,6 +279,13 @@ pub struct DietExtended {
     /// realistic). See docs/postmortems/2026-05-09-seasonal-transition-cliffs.md.
     #[serde(default)]
     pub food_storage_cap: Option<f32>,
+    /// B. chinensis-style active ant predation: this species hunts and
+    /// EATS heterospecific ants (corpse-food routed to the killer in
+    /// cross-species combat). Present in brachyponera_chinensis.toml but
+    /// previously silently dropped (not a DietExtended field). 02 §3,
+    /// 01 Finding 10 (Bednar 2013).
+    #[serde(default)]
+    pub predates_ants: bool,
 }
 
 // ============================================================
