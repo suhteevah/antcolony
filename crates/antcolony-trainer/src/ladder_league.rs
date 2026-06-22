@@ -301,8 +301,8 @@ impl LadderLeague {
                 let mut contenders: Vec<(String, String)> = Vec::new();
                 for e in &self.pool.entries {
                     match &e.kind {
-                        crate::self_play::OpponentKind::Snapshot { name, path } =>
-                            contenders.push((name.clone(), format!("hac:{}", path.display()))),
+                        crate::self_play::OpponentKind::Snapshot { name: snap_name, path } =>
+                            contenders.push((snap_name.clone(), format!("hac:{}", path.display()))),
                         crate::self_play::OpponentKind::Archetype(spec) =>
                             contenders.push((spec.clone(), spec.clone())),
                     }
@@ -326,6 +326,8 @@ impl LadderLeague {
                         if let Some(pos) = self.pool.entries.iter().position(|e| matches!(&e.kind,
                             crate::self_play::OpponentKind::Snapshot { name: n, .. } if *n == name)) {
                             self.pool.entries.remove(pos);
+                        } else {
+                            tracing::warn!(round, %name, "ladder: rollback could not find provisional entry — pool may be inconsistent");
                         }
                         no_improve += 1;
                         tracing::warn!(round, ?other, "ladder: gate passed but tournament did NOT rank candidate #1 -> rolled back");
@@ -380,6 +382,7 @@ mod tests {
         assert_eq!(rank, 0, "highest Elo -> rank 0");
         assert_eq!(elo, 1600.0);
         assert_eq!(ncycles, 1);
+        assert_eq!(confirm_rank(&res, "sota").unwrap().0, 1, "sota at 1500 is rank 1 (only cand at 1600 is above)");
         assert!(confirm_rank(&res, "ghost").is_none());
     }
 
