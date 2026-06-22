@@ -320,6 +320,45 @@ pub struct CombatConfig {
     pub corpse_food_units: u32,
     /// P4: alarm pheromone amount deposited at a death site.
     pub alarm_deposit_on_death: f32,
+    /// Cross-species (B4): fraction of incoming venom-typed damage this
+    /// colony shrugs off (N. fulva detox counter). Clamped [0, 0.9].
+    /// 0.0 = no resistance (back-compat).
+    #[serde(default)]
+    pub venom_resistance: f32,
+    /// Cross-species terrain-gated Lanchester cap (B3): max attackers that
+    /// can deal damage to one defender per substep on OPEN surface.
+    /// 255 = effectively uncapped (back-compat).
+    #[serde(default = "default_attackers_uncapped")]
+    pub max_simultaneous_attackers_open: u32,
+    /// …in an UndergroundNest tunnel cell. 255 = uncapped (back-compat;
+    /// cross-species sets 2 per Lymbery 2023 corridor data).
+    #[serde(default = "default_attackers_uncapped")]
+    pub max_simultaneous_attackers_tunnel: u32,
+    /// …on a NestEntrance cell (single-file choke). 255 = uncapped
+    /// (back-compat; cross-species sets 1).
+    #[serde(default = "default_attackers_uncapped")]
+    pub max_simultaneous_attackers_entrance: u32,
+    /// Queen-kill gate (B8/B9): attacker:defender adult ratio in the
+    /// defender's nest module required before the enemy queen becomes
+    /// targetable. 0.0 = gate DISABLED (queen behaves exactly as today).
+    #[serde(default)]
+    pub usurp_gate_attacker_ratio: f32,
+    /// Queen-kill gate: defender adult count in the nest module must be
+    /// below this for the gate to open. 0 with ratio 0.0 = disabled.
+    #[serde(default)]
+    pub usurp_gate_defender_floor: u32,
+    /// Queen-kill channel duration in ticks (B8). 0 = instant/disabled
+    /// (back-compat path: queen dies the moment her health hits 0 in melee).
+    #[serde(default)]
+    pub usurp_channel_ticks: u32,
+    /// B7: fraction of a slain enemy ant's corpse-food routed to the
+    /// killer colony's food store (predation feedback). 0.0 = off.
+    #[serde(default)]
+    pub usurp_corpse_to_killer_frac: f32,
+}
+
+fn default_attackers_uncapped() -> u32 {
+    255
 }
 
 impl Default for SimConfig {
@@ -433,6 +472,52 @@ impl Default for CombatConfig {
             soldier_vs_worker_bonus: 3.0,
             corpse_food_units: 1,
             alarm_deposit_on_death: 2.0,
+            venom_resistance: 0.0,
+            max_simultaneous_attackers_open: 255,
+            max_simultaneous_attackers_tunnel: 255,
+            max_simultaneous_attackers_entrance: 255,
+            usurp_gate_attacker_ratio: 0.0,
+            usurp_gate_defender_floor: 0,
+            usurp_channel_ticks: 0,
+            usurp_corpse_to_killer_frac: 0.0,
+        }
+    }
+}
+
+/// The slice of `SimConfig` that differs between colonies in a
+/// cross-species match. `ant`, `colony`, `combat` are per-species;
+/// `world`, `pheromone`, `hazards` stay global on `SimConfig` (one shared
+/// arena + one shared pheromone field — both correct in PvP).
+#[derive(Debug, Clone)]
+pub struct ColonySimConfig {
+    pub ant: AntConfig,
+    pub colony: ColonyConfig,
+    pub combat: CombatConfig,
+    /// Species id for obs/logging/win-matrix labelling. "" for the
+    /// back-compat default slice derived from a bare `SimConfig`.
+    pub species_id: String,
+    /// Subfamily clade (drives the venom matrix). `Unknown` for the default.
+    pub clade: crate::clade::Clade,
+    /// Venom clade for the (weapon × defender-clade) matrix.
+    pub weapon: crate::species_extended::Weapon,
+    /// Recruitment trail scalar (obs/logging only in MVP; deposit scaling
+    /// is already baked into the shared `PheromoneConfig` by `apply`).
+    pub recruitment_scalar: f32,
+    /// B7: when true this colony eats the ants it kills (corpse→food).
+    pub predates_ants: bool,
+}
+
+impl From<&SimConfig> for ColonySimConfig {
+    fn from(sc: &SimConfig) -> Self {
+        Self {
+            ant: sc.ant.clone(),
+            colony: sc.colony.clone(),
+            combat: sc.combat.clone(),
+            species_id: String::new(),
+            clade: crate::clade::Clade::Unknown,
+            weapon: crate::species_extended::Weapon::Mandible,
+            recruitment_scalar: 1.0,
+            predates_ants: false,
         }
     }
 }
@@ -452,6 +537,41 @@ impl SimConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colony_sim_config_from_sim_config_is_behavior_neutral() {
+        let sc = SimConfig::default();
+        let csc = ColonySimConfig::from(&sc);
+        // ant/colony/combat slices copied verbatim.
+        assert_eq!(csc.ant.initial_count, sc.ant.initial_count);
+        assert_eq!(csc.combat.worker_attack, sc.combat.worker_attack);
+        assert_eq!(csc.combat.worker_health, sc.combat.worker_health);
+        // New combat knobs default behavior-neutral.
+        assert_eq!(csc.combat.venom_resistance, 0.0);
+        assert_eq!(csc.combat.max_simultaneous_attackers_open, 255);
+        assert_eq!(csc.combat.max_simultaneous_attackers_tunnel, 255);
+        assert_eq!(csc.combat.max_simultaneous_attackers_entrance, 255);
+        assert_eq!(csc.combat.usurp_gate_attacker_ratio, 0.0);
+        assert_eq!(csc.combat.usurp_channel_ticks, 0);
+        assert_eq!(csc.combat.usurp_corpse_to_killer_frac, 0.0);
+        // Per-colony metadata defaults.
+        assert_eq!(csc.species_id, "");
+        assert_eq!(csc.recruitment_scalar, 1.0);
+        assert!(!csc.predates_ants);
+        assert_eq!(csc.weapon, crate::species_extended::Weapon::Mandible);
+        assert_eq!(csc.clade, crate::clade::Clade::Unknown);
+    }
+
+    #[test]
+    fn new_combat_fields_round_trip_and_default_via_toml() {
+        // A combat block omitting the new fields must keep the neutral defaults.
+        let toml = "[combat]\nworker_attack = 2.0\n";
+        let cfg = SimConfig::load_from_str(toml).expect("parse");
+        assert_eq!(cfg.combat.worker_attack, 2.0);
+        assert_eq!(cfg.combat.venom_resistance, 0.0);
+        assert_eq!(cfg.combat.max_simultaneous_attackers_tunnel, 255);
+        assert_eq!(cfg.combat.usurp_channel_ticks, 0);
+    }
 
     #[test]
     fn defaults_populated() {

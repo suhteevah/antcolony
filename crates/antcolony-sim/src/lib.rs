@@ -6,6 +6,7 @@
 pub mod ai;
 pub mod ant;
 pub mod bench;
+pub mod clade;
 pub mod colony;
 pub mod config;
 pub mod environment;
@@ -37,7 +38,10 @@ pub use ant::{Ant, AntCaste, AntState};
 pub use colony::{
     BehaviorWeights, Brood, BroodStage, CasteRatio, ColonyState, PopulationCounts, TechUnlock,
 };
-pub use config::{AntConfig, ColonyConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig};
+pub use clade::Clade;
+pub use config::{
+    AntConfig, ColonyConfig, ColonySimConfig, CombatConfig, PheromoneConfig, SimConfig, WorldConfig,
+};
 pub use environment::{Climate, Environment, Season, TimeScale};
 pub use error::SimError;
 pub use hazards::{Predator, PredatorKind, PredatorState, Weather};
