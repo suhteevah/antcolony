@@ -2080,6 +2080,12 @@ impl Simulation {
             // Nothing to fight — skip spatial hashing entirely.
             return;
         }
+        // Clone per-colony configs to avoid borrow conflicts in mutable passes.
+        let cfgs_meta: Vec<crate::config::ColonySimConfig> = self.colony_configs.clone();
+        let cfg_for = |cid: u8| -> &crate::config::ColonySimConfig {
+            // Safety: colony_ids are 0..N; clamp to last if out of range.
+            &cfgs_meta[cid.min(cfgs_meta.len().saturating_sub(1) as u8) as usize]
+        };
 
         // Build a per-module spatial hash of ants (by index into self.ants).
         use std::collections::HashMap;
@@ -2094,10 +2100,11 @@ impl Simulation {
             hash.insert(i as u32, ant.position);
         }
 
-        // Accumulate damage. Using a Vec<f32> aligned to self.ants so we
-        // can safely borrow positions/castes of both attacker and target.
-        let mut damage: Vec<f32> = vec![0.0; self.ants.len()];
-        let mut attacker_of: Vec<Option<u8>> = vec![None; self.ants.len()];
+        let n = self.ants.len();
+        let mut damage: Vec<f32> = vec![0.0; n];
+        let mut attacker_of: Vec<Option<u8>> = vec![None; n];
+        // Per-defender candidate attackers: (attacker_idx, dmg_after_venom).
+        let mut candidates: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n];
 
         for (i, ant) in self.ants.iter().enumerate() {
             if ant.is_in_transit() {
@@ -2109,12 +2116,14 @@ impl Simulation {
             let Some(hash) = buckets.get(&ant.module_id) else {
                 continue;
             };
-            let candidates = hash.query_radius(ant.position, radius);
+            let acfg = cfg_for(ant.colony_id);
             let base_attack = match ant.caste {
-                AntCaste::Soldier => cfg.soldier_attack,
-                _ => cfg.worker_attack,
+                AntCaste::Soldier => acfg.combat.soldier_attack,
+                _ => acfg.combat.worker_attack,
             };
-            for j in candidates {
+            let attacker_weapon = acfg.weapon;
+            let attacker_sting = acfg.ant.sting_potency;
+            for j in hash.query_radius(ant.position, radius) {
                 let j = j as usize;
                 if j == i {
                     continue;
@@ -2132,9 +2141,39 @@ impl Simulation {
                 {
                     dmg *= cfg.soldier_vs_worker_bonus;
                 }
-                damage[j] += dmg;
+                // B4 venom matrix: attacker weapon × defender clade susceptibility,
+                // minus defender's venom resistance. Default slice = 1.0 × (1-0) = unchanged.
+                let dcfg = cfg_for(other.colony_id);
+                let vmult =
+                    crate::clade::venom_multiplier(attacker_weapon, attacker_sting, dcfg.clade);
+                let resist = dcfg.combat.venom_resistance.clamp(0.0, 0.9);
+                dmg *= vmult * (1.0 - resist);
+                candidates[j].push((i, dmg));
                 attacker_of[j] = Some(ant.colony_id);
             }
+        }
+
+        // B3 terrain-gated Lanchester cap: per defender, keep only the first
+        // `cap` attackers (sorted by index for determinism), summing their damage.
+        for (j, cand) in candidates.iter_mut().enumerate() {
+            if cand.is_empty() {
+                continue;
+            }
+            // Deterministic: sort by attacker index ascending before capping.
+            cand.sort_unstable_by_key(|(idx, _)| *idx);
+            // Cap is a property of the ATTACKERS' species; both attackers are the
+            // same enemy colony in 1v1, so read the first attacker's config.
+            let attacker_colony = self.ants[cand[0].0].colony_id;
+            let acfg = cfg_for(attacker_colony);
+            let defender_module = self.ants[j].module_id;
+            let (gx, gy) = {
+                let m = self.topology.module(defender_module);
+                m.world.world_to_grid(self.ants[j].position)
+            };
+            let cap = self.terrain_attacker_cap(defender_module, gx, gy, &acfg.combat);
+            let take = (cap as usize).min(cand.len());
+            let total: f32 = cand.iter().take(take).map(|(_, d)| *d).sum();
+            damage[j] = total;
         }
 
         // Apply damage + flag states. Track death events for a post-pass.
@@ -2151,9 +2190,27 @@ impl Simulation {
                 continue;
             }
             ant.health -= damage[i];
-            // Soldiers stand and fight; workers/breeders flee.
             if ant.health > 0.0 {
+                // B5 flee bias: a high-sting attacker (sting_potency > 1.0) makes
+                // even wounded soldiers flee. Gated so default combat is unchanged.
+                let attacker_high_sting = attacker_of[i]
+                    .map(|ac| {
+                        let idx =
+                            ac.min(cfgs_meta.len().saturating_sub(1) as u8) as usize;
+                        cfgs_meta[idx].ant.sting_potency > 1.0
+                    })
+                    .unwrap_or(false);
+                let soldier_half_health = {
+                    let idx =
+                        ant.colony_id.min(cfgs_meta.len().saturating_sub(1) as u8) as usize;
+                    cfgs_meta[idx].combat.soldier_health * 0.5
+                };
                 let new_state = match ant.caste {
+                    AntCaste::Soldier
+                        if attacker_high_sting && ant.health < soldier_half_health =>
+                    {
+                        AntState::Fleeing
+                    }
                     AntCaste::Soldier => AntState::Fighting,
                     AntCaste::Worker | AntCaste::Breeder => AntState::Fleeing,
                     AntCaste::Queen => ant.state,
@@ -2231,6 +2288,25 @@ impl Simulation {
                     pcfg.max_intensity,
                 );
             }
+            // B7: predator colonies eat the ants they kill (corpse → killer food).
+            if let Some(killer) = d.killer_colony {
+                let kcfg_idx =
+                    killer.min(cfgs_meta.len().saturating_sub(1) as u8) as usize;
+                let kcfg = &cfgs_meta[kcfg_idx];
+                if kcfg.predates_ants && kcfg.combat.usurp_corpse_to_killer_frac > 0.0 {
+                    let gained = (cfg.corpse_food_units as f32)
+                        * kcfg.combat.usurp_corpse_to_killer_frac.clamp(0.0, 1.0);
+                    if let Some(c) = self.colonies.iter_mut().find(|c| c.id == killer) {
+                        c.accept_food(gained);
+                        tracing::debug!(
+                            tick = self.tick,
+                            killer,
+                            gained,
+                            "predation: corpse→killer food"
+                        );
+                    }
+                }
+            }
         }
 
         tracing::info!(tick = self.tick, deaths = deaths.len(), "combat resolved");
@@ -2242,6 +2318,29 @@ impl Simulation {
         for i in idxs.into_iter().rev() {
             self.ants.swap_remove(i);
         }
+    }
+
+    /// Terrain-gated Lanchester cap (B3): how many attackers can apply force to
+    /// a defender on this cell this substep.
+    fn terrain_attacker_cap(
+        &self,
+        module: ModuleId,
+        gx: i64,
+        gy: i64,
+        combat: &crate::config::CombatConfig,
+    ) -> u32 {
+        let Some(m) = self.topology.modules.iter().find(|m| m.id == module) else {
+            return combat.max_simultaneous_attackers_open;
+        };
+        if m.world.in_bounds(gx, gy) {
+            if let Terrain::NestEntrance(_) = m.world.get(gx as usize, gy as usize) {
+                return combat.max_simultaneous_attackers_entrance;
+            }
+        }
+        if m.kind == crate::module::ModuleKind::UndergroundNest {
+            return combat.max_simultaneous_attackers_tunnel;
+        }
+        combat.max_simultaneous_attackers_open
     }
 
     /// Stochastic worker mortality (postmortem fix #5). Each adult
@@ -7208,5 +7307,245 @@ mod tests {
         a.run(200); b.run(200);
         assert_eq!(a.ants.len(), b.ants.len());
         assert_eq!(a.colonies[0].queen_health.to_bits(), b.colonies[0].queen_health.to_bits());
+    }
+
+    // ── Task 4: per-colony combat tests ───────────────────────────────────
+
+    fn two_colony_combat_fixture() -> Simulation {
+        let mut cfg = SimConfig::default();
+        cfg.world.width = 32;
+        cfg.world.height = 32;
+        cfg.ant.initial_count = 3;
+        cfg.combat.interaction_radius = 1.5;
+        cfg.colony.adult_food_consumption = 0.0;
+        cfg.colony.queen_egg_rate = 0.0;
+        let topo = crate::topology::Topology::two_colony_arena((16, 16), (16, 16));
+        let slice = crate::config::ColonySimConfig::from(&cfg);
+        Simulation::new_two_colony_cross_species(cfg, slice.clone(), slice, topo, 1, 0, 2)
+    }
+
+    fn place_adjacent_enemies(sim: &mut Simulation) {
+        // Place the first non-queen worker of each colony adjacent in module 1 (outworld).
+        let pos = Vec2::new(5.0, 5.0);
+        let mut placed = [false; 2];
+        for a in sim.ants.iter_mut() {
+            if matches!(a.caste, AntCaste::Queen) {
+                continue;
+            }
+            let slot = a.colony_id as usize;
+            if slot < 2 && !placed[slot] {
+                a.module_id = 1;
+                a.position = pos + Vec2::new(0.4 * slot as f32, 0.0);
+                a.transit = None;
+                placed[slot] = true;
+            }
+        }
+    }
+
+    fn ant_health(sim: &Simulation, ant_id: u32) -> f32 {
+        sim.ants
+            .iter()
+            .find(|a| a.id == ant_id)
+            .map(|a| a.health)
+            .unwrap_or(0.0)
+    }
+
+    fn underground_swarm_fixture(num_attackers: usize) -> Simulation {
+        let mut cfg = SimConfig::default();
+        cfg.world.width = 32;
+        cfg.world.height = 32;
+        cfg.ant.initial_count = 2;
+        cfg.combat.interaction_radius = 2.0;
+        cfg.colony.adult_food_consumption = 0.0;
+        cfg.colony.queen_egg_rate = 0.0;
+        let mut topo = crate::topology::Topology::two_colony_arena((16, 16), (16, 16));
+        // Attach an underground module for colony 0 (module 0 is the black nest).
+        let _underground_id = topo.attach_underground(0, 0, 16, 16);
+        let slice = crate::config::ColonySimConfig::from(&cfg);
+        let mut sim =
+            Simulation::new_two_colony_cross_species(cfg, slice.clone(), slice, topo, 1, 0, 2);
+
+        // The underground module should be module id 3 (after 0,1,2).
+        let underground_module: ModuleId = 3;
+        let center = Vec2::new(8.0, 8.0);
+
+        // Remove all non-queen ants to start clean.
+        sim.ants.retain(|a| matches!(a.caste, AntCaste::Queen));
+
+        // Place the lone defender (colony 1) in the underground.
+        let mut defender =
+            Ant::new_with_caste(9900, 1, center, 0.0, 50.0, AntCaste::Worker);
+        defender.module_id = underground_module;
+        defender.transit = None;
+        sim.ants.push(defender);
+
+        // Place attackers (colony 0) around the defender in the underground.
+        for i in 0..num_attackers {
+            let offset =
+                Vec2::new((i as f32 * 0.3).sin(), (i as f32 * 0.3).cos()) * 0.8;
+            let mut attacker = Ant::new_with_caste(
+                9910 + i as u32,
+                0,
+                center + offset,
+                0.0,
+                50.0,
+                AntCaste::Worker,
+            );
+            attacker.module_id = underground_module;
+            attacker.transit = None;
+            sim.ants.push(attacker);
+        }
+        sim
+    }
+
+    fn lone_defender_id(sim: &Simulation) -> u32 {
+        sim.ants
+            .iter()
+            .find(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen))
+            .map(|a| a.id)
+            .expect("lone_defender_id: no colony-1 non-queen ant found")
+    }
+
+    #[test]
+    fn combat_reads_per_colony_attack() {
+        let mut sim = two_colony_combat_fixture();
+        let id_c0 = sim
+            .ants
+            .iter()
+            .find(|a| a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen))
+            .map(|a| a.id)
+            .unwrap();
+        let id_c1 = sim
+            .ants
+            .iter()
+            .find(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen))
+            .map(|a| a.id)
+            .unwrap();
+        sim.colony_configs[0].combat.worker_attack = 8.0;
+        sim.colony_configs[1].combat.worker_attack = 0.5;
+        sim.colony_configs[0].combat.soldier_attack = 8.0;
+        sim.colony_configs[1].combat.soldier_attack = 0.5;
+        place_adjacent_enemies(&mut sim);
+        let h_c1_before = ant_health(&sim, id_c1);
+        let h_c0_before = ant_health(&sim, id_c0);
+        sim.combat_tick();
+        let h_c1_after = ant_health(&sim, id_c1);
+        let h_c0_after = ant_health(&sim, id_c0);
+        let dmg_to_c1 = h_c1_before - h_c1_after;
+        let dmg_to_c0 = h_c0_before - h_c0_after;
+        assert!(
+            dmg_to_c1 > dmg_to_c0,
+            "colony-0's stronger ant should deal more ({dmg_to_c1}) than colony-1's ({dmg_to_c0})"
+        );
+    }
+
+    #[test]
+    fn venom_multiplier_amplifies_cross_clade_damage() {
+        let mut sim = two_colony_combat_fixture();
+        let id_c1 = sim
+            .ants
+            .iter()
+            .find(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen))
+            .map(|a| a.id)
+            .unwrap();
+        sim.colony_configs[0].weapon = crate::species_extended::Weapon::Sting;
+        sim.colony_configs[0].ant.sting_potency = 1.5;
+        sim.colony_configs[0].clade = crate::clade::Clade::Ponerinae;
+        sim.colony_configs[1].clade = crate::clade::Clade::Myrmicinae;
+        place_adjacent_enemies(&mut sim);
+        let before = ant_health(&sim, id_c1);
+        sim.combat_tick();
+        let dmg_venom = before - ant_health(&sim, id_c1);
+
+        let mut plain = two_colony_combat_fixture();
+        let id_c1_plain = plain
+            .ants
+            .iter()
+            .find(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen))
+            .map(|a| a.id)
+            .unwrap();
+        place_adjacent_enemies(&mut plain);
+        let pb = ant_health(&plain, id_c1_plain);
+        plain.combat_tick();
+        let dmg_plain = pb - ant_health(&plain, id_c1_plain);
+        assert!(
+            dmg_venom > dmg_plain,
+            "venom matrix should raise damage ({dmg_venom}) above mandible baseline ({dmg_plain})"
+        );
+    }
+
+    #[test]
+    fn venom_resistance_reduces_incoming_damage() {
+        let mut sim = two_colony_combat_fixture();
+        let id_c1 = sim
+            .ants
+            .iter()
+            .find(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen))
+            .map(|a| a.id)
+            .unwrap();
+        sim.colony_configs[0].weapon = crate::species_extended::Weapon::Sting;
+        sim.colony_configs[0].ant.sting_potency = 1.5;
+        sim.colony_configs[0].clade = crate::clade::Clade::Ponerinae;
+        sim.colony_configs[1].clade = crate::clade::Clade::Myrmicinae;
+        sim.colony_configs[1].combat.venom_resistance = 0.9;
+        place_adjacent_enemies(&mut sim);
+        let before = ant_health(&sim, id_c1);
+        sim.combat_tick();
+        let dmg_resisted = before - ant_health(&sim, id_c1);
+        let base_worker_attack = sim.colony_configs[0].combat.worker_attack;
+        assert!(
+            dmg_resisted < 1.5 * base_worker_attack,
+            "0.9 resistance must cut venom-amplified damage sharply, got {dmg_resisted}"
+        );
+    }
+
+    #[test]
+    fn terrain_cap_limits_simultaneous_attackers_in_tunnel() {
+        let mut sim = underground_swarm_fixture(6);
+        sim.colony_configs[0].combat.max_simultaneous_attackers_tunnel = 2;
+        sim.colony_configs[0].combat.worker_attack = 1.0;
+        sim.colony_configs[0].combat.soldier_attack = 1.0;
+        let defender = lone_defender_id(&sim);
+        let before = ant_health(&sim, defender);
+        sim.combat_tick();
+        let dmg = before - ant_health(&sim, defender);
+        assert!(
+            dmg <= 2.0 + 1e-3,
+            "tunnel cap=2 should limit damage to ~2*1.0, got {dmg}"
+        );
+        assert!(
+            dmg >= 2.0 - 1e-3,
+            "exactly 2 attackers should still apply, got {dmg}"
+        );
+    }
+
+    #[test]
+    fn corpse_to_killer_feeds_predator_colony() {
+        let mut sim = two_colony_combat_fixture();
+        sim.colony_configs[0].predates_ants = true;
+        sim.colony_configs[0].combat.usurp_corpse_to_killer_frac = 1.0;
+        sim.config.combat.corpse_food_units = 4;
+        sim.colony_configs[0].combat.worker_attack = 1000.0;
+        sim.colony_configs[0].combat.soldier_attack = 1000.0;
+        place_adjacent_enemies(&mut sim);
+        let food_before = sim.colonies[0].food_stored;
+        sim.combat_tick();
+        assert!(
+            sim.colonies[0].food_stored > food_before,
+            "predator killer colony should gain corpse food"
+        );
+    }
+
+    #[test]
+    fn default_slice_combat_unchanged_smoke() {
+        let mut sim = two_colony_combat_fixture();
+        let mut legacy = two_colony_combat_fixture();
+        place_adjacent_enemies(&mut sim);
+        place_adjacent_enemies(&mut legacy);
+        for _ in 0..20 {
+            sim.combat_tick();
+            legacy.combat_tick();
+        }
+        assert_eq!(sim.ants.len(), legacy.ants.len());
     }
 }
