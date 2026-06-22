@@ -293,14 +293,44 @@ impl LadderLeague {
             best_h2h_over_seed = best_h2h_over_seed.max(g.h2h_vs_sota);
 
             if g.passed {
-                // Promote: add as a protected frozen opponent, advance SOTA, raise the bar.
                 let name = format!("ladder_r{round:02}");
+                // Provisionally add so the confirmation tournament includes the candidate.
                 self.pool.add_protected_snapshot(name.clone(), outcome.candidate_path.clone(), Role::Main);
-                self.sota_path = outcome.candidate_path.clone();
-                self.standing_bar = g.winrate_vs_pool;
-                promotions += 1;
-                no_improve = 0;
-                tracing::info!(round, name = %name, new_bar = self.standing_bar, h2h = g.h2h_vs_sota, "ladder: PROMOTED");
+
+                // Authoritative re-rank over the full current pool (snapshots + archetypes).
+                let mut contenders: Vec<(String, String)> = Vec::new();
+                for e in &self.pool.entries {
+                    match &e.kind {
+                        crate::self_play::OpponentKind::Snapshot { name, path } =>
+                            contenders.push((name.clone(), format!("hac:{}", path.display()))),
+                        crate::self_play::OpponentKind::Archetype(spec) =>
+                            contenders.push((spec.clone(), spec.clone())),
+                    }
+                }
+                let tcfg = crate::tournament::TournamentConfig {
+                    contenders, mpe: self.cfg.gate_mpe, max_ticks: 10_000,
+                    anchor_id: "heuristic".into(), anchor_elo: 1000.0, cycle_margin: 0.55, sizing: self.cfg.sizing,
+                };
+                let tres = crate::tournament::run_tournament(&tcfg, &self.device)?;
+                match confirm_rank(&tres, &name) {
+                    Some((0, elo, ncyc)) => {
+                        self.sota_path = outcome.candidate_path.clone();
+                        self.standing_bar = g.winrate_vs_pool;
+                        promotions += 1;
+                        no_improve = 0;
+                        tracing::info!(round, %name, elo, cycles = ncyc, "ladder: PROMOTED + tournament-confirmed #1");
+                        // (Task 7 sends the Telegram ping here.)
+                    }
+                    other => {
+                        // Cheap gate and full re-rank disagree: roll back the provisional add.
+                        if let Some(pos) = self.pool.entries.iter().position(|e| matches!(&e.kind,
+                            crate::self_play::OpponentKind::Snapshot { name: n, .. } if *n == name)) {
+                            self.pool.entries.remove(pos);
+                        }
+                        no_improve += 1;
+                        tracing::warn!(round, ?other, "ladder: gate passed but tournament did NOT rank candidate #1 -> rolled back");
+                    }
+                }
             } else {
                 no_improve += 1;
                 tracing::info!(round, no_improve, h2h = g.h2h_vs_sota, wr = g.winrate_vs_pool, "ladder: candidate did not pass the gate");
@@ -321,10 +351,37 @@ impl LadderLeague {
     }
 }
 
+/// Rank (0-based, by descending Elo), Elo, and cycle-count for `candidate_id`.
+/// Returns `None` if `candidate_id` is absent from `result.ids`.
+pub fn confirm_rank(result: &crate::tournament::TournamentResult, candidate_id: &str) -> Option<(usize, f64, usize)> {
+    let idx = result.ids.iter().position(|id| id == candidate_id)?;
+    let elo = result.elo[idx];
+    let rank = result.elo.iter().filter(|&&e| e > elo).count(); // how many strictly above
+    Some((rank, elo, result.cycles.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::self_play::OpponentKind;
+
+    #[test]
+    fn confirm_rank_finds_candidate_position_by_elo() {
+        use crate::tournament::TournamentResult;
+        let res = TournamentResult {
+            ids: vec!["sota".into(), "cand".into(), "sp1".into()],
+            specs: vec![],
+            win_matrix: vec![], ws_matrix: vec![], games: vec![],
+            elo: vec![1500.0, 1600.0, 1400.0],         // cand highest
+            winrate_vs_field: vec![0.6, 0.8, 0.4],
+            cycles: vec![(0,1,2)],
+        };
+        let (rank, elo, ncycles) = confirm_rank(&res, "cand").unwrap();
+        assert_eq!(rank, 0, "highest Elo -> rank 0");
+        assert_eq!(elo, 1600.0);
+        assert_eq!(ncycles, 1);
+        assert!(confirm_rank(&res, "ghost").is_none());
+    }
 
     #[test]
     fn train_round_smoke_keeps_a_candidate_and_does_not_change_pool_set() {
