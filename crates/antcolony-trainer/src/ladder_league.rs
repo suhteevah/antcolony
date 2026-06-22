@@ -48,6 +48,8 @@ pub struct LadderReport {
     pub rounds_run: usize,
     pub promotions: usize,
     pub final_sota_path: PathBuf,
+    /// Best gate `h2h_vs_sota` seen across all rounds, where the opponent is the
+    /// **then-current SOTA** at the time of each gate call (not the original seed).
     pub best_h2h_over_seed: f32,
     pub stopped_reason: String,
 }
@@ -264,17 +266,33 @@ pub struct LadderLeague {
     pub device: candle_core::Device,
     pub sota_path: PathBuf,
     pub standing_bar: f32,
+    /// Pool entry id of the current SOTA brain. Starts as "sota" (the seed), advances on each
+    /// confirmed promotion so the gate always measures h2h vs the brain that is currently #1.
+    pub current_sota_name: String,
 }
 
 impl LadderLeague {
     pub fn new(cfg: LadderConfig, device: candle_core::Device) -> Result<Self> {
         std::fs::create_dir_all(&cfg.out_dir)?;
+        if cfg.iters_per_round == 0 {
+            anyhow::bail!("LadderConfig.iters_per_round must be > 0");
+        }
+        if cfg.gate_mpe == 0 {
+            anyhow::bail!("LadderConfig.gate_mpe must be > 0");
+        }
         let pool = build_frozen_pool(&cfg.initial_contenders, 0.1);
         // Initial standing bar = the SOTA's winrate-vs-pool (excluding its own "sota" entry).
         let sota_hac = load_frozen_hac(&cfg.sota_path, cfg.sizing, &device)?;
         let bar = winrate_vs_pool(&sota_hac, &pool, Some("sota"), "sota", &device, cfg.gate_mpe)?;
         tracing::info!(standing_bar = bar.winrate_vs_pool, "ladder: initial standing bar computed");
-        Ok(Self { sota_path: cfg.sota_path.clone(), standing_bar: bar.winrate_vs_pool, cfg, pool, device })
+        Ok(Self {
+            sota_path: cfg.sota_path.clone(),
+            standing_bar: bar.winrate_vs_pool,
+            current_sota_name: "sota".to_string(),
+            cfg,
+            pool,
+            device,
+        })
     }
 
     pub fn run(&mut self) -> Result<LadderReport> {
@@ -288,7 +306,7 @@ impl LadderLeague {
             tracing::info!(round, standing_bar = self.standing_bar, sota_path = ?self.sota_path, "ladder: ===== round start =====");
             let outcome = train_round(&self.cfg, &self.sota_path, &mut self.pool, round, &self.device)?;
             let candidate = load_frozen_hac(&outcome.candidate_path, self.cfg.sizing, &self.device)?;
-            let g = gate(&candidate, &self.pool, "sota", self.standing_bar,
+            let g = gate(&candidate, &self.pool, &self.current_sota_name, self.standing_bar,
                          self.cfg.gate_margin, &self.device, self.cfg.gate_mpe)?;
             best_h2h_over_seed = best_h2h_over_seed.max(g.h2h_vs_sota);
 
@@ -316,6 +334,7 @@ impl LadderLeague {
                     Some((0, elo, ncyc)) => {
                         self.sota_path = outcome.candidate_path.clone();
                         self.standing_bar = g.winrate_vs_pool;
+                        self.current_sota_name = name.clone();
                         promotions += 1;
                         no_improve = 0;
                         tracing::info!(round, %name, elo, cycles = ncyc, "ladder: PROMOTED + tournament-confirmed #1");

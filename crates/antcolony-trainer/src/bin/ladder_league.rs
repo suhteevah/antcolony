@@ -35,7 +35,10 @@ fn main() -> Result<()> {
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        let mut next = || args.next().expect("flag needs a value");
+        let mut next = || args.next().unwrap_or_else(|| {
+            tracing::error!("flag is missing its value");
+            std::process::exit(2);
+        });
         match a.as_str() {
             "--sota" => sota_path = Some(PathBuf::from(next())),
             "--contender" => contender_specs.push(next()),     // repeatable: id=hac:path
@@ -67,7 +70,13 @@ fn main() -> Result<()> {
     // Parse contenders: "id=hac:path". The SOTA is auto-added as id "sota".
     let mut initial_contenders = vec![LadderContender { id: "sota".into(), spec: format!("hac:{}", sota_path.display()) }];
     for s in &contender_specs {
-        let (id, spec) = s.split_once('=').expect("contender must be id=spec");
+        let (id, spec) = match s.split_once('=') {
+            Some(pair) => pair,
+            None => {
+                tracing::error!(value=%s, "--contender must be id=spec, e.g. sp1=hac:path");
+                std::process::exit(2);
+            }
+        };
         initial_contenders.push(LadderContender { id: id.to_string(), spec: spec.to_string() });
     }
 
