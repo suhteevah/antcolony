@@ -1492,6 +1492,7 @@ impl Simulation {
         self.beacon_tick();
         self.movement();
         self.combat_tick();
+        self.usurp_tick();
         self.age_mortality_tick(substep_idx);
         self.deposit_and_interact();
         self.territory_deposit_tick();
@@ -1600,7 +1601,10 @@ impl Simulation {
                 let temp = module.temp_at(ant.position);
                 let preserve_combat = matches!(
                     ant.state,
-                    AntState::Fighting | AntState::Fleeing | AntState::NuptialFlight
+                    AntState::Fighting
+                        | AntState::Fleeing
+                        | AntState::NuptialFlight
+                        | AntState::Usurping
                 );
                 if !preserve_combat {
                     if ant.state != AntState::Diapause && temp < cold_t {
@@ -2316,6 +2320,195 @@ impl Simulation {
         let mut idxs: Vec<usize> = deaths.iter().map(|d| d.idx).collect();
         idxs.sort_unstable();
         for i in idxs.into_iter().rev() {
+            self.ants.swap_remove(i);
+        }
+    }
+
+    /// B8 cross-species queen-kill: gated, two-phase, interruptible.
+    ///
+    /// No-op unless a colony's per-colony combat config enables it
+    /// (`usurp_channel_ticks > 0` AND `usurp_gate_attacker_ratio > 0.0`).
+    /// With the default config (both == 0), this method returns immediately
+    /// and queens are completely untouched — the back-compat path is unchanged.
+    ///
+    /// **Gate guard (carry-forward constraint):** the condition is strictly
+    /// `usurp_gate_attacker_ratio > 0.0 && current_ratio >= ...` so that the
+    /// default value of 0.0 means "disabled", NOT "always open". If the guard
+    /// were just `current_ratio >= 0.0` then every ratio (including 0.0 when
+    /// both armies are empty) would pass the gate — a silent bug enabling
+    /// queen-kill on ALL configs including legacy.
+    ///
+    /// **Determinism:** defenders processed in ascending colony-id order;
+    /// channeler chosen by minimum ant id among eligible attackers adjacent
+    /// to the queen. No RNG, no HashMap-order dependence.
+    pub fn usurp_tick(&mut self) {
+        if self.colonies.len() < 2 {
+            return;
+        }
+
+        // Snapshot per-colony combat knobs to avoid borrow conflicts.
+        let knobs: Vec<crate::config::CombatConfig> =
+            self.colony_configs.iter().map(|c| c.combat.clone()).collect();
+        let radius = self.config.combat.interaction_radius.max(1.0);
+
+        // Process each DEFENDER colony in id order for determinism.
+        let defender_ids: Vec<u8> = {
+            let mut v: Vec<u8> = self.colonies.iter().map(|c| c.id).collect();
+            v.sort_unstable();
+            v
+        };
+
+        for did in defender_ids {
+            // In a 1v1 arena the attacker colony is the OTHER colony.
+            let aid = if did == 0 { 1u8 } else { 0u8 };
+            // Guard: knobs is indexed by colony id; clamp to last if id is
+            // somehow out of range (shouldn't happen in 1v1, but be safe).
+            let aidx = (aid as usize).min(knobs.len().saturating_sub(1));
+            let acombat = &knobs[aidx];
+
+            // Back-compat guard: disabled when both fields are default (0/0.0).
+            if acombat.usurp_channel_ticks == 0 && acombat.usurp_gate_attacker_ratio == 0.0 {
+                continue;
+            }
+
+            // Locate the defender queen + her module.
+            let Some((q_idx, q_pos, q_module)) = self
+                .ants
+                .iter()
+                .enumerate()
+                .find(|(_, a)| {
+                    a.colony_id == did && matches!(a.caste, AntCaste::Queen)
+                })
+                .map(|(i, a)| (i, a.position, a.module_id))
+            else {
+                // No queen — clear any stale channel.
+                if let Some(c) = self.colonies.iter_mut().find(|c| c.id == did) {
+                    c.usurp_progress_ticks = 0;
+                    c.usurp_attacker_colony = None;
+                }
+                continue;
+            };
+
+            // Count adults of each side on the defender's nest module.
+            let mut atk_adults = 0u32;
+            let mut def_adults = 0u32;
+            let mut nearest_attacker: Option<(u32, usize)> = None; // (ant_id, idx)
+            for (i, a) in self.ants.iter().enumerate() {
+                if a.module_id != q_module || matches!(a.caste, AntCaste::Queen) {
+                    continue;
+                }
+                if a.colony_id == aid {
+                    atk_adults += 1;
+                    if (a.position - q_pos).length() <= radius {
+                        let cand = (a.id, i);
+                        // Min ant id for determinism.
+                        if nearest_attacker.map(|(id, _)| cand.0 < id).unwrap_or(true) {
+                            nearest_attacker = Some(cand);
+                        }
+                    }
+                } else if a.colony_id == did {
+                    def_adults += 1;
+                }
+            }
+
+            // Phase 0 gate.
+            // CRITICAL: the `> 0.0` guard is mandatory. Without it, a ratio of
+            // 0.0 makes `0.0 >= 0.0 * anything` always true, opening the gate
+            // for ALL configs including the default/legacy path.
+            let ratio_ok = acombat.usurp_gate_attacker_ratio > 0.0
+                && (atk_adults as f32)
+                    >= acombat.usurp_gate_attacker_ratio * (def_adults.max(1) as f32);
+            let floor_ok = def_adults < acombat.usurp_gate_defender_floor;
+            let gate_open = ratio_ok && floor_ok && acombat.usurp_channel_ticks > 0;
+
+            let Some(c) = self.colonies.iter_mut().find(|c| c.id == did) else {
+                continue;
+            };
+
+            if !gate_open {
+                if c.usurp_progress_ticks != 0 {
+                    tracing::info!(
+                        tick = self.tick,
+                        defender = did,
+                        "usurp: gate closed, channel reset"
+                    );
+                }
+                c.usurp_progress_ticks = 0;
+                c.usurp_attacker_colony = None;
+                // Reset any lingering Usurping attacker back to Fighting.
+                if let Some((_, idx)) = nearest_attacker {
+                    if matches!(self.ants[idx].state, AntState::Usurping) {
+                        self.ants[idx].transition(AntState::Fighting);
+                    }
+                }
+                continue;
+            }
+
+            match nearest_attacker {
+                None => {
+                    // Channeler gone (died/moved) — interrupt.
+                    if c.usurp_progress_ticks != 0 {
+                        tracing::info!(
+                            tick = self.tick,
+                            defender = did,
+                            "usurp: channeler lost, reset"
+                        );
+                    }
+                    c.usurp_progress_ticks = 0;
+                    c.usurp_attacker_colony = None;
+                }
+                Some((_, idx)) => {
+                    // Promote the nearest attacker into the channel, unless it
+                    // was forced to Fleeing this tick (combat interrupt).
+                    if !matches!(self.ants[idx].state, AntState::Usurping) {
+                        if matches!(self.ants[idx].state, AntState::Fleeing) {
+                            // Interrupt: channeler fled due to defender damage.
+                            c.usurp_progress_ticks = 0;
+                            c.usurp_attacker_colony = None;
+                            continue;
+                        }
+                        self.ants[idx].transition(AntState::Usurping);
+                        c.usurp_attacker_colony = Some(aid);
+                    }
+                    c.usurp_progress_ticks = c.usurp_progress_ticks.saturating_add(1);
+                    tracing::trace!(
+                        tick = self.tick,
+                        defender = did,
+                        attacker = aid,
+                        progress = c.usurp_progress_ticks,
+                        target = acombat.usurp_channel_ticks,
+                        "usurp: channeling"
+                    );
+
+                    if c.usurp_progress_ticks >= acombat.usurp_channel_ticks {
+                        // Phase 2 resolution: lethal damage to the queen ant.
+                        // Existing combat/match_status resolves the win.
+                        c.queen_health = 0.0;
+                        self.ants[q_idx].health = 0.0;
+                        c.usurp_progress_ticks = 0;
+                        c.usurp_attacker_colony = None;
+                        tracing::info!(
+                            tick = self.tick,
+                            defender = did,
+                            attacker = aid,
+                            "usurp: channel COMPLETE — enemy queen killed"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Remove queens killed by a completed channel (mirror combat_tick's
+        // swap_remove discipline; descending indices to keep indices valid).
+        let mut dead: Vec<usize> = self
+            .ants
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| matches!(a.caste, AntCaste::Queen) && a.health <= 0.0)
+            .map(|(i, _)| i)
+            .collect();
+        dead.sort_unstable();
+        for i in dead.into_iter().rev() {
             self.ants.swap_remove(i);
         }
     }
@@ -7547,5 +7740,212 @@ mod tests {
             legacy.combat_tick();
         }
         assert_eq!(sim.ants.len(), legacy.ants.len());
+    }
+
+    // ── usurp_tick tests (Task 5 — B8 gated queen-kill) ──────────────────────
+
+    /// Place `count` colony-0 attackers adjacent to colony-1's queen.
+    /// All placed on the defender queen's module (module 2 in the standard
+    /// two_colony_combat_fixture topology).
+    fn place_attacker_next_to_enemy_queen(sim: &mut Simulation, count: usize) {
+        // Defender queen (colony 1) is on module 2 in the standard fixture.
+        let q_pos = sim
+            .ants
+            .iter()
+            .find(|a| a.colony_id == 1 && matches!(a.caste, AntCaste::Queen))
+            .map(|a| (a.position, a.module_id))
+            .expect("defender queen not found");
+        let (q_position, q_module) = q_pos;
+
+        let mut placed = 0;
+        let interaction_radius = sim.config.combat.interaction_radius.max(1.0);
+        // Find colony-0 non-queen ants and relocate them.
+        for a in sim.ants.iter_mut() {
+            if placed >= count {
+                break;
+            }
+            if a.colony_id != 0 || matches!(a.caste, AntCaste::Queen) {
+                continue;
+            }
+            a.module_id = q_module;
+            a.position = q_position + Vec2::new(interaction_radius * 0.5, 0.0);
+            a.transit = None;
+            placed += 1;
+        }
+        // If we need more attackers than the fixture provides, add fresh ones.
+        let mut next_id = sim.ants.iter().map(|a| a.id).max().unwrap_or(0) + 1;
+        while placed < count {
+            let offset = Vec2::new(interaction_radius * 0.4, (placed as f32) * 0.1);
+            let mut a = Ant::new_worker(next_id, 0, q_position + offset, 0.0, 10.0);
+            a.module_id = q_module;
+            a.transit = None;
+            sim.ants.push(a);
+            sim.colonies
+                .iter_mut()
+                .find(|c| c.id == 0)
+                .map(|c| c.population.workers += 1);
+            next_id += 1;
+            placed += 1;
+        }
+    }
+
+    /// Remove all non-queen ants from colony `cid` and zero their population.
+    fn clear_defender_workers(sim: &mut Simulation, cid: u8) {
+        sim.ants
+            .retain(|a| a.colony_id != cid || matches!(a.caste, AntCaste::Queen));
+        if let Some(c) = sim.colonies.iter_mut().find(|c| c.id == cid) {
+            c.population.workers = 0;
+            c.population.soldiers = 0;
+            c.population.breeders = 0;
+        }
+    }
+
+    /// Kill the ant in `AntState::Usurping` for the defender colony (`did`).
+    fn kill_channeling_ant(sim: &mut Simulation, did: u8) {
+        // The channeling ant belongs to the attacker colony (the one != did).
+        let aid = if did == 0 { 1u8 } else { 0u8 };
+        let idx = sim
+            .ants
+            .iter()
+            .position(|a| a.colony_id == aid && matches!(a.state, AntState::Usurping))
+            .expect("kill_channeling_ant: no Usurping ant found");
+        sim.ants.swap_remove(idx);
+    }
+
+    #[test]
+    fn queen_invulnerable_before_gate_opens() {
+        let mut sim = two_colony_combat_fixture();
+        // Enable the channel but require a 3:1 attacker ratio to open the gate.
+        sim.colony_configs[0].combat.usurp_gate_attacker_ratio = 3.0;
+        sim.colony_configs[0].combat.usurp_gate_defender_floor = 100;
+        sim.colony_configs[0].combat.usurp_channel_ticks = 10;
+        // Place ONE attacker next to the defender queen — not enough to
+        // satisfy the 3:1 ratio requirement while defenders still have workers.
+        place_attacker_next_to_enemy_queen(&mut sim, 1);
+        let qh = sim.colonies[1].queen_health;
+        for _ in 0..30 {
+            sim.usurp_tick();
+        }
+        assert_eq!(
+            sim.colonies[1].queen_health, qh,
+            "queen must be invulnerable pre-gate"
+        );
+        assert_eq!(
+            sim.colonies[1].usurp_progress_ticks, 0,
+            "no channel before gate opens"
+        );
+    }
+
+    #[test]
+    fn channel_starts_and_completes_when_gate_open() {
+        let mut sim = two_colony_combat_fixture();
+        // Easy gate: 1:1 ratio required, floor very high so any attacker count passes.
+        sim.colony_configs[0].combat.usurp_gate_attacker_ratio = 1.0;
+        sim.colony_configs[0].combat.usurp_gate_defender_floor = 1000;
+        sim.colony_configs[0].combat.usurp_channel_ticks = 5;
+        // Remove defender workers so the ratio is 3:0 (with .max(1) floor, 3 >= 1*1).
+        clear_defender_workers(&mut sim, 1);
+        // Place 3 colony-0 attackers adjacent to the colony-1 queen.
+        place_attacker_next_to_enemy_queen(&mut sim, 3);
+        for _ in 0..6 {
+            sim.usurp_tick();
+        }
+        // After ≥usurp_channel_ticks ticks, queen should be dead.
+        assert!(
+            sim.colonies[1].queen_health <= 0.0,
+            "channel should complete and kill queen"
+        );
+    }
+
+    #[test]
+    fn channel_resets_when_channeler_interrupted() {
+        let mut sim = two_colony_combat_fixture();
+        sim.colony_configs[0].combat.usurp_gate_attacker_ratio = 1.0;
+        sim.colony_configs[0].combat.usurp_gate_defender_floor = 1000;
+        sim.colony_configs[0].combat.usurp_channel_ticks = 100; // long channel
+        clear_defender_workers(&mut sim, 1);
+        place_attacker_next_to_enemy_queen(&mut sim, 1);
+        for _ in 0..5 {
+            sim.usurp_tick();
+        }
+        assert!(
+            sim.colonies[1].usurp_progress_ticks > 0,
+            "channel should be underway"
+        );
+        // Kill the channeling ant (simulate a defender rally).
+        kill_channeling_ant(&mut sim, 1);
+        sim.usurp_tick();
+        assert_eq!(
+            sim.colonies[1].usurp_progress_ticks, 0,
+            "interrupt must reset progress"
+        );
+        assert!(
+            sim.colonies[1].queen_health > 0.0,
+            "queen survives the interrupted channel"
+        );
+    }
+
+    #[test]
+    fn default_slice_queen_takes_no_damage_and_no_channel() {
+        // Back-compat guard: with default config (gate ratio 0.0, channel
+        // ticks 0), usurp_tick must be a complete no-op — no channel starts,
+        // no queen health changes, no usurp_attacker_colony recorded.
+        //
+        // Note: we call usurp_tick ONLY (not combat_tick) because combat_tick
+        // CAN kill queens via direct melee from adjacent non-queen attackers
+        // (that is existing pre-B8 behavior). The usurp path is what we gate.
+        let mut sim = two_colony_combat_fixture();
+        // Confirm defaults are 0.0/0.
+        assert_eq!(
+            sim.colony_configs[0].combat.usurp_gate_attacker_ratio, 0.0,
+            "default usurp_gate_attacker_ratio must be 0.0"
+        );
+        assert_eq!(
+            sim.colony_configs[0].combat.usurp_channel_ticks, 0,
+            "default usurp_channel_ticks must be 0"
+        );
+        place_attacker_next_to_enemy_queen(&mut sim, 5);
+        let qh = sim.colonies[1].queen_health;
+        for _ in 0..50 {
+            sim.usurp_tick();
+        }
+        assert_eq!(
+            sim.colonies[1].queen_health, qh,
+            "default slice: usurp_tick must not touch queen health"
+        );
+        assert_eq!(
+            sim.colonies[1].usurp_attacker_colony, None,
+            "no channel must be recorded on default slice"
+        );
+        assert_eq!(
+            sim.colonies[1].usurp_progress_ticks, 0,
+            "no channel progress on default slice"
+        );
+    }
+
+    #[test]
+    fn gate_zero_ratio_never_opens() {
+        // Explicit guard-logic test: usurp_gate_attacker_ratio == 0.0 must
+        // NEVER open the gate, even if defenders are wiped out. This is the
+        // `> 0.0` guard. Without the guard, `0.0 >= 0.0 * 1` is true and the
+        // gate would be permanently open.
+        let mut sim = two_colony_combat_fixture();
+        sim.colony_configs[0].combat.usurp_gate_attacker_ratio = 0.0; // explicitly 0
+        sim.colony_configs[0].combat.usurp_gate_defender_floor = 1000;
+        sim.colony_configs[0].combat.usurp_channel_ticks = 1; // would complete instantly if open
+        clear_defender_workers(&mut sim, 1);
+        place_attacker_next_to_enemy_queen(&mut sim, 10);
+        let qh = sim.colonies[1].queen_health;
+        for _ in 0..10 {
+            sim.usurp_tick();
+        }
+        assert_eq!(
+            sim.colonies[1].queen_health, qh,
+            "zero ratio must keep gate permanently closed"
+        );
+        assert_eq!(
+            sim.colonies[1].usurp_progress_ticks, 0,
+            "no channel must start with zero ratio"
+        );
     }
 }

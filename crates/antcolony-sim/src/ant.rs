@@ -32,6 +32,11 @@ pub enum AntState {
     /// Predation ticks while flying; at the end, a daughter colony may
     /// be founded (counter on `ColonyState`).
     NuptialFlight,
+    /// Cross-species usurpation (B8): an attacker is channeling the enemy
+    /// queen-kill. Exposed + interruptible — if the ant dies or is forced
+    /// to Fleeing mid-channel, colony usurp progress resets. 05 Findings
+    /// 8/9/10 (Johnson 2002 timing; Topoff & Zimmerli 1993 disguise).
+    Usurping,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

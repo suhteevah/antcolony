@@ -287,6 +287,14 @@ pub struct ColonyState {
     /// deltas. Replaces the never-written `pending_starvation_deaths`.
     #[serde(default)]
     pub starvation_deaths_cumulative: u32,
+    /// B8 usurpation channel progress (ticks) against THIS colony's queen.
+    /// Resets to 0 on interrupt. 0 when no channel active.
+    #[serde(default)]
+    pub usurp_progress_ticks: u32,
+    /// B8 which enemy colony is currently channeling the kill. None = no
+    /// active channel. Used to detect interrupt (channeler died/fled).
+    #[serde(default)]
+    pub usurp_attacker_colony: Option<u8>,
 }
 
 impl ColonyState {
@@ -333,6 +341,8 @@ impl ColonyState {
             commander_intent: [0.0; 64],
             food_returned_frac: 0.0,
             starvation_deaths_cumulative: 0,
+            usurp_progress_ticks: 0,
+            usurp_attacker_colony: None,
         }
     }
 
