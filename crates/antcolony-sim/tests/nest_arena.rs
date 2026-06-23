@@ -74,7 +74,7 @@ fn run_match(
     attacker: ColonySimConfig,
     defender: ColonySimConfig,
     nest: bool,
-) -> (bool, u64) {
+) -> (bool, u64, u32) {
     let max_ticks = 3000u64;
     let mut sim = if nest {
         let mut g = global;
@@ -103,6 +103,11 @@ fn run_match(
         // Flat chokepoint arena: NO underground. The surface entrance cap bites
         // at module-2's NestEntrance cell, but the queen is ON the surface so
         // the swarm can reach her once all surface defenders are gone.
+        // FRAGILE: the flat defender's fast death is amplified by the legacy
+        // brood-spawn path (newborns hatch in module 0 when underground_module is
+        // None). The attacker's 500/attack=10 edge was sized to overrun the
+        // defender even so. If that spawn path is ever fixed, re-check flat_ticks
+        // and re-widen the attacker edge to keep the open-ground overrun.
         let mut atk = attacker;
         let mut def = defender;
         for c in [&mut atk, &mut def] {
@@ -114,10 +119,28 @@ fn run_match(
         Simulation::new_two_colony_cross_species(global, atk, def, topo, 7, 0, 2)
     };
 
+    // ENGAGEMENT INSTRUMENTATION (T7 review finding): a survival pass on the
+    // nest arena is only a *siege* demonstration if attackers actually descend
+    // into the defender's underground module. Track the peak number of enemy
+    // (colony-0) ants present in the defender's UG across the run. None on the
+    // flat arena (no UG => underground_module is None).
+    let def_ug = sim.colonies[1].underground_module;
+    let mut max_enemy_in_def_ug = 0u32;
+
     let mut ticks = 0u64;
     while ticks < max_ticks {
         sim.tick();
         ticks += 1;
+        if let Some(ug) = def_ug {
+            let n = sim
+                .ants
+                .iter()
+                .filter(|a| a.colony_id == 0 && a.module_id == ug)
+                .count() as u32;
+            if n > max_enemy_in_def_ug {
+                max_enemy_in_def_ug = n;
+            }
+        }
         if !matches!(sim.match_status(), MatchStatus::InProgress) {
             break;
         }
@@ -128,18 +151,22 @@ fn run_match(
         .iter()
         .any(|a| a.colony_id == 1 && matches!(a.caste, AntCaste::Queen))
         && sim.colonies[1].adult_total() > 0;
-    (def_alive, ticks)
+    (def_alive, ticks, max_enemy_in_def_ug)
 }
 
 #[test]
 fn defender_holds_in_nest_arena_longer_than_on_flat_arena() {
     let (g, atk, def) = lopsided_pair();
-    let (flat_alive, flat_ticks) = run_match(g.clone(), atk.clone(), def.clone(), false);
-    let (nest_alive, nest_ticks) = run_match(g, atk, def, true);
+    let (flat_alive, flat_ticks, _flat_enemy_ug) =
+        run_match(g.clone(), atk.clone(), def.clone(), false);
+    let (nest_alive, nest_ticks, nest_enemy_ug) = run_match(g, atk, def, true);
 
-    // Print for calibration visibility (visible with --nocapture)
+    // Print for calibration visibility (visible with --nocapture). nest_enemy_ug
+    // is the peak enemy presence inside the defender's UG: >0 means raiders
+    // genuinely descended (contested siege); 0 means the deep queen was never
+    // approached (survival is an unreached-bunker artifact, not a held siege).
     eprintln!(
-        "flat: alive={flat_alive} ticks={flat_ticks} | nest: alive={nest_alive} ticks={nest_ticks}"
+        "flat: alive={flat_alive} ticks={flat_ticks} | nest: alive={nest_alive} ticks={nest_ticks} peak_enemy_in_def_ug={nest_enemy_ug}"
     );
 
     // The defensive inversion: in the nest arena the small colony survives at
@@ -157,6 +184,24 @@ fn defender_holds_in_nest_arena_longer_than_on_flat_arena() {
         (nest_alive && !flat_alive) || nest_ticks >= flat_ticks + 200,
         "nest layer should flip/extend the defender's outcome \
          (flat_alive={flat_alive} @ {flat_ticks}, nest_alive={nest_alive} @ {nest_ticks})"
+    );
+
+    // CHARACTERIZATION / KNOWN GAP (raid-seeking). The inversion above is real
+    // but currently rides on UNREACHABILITY, not a contested siege: peak enemy
+    // presence inside the defender's UG is 0 because the raid-descent arm
+    // (simulation.rs combat raid block) only fires for an attacker already
+    // standing on the enemy SURFACE entrance cell while Fighting — and nothing
+    // drives attackers there once they've wiped the defender's surface workers.
+    // Until a raid-seeking behavior marches enemy fighters to the enemy nest
+    // entrance, the deep queen is an impregnable bunker, not a sieged one.
+    // This assert is a TRIPWIRE: when raid-seeking lands it will FAIL, forcing a
+    // re-evaluation of this test as a real-siege demonstration AND of Task 8
+    // (the nest-arena win-matrix would otherwise be a degenerate defender-always-
+    // wins result). Do NOT "fix" this by deleting it — fix raid-seeking.
+    assert_eq!(
+        nest_enemy_ug, 0,
+        "raid-seeking appears to have landed (peak enemy in defender UG = {nest_enemy_ug} > 0): \
+         re-evaluate the nest inversion as a contested siege and re-scope Task 8"
     );
 }
 
