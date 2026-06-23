@@ -64,7 +64,7 @@ pub use species_extended::{
     EcologicalRole, InvasiveStatus, MoundConstruction, QueenCount, RecruitmentStyle, Substrate,
     SubstrateType, Weapon, WorkerSizeBucket,
 };
-pub use topology::Topology;
+pub use topology::{Topology, QueenDepth};
 pub use tube::{Tube, TubeEnd, TubeId, TubeTransit};
 pub use unlocks::{module_kind_unlocked, unlock_hint};
 pub use world::{ChamberType, Terrain, WorldGrid};

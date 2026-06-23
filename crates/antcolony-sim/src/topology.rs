@@ -12,6 +12,22 @@ use serde::{Deserialize, Serialize};
 use crate::module::{Module, ModuleId, ModuleKind, PortPos};
 use crate::tube::{Tube, TubeEnd, TubeId};
 
+/// Where in an `UndergroundNest` module the queen chamber is carved, relative
+/// to the surface-aligned entrance. Deeper = more tunnel between the entrance
+/// chokepoint and the queen (serial chokepoints; spec S1/B3). `Deep` is the
+/// V1 arena default for symmetric PvP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QueenDepth {
+    /// Queen chamber 1 row below the entrance (≈ legacy `attach_underground`).
+    Shallow,
+    /// Queen chamber at ~40% module depth.
+    Mid,
+    /// Queen chamber near the module floor (~80% depth) — maximum protection.
+    #[default]
+    Deep,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Topology {
     pub modules: Vec<Module>,
@@ -618,6 +634,11 @@ impl Topology {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queen_depth_default_is_deep() {
+        assert_eq!(QueenDepth::default(), QueenDepth::Deep);
+    }
 
     #[test]
     fn single_is_a_one_module_zero_tube_topology() {
