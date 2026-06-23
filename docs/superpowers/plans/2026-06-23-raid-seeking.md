@@ -18,7 +18,7 @@
 
 ---
 
-### Task RS1: Raid-seeking behavior (sim crate)
+### Task 1: Raid-seeking behavior (sim crate)
 
 **Files:**
 - Modify: `crates/antcolony-sim/src/ant.rs` (add `is_raider` field)
@@ -289,7 +289,7 @@ git commit -m "feat(sim): raid-seeking behavior — raiders steer to the enemy n
 
 ---
 
-### Task RS2: Arm raid-seeking in the nest arena + convert the inversion to a contested siege
+### Task 2: Arm raid-seeking in the nest arena + convert the inversion to a contested siege
 
 **Files:**
 - Modify: `crates/antcolony-trainer/src/env.rs` (`new_cross_species_nest_arena`)
