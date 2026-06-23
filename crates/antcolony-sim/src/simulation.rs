@@ -4061,7 +4061,7 @@ impl Simulation {
             colony_diapause.push((c.id, in_diapause));
         }
 
-        let mut to_spawn: Vec<(u8, AntCaste, Vec2)> = Vec::new();
+        let mut to_spawn: Vec<(u8, AntCaste, Vec2, crate::module::ModuleId)> = Vec::new();
         let mut starve: Vec<(u8, u32)> = Vec::new();
 
         for colony in self.colonies.iter_mut() {
@@ -4514,13 +4514,40 @@ impl Simulation {
                     if colony.pupae > 0 {
                         colony.pupae -= 1;
                     }
-                    let pos = if colony.nest_entrance_positions.is_empty() {
-                        Vec2::ZERO
-                    } else {
-                        let i = self.rng.gen_range(0..colony.nest_entrance_positions.len());
-                        colony.nest_entrance_positions[i]
-                    };
-                    to_spawn.push((colony.id, b.caste, pos));
+                    let (pos, spawn_module) =
+                        if let Some(ug_id) = colony.underground_module {
+                            // Nest-arena path: newborns hatch in the underground
+                            // module where the queen lives. The nest_entrance_positions
+                            // list was set to the UG entrance world-position at
+                            // construction, so it is valid inside the UG module.
+                            let p = if colony.nest_entrance_positions.is_empty() {
+                                Vec2::ZERO
+                            } else {
+                                // Always use index 0; UG colonies have exactly one
+                                // entrance. No RNG draw — determinism preserved on
+                                // the legacy (None) path.
+                                colony.nest_entrance_positions[0]
+                            };
+                            tracing::debug!(
+                                colony_id = colony.id,
+                                ug_module = ug_id,
+                                ?p,
+                                "newborn hatches in underground module"
+                            );
+                            (p, ug_id)
+                        } else {
+                            // Default/legacy path — byte-identical, no RNG reorder.
+                            let p = if colony.nest_entrance_positions.is_empty() {
+                                Vec2::ZERO
+                            } else {
+                                let i = self.rng.gen_range(
+                                    0..colony.nest_entrance_positions.len(),
+                                );
+                                colony.nest_entrance_positions[i]
+                            };
+                            (p, 0u16)
+                        };
+                    to_spawn.push((colony.id, b.caste, pos, spawn_module));
                     match b.caste {
                         AntCaste::Worker => colony.population.workers += 1,
                         AntCaste::Soldier => colony.population.soldiers += 1,
@@ -4615,7 +4642,7 @@ impl Simulation {
             }
         }
 
-        for (cid, caste, pos) in to_spawn {
+        for (cid, caste, pos, mod_id) in to_spawn {
             let id = self.next_ant_id;
             self.next_ant_id = self.next_ant_id.saturating_add(1);
             let health = match caste {
@@ -4624,11 +4651,12 @@ impl Simulation {
             };
             let heading = self.rng.gen_range(0.0..std::f32::consts::TAU);
             let mut ant = Ant::new_with_caste(id, cid, pos, heading, health, caste);
-            ant.module_id = 0;
+            ant.module_id = mod_id;
             tracing::debug!(
                 colony_id = cid,
                 ant_id = id,
                 caste = ?caste,
+                module_id = mod_id,
                 "adult spawned"
             );
             self.ants.push(ant);
@@ -8347,5 +8375,157 @@ mod tests {
         // With default threshold (1e9) the B7 arm never fires; the ant stays Idle
         // (normal FSM also keeps it Idle since forage and nurse weights are both 0).
         assert_eq!(sim.ants[idx].state, AntState::Idle, "default threshold must keep the worker Idle");
+    }
+
+    // ── Brood-spawn fix: newborns in UG module ────────────────────────────
+
+    #[test]
+    fn nest_arena_newborns_spawn_in_ug_module() {
+        // Regression guard for the brood-spawn defect where hatchlings were
+        // assigned module_id = 0 (surface) while their position was the UG
+        // entrance coordinate — spawning them in limbo.
+        //
+        // This test creates a nest-arena sim, injects a pupa that is already
+        // at max age (ready to eclose immediately), runs one economy tick, and
+        // asserts the resulting adult lives in the UG module, not on the surface.
+        use crate::colony::{Brood, BroodStage};
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+
+        let mut global = SimConfig::default();
+        // Give the colony plenty of food so the economy tick doesn't starve it.
+        global.colony.initial_food = 5000.0;
+        global.colony.pupa_stage_ticks = 1; // minimum maturation so one tick is enough
+        let slice = ColonySimConfig::from(&global);
+        let topo =
+            Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let bug = topo.underground_for_colony(0).expect("black ug");
+        let rug = topo.underground_for_colony(1).expect("red ug");
+
+        let mut sim = Simulation::new_two_colony_nest_arena(
+            global,
+            slice.clone(),
+            slice,
+            topo,
+            /* initial_workers */ 5,
+            0,
+            2,
+            bug,
+            rug,
+        );
+
+        // Sanity: colony 0 knows its UG module.
+        assert_eq!(
+            sim.colonies[0].underground_module,
+            Some(bug),
+            "colony 0 must have underground_module set"
+        );
+
+        // Capture the set of ant IDs that exist before the hatch.
+        let ids_before: std::collections::HashSet<u32> =
+            sim.ants.iter().map(|a| a.id).collect();
+
+        // Inject a ready-to-eclose pupa into colony 0's brood queue.
+        {
+            let c0 = sim
+                .colonies
+                .iter_mut()
+                .find(|c| c.id == 0)
+                .expect("colony 0");
+            let ready_pupa = Brood {
+                stage: BroodStage::Pupa,
+                age: u32::MAX, // guaranteed >= pupa_stage_ticks
+                caste: crate::ant::AntCaste::Worker,
+            };
+            c0.brood.push(ready_pupa);
+            c0.pupae += 1;
+        }
+
+        // Run one full economy tick so the pupa ecloses.
+        sim.run(1);
+
+        // Identify the newly-hatched ants (IDs that weren't present before).
+        let new_ants: Vec<_> = sim
+            .ants
+            .iter()
+            .filter(|a| a.colony_id == 0 && !ids_before.contains(&a.id))
+            .collect();
+        assert!(
+            !new_ants.is_empty(),
+            "at least one new colony-0 ant should have hatched"
+        );
+
+        // Every newly-hatched adult for colony 0 must be in the UG module, not
+        // on the surface (module_id 0). This is the core regression guard.
+        for ant in &new_ants {
+            assert_eq!(
+                ant.module_id, bug,
+                "colony-0 newborn (id={}) must be in UG module {} (not surface 0)",
+                ant.id, bug
+            );
+        }
+
+        // Also confirm: the position stored on each new ant is a valid cell
+        // inside the UG module (not arbitrary surface coords).
+        let ug_module = sim.topology.module(bug);
+        for ant in &new_ants {
+            let (gx, gy) = ug_module.world.world_to_grid(ant.position);
+            assert!(
+                ug_module.world.in_bounds(gx, gy),
+                "colony-0 newborn (id={}) position {:?} must be inside UG module bounds (gx={gx}, gy={gy})",
+                ant.id, ant.position
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_surface_colony_newborns_unaffected_by_ug_fix() {
+        // Back-compat guard: a colony with underground_module = None (legacy/surface
+        // arena) must produce newborns on module 0, byte-identical to the old path.
+        use crate::colony::{Brood, BroodStage};
+        use crate::config::ColonySimConfig;
+
+        let mut global = SimConfig::default();
+        global.colony.initial_food = 5000.0;
+        global.colony.pupa_stage_ticks = 1;
+        let topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_two_colony_with_topology(global, topo, 0, 0, 1);
+
+        // Legacy sim: no colony has underground_module set.
+        for c in &sim.colonies {
+            assert_eq!(
+                c.underground_module, None,
+                "legacy sim must not have underground_module"
+            );
+        }
+
+        let before_count = sim.ants.iter().filter(|a| a.colony_id == 0).count();
+
+        {
+            let c0 = sim.colonies.iter_mut().find(|c| c.id == 0).expect("colony 0");
+            c0.brood.push(Brood {
+                stage: BroodStage::Pupa,
+                age: u32::MAX,
+                caste: crate::ant::AntCaste::Worker,
+            });
+            c0.pupae += 1;
+        }
+
+        sim.run(1);
+
+        let after_count = sim.ants.iter().filter(|a| a.colony_id == 0).count();
+        assert!(after_count > before_count, "newborn must hatch");
+
+        // All non-queen workers for colony 0 must be on module 0 (surface).
+        for ant in sim.ants.iter().filter(|a| a.colony_id == 0) {
+            if matches!(ant.caste, crate::ant::AntCaste::Queen) {
+                continue;
+            }
+            assert_eq!(
+                ant.module_id, 0,
+                "legacy colony-0 newborn (id={}) must remain on surface module 0",
+                ant.id
+            );
+        }
     }
 }
