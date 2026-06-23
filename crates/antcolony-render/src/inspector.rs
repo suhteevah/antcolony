@@ -293,6 +293,7 @@ fn update_inspector_panel(
         AntState::Digging => "Digging",
         AntState::Diapause => "Diapause",
         AntState::NuptialFlight => "Nuptial flight",
+        AntState::Usurping => "Usurping",
     };
 
     let age_sec = ant.age as f32 * sim.sim.in_game_seconds_per_tick;
