@@ -1716,7 +1716,7 @@ impl Simulation {
                 }
                 let forage_prob = forage_by_colony[ant.colony_id as usize];
                 let nurse_prob = nurse_by_colony[ant.colony_id as usize];
-                let next = decide_next_state(
+                let mut next = decide_next_state(
                     ant,
                     &module.world,
                     &module.pheromones,
@@ -1726,6 +1726,38 @@ impl Simulation {
                     nurse_prob,
                     &mut local_rng,
                 );
+
+                // B7: underground lazy-worker reserve wake. An Idle non-Queen
+                // ant inside an UndergroundNest module wakes to Fighting when
+                // local alarm pheromone exceeds the reserve threshold. Default
+                // threshold is 1e9 (unreachable) so this arm is inert for every
+                // existing sim; the nest arena lowers it (Task 6). Local
+                // information only — alarm read at the ant's own (module, cell)
+                // position — no global map access (CLAUDE.md rule 4).
+                if ant.state == AntState::Idle
+                    && !matches!(ant.caste, AntCaste::Queen)
+                    && module.kind == ModuleKind::UndergroundNest
+                {
+                    let (gx, gy) = module.world.world_to_grid(ant.position);
+                    if module.world.in_bounds(gx, gy) {
+                        let alarm = module.pheromones.read(
+                            gx as usize,
+                            gy as usize,
+                            PheromoneLayer::Alarm,
+                        );
+                        if alarm > cfg.ant.underground_idle_alarm_threshold {
+                            tracing::debug!(
+                                ant = ant.id,
+                                colony = ant.colony_id,
+                                alarm,
+                                threshold = cfg.ant.underground_idle_alarm_threshold,
+                                "B7: underground idle worker woke to Fighting"
+                            );
+                            next = Some(AntState::Fighting);
+                        }
+                    }
+                }
+
                 (h, next)
             })
             .collect();
@@ -8252,5 +8284,68 @@ mod tests {
 
         sim.surface_underground_traversal_for_test();
         assert_eq!(sim.ants[idx].module_id, 0, "with raid disabled, the fighter must NOT descend");
+    }
+
+    // ── Task 5: Underground lazy-worker alarm wake (B7) ──────────────────
+
+    #[test]
+    fn underground_idle_worker_wakes_to_fighting_on_alarm() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        use crate::pheromone::PheromoneLayer;
+
+        let mut global = SimConfig::default();
+        global.ant.underground_idle_alarm_threshold = 0.3; // nest-arena style low reserve threshold
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 3, 0, 2, bug, rug);
+
+        // Put a black worker, Idle, in the black UG on an Empty tunnel cell.
+        let (ex, ey) = sim.topology.module(bug).world.find_nest_entrance(0).unwrap();
+        let cell = (ex, ey.saturating_sub(1)); // one step into the tunnel
+        let pos = sim.topology.module(bug).world.grid_to_world(cell.0, cell.1);
+        let idx = sim.ants.iter().position(|a| a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen)).unwrap();
+        sim.ants[idx].module_id = bug;
+        sim.ants[idx].position = pos;
+        sim.ants[idx].transition(AntState::Idle);
+
+        // Raise alarm above the threshold at that cell.
+        sim.topology.module_mut(bug).pheromones.deposit(cell.0, cell.1, PheromoneLayer::Alarm, 5.0, 10.0);
+
+        sim.run(1); // one tick runs the decision pass.
+        assert_eq!(sim.ants[idx].state, AntState::Fighting,
+            "underground idle worker should wake to Fighting when alarm > threshold");
+    }
+
+    #[test]
+    fn underground_idle_wake_inert_by_default() {
+        // Default threshold (1e9) => never wakes, so the surface game is unchanged.
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        use crate::pheromone::PheromoneLayer;
+        let global = SimConfig::default();
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 3, 0, 2, bug, rug);
+        // Zero out forage/nurse weights so the ant stays Idle from normal FSM;
+        // only the B7 wake arm could transition it to Fighting.
+        for c in &mut sim.colonies {
+            c.behavior_weights.forage = 0.0;
+            c.behavior_weights.nurse = 0.0;
+        }
+        let (ex, ey) = sim.topology.module(bug).world.find_nest_entrance(0).unwrap();
+        let cell = (ex, ey.saturating_sub(1));
+        let pos = sim.topology.module(bug).world.grid_to_world(cell.0, cell.1);
+        let idx = sim.ants.iter().position(|a| a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen)).unwrap();
+        sim.ants[idx].module_id = bug;
+        sim.ants[idx].position = pos;
+        sim.ants[idx].transition(AntState::Idle);
+        sim.topology.module_mut(bug).pheromones.deposit(cell.0, cell.1, PheromoneLayer::Alarm, 5.0, 10.0);
+        sim.run(1);
+        // With default threshold (1e9) the B7 arm never fires; the ant stays Idle
+        // (normal FSM also keeps it Idle since forage and nurse weights are both 0).
+        assert_eq!(sim.ants[idx].state, AntState::Idle, "default threshold must keep the worker Idle");
     }
 }
