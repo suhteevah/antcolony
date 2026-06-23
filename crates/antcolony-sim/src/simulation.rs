@@ -3326,6 +3326,50 @@ impl Simulation {
                 }
             }
         }
+
+        // ── Raid descent (spec A3/B6): enemy fighters/usurpers flow DOWN an
+        // enemy nest entrance into that colony's UndergroundNest, then follow
+        // the alarm gradient toward the deep queen. Gated; default OFF so all
+        // existing sims are byte-identical. Iterate ants in index order.
+        if self.config.combat.raid_underground_enabled {
+            for ant in self.ants.iter_mut() {
+                if matches!(ant.caste, AntCaste::Queen) {
+                    continue;
+                }
+                if !matches!(ant.state, AntState::Fighting | AntState::Usurping) {
+                    continue;
+                }
+                // Is this ant standing on the SURFACE entrance of an ENEMY colony
+                // that has an underground module? If so, descend into it.
+                for &(ecid, surf_mod, surf_pos, ug_mod, ug_pos) in entrance_pairs.iter() {
+                    if ecid == ant.colony_id {
+                        continue; // own nest is handled by the existing arms
+                    }
+                    if ant.module_id != surf_mod {
+                        continue;
+                    }
+                    let (gx, gy) = self
+                        .topology
+                        .module(surf_mod)
+                        .world
+                        .world_to_grid(ant.position);
+                    if (gx, gy) == (surf_pos.x as i64, surf_pos.y as i64) {
+                        tracing::debug!(
+                            tick = self.tick,
+                            ant = ant.id,
+                            raider_colony = ant.colony_id,
+                            target_colony = ecid,
+                            from_module = surf_mod,
+                            to_module = ug_mod,
+                            "raid: enemy entrance descent"
+                        );
+                        ant.module_id = ug_mod;
+                        ant.position = ug_pos;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// Promote idle workers to `Digging` based on the colony's
@@ -4557,6 +4601,12 @@ impl Simulation {
             );
             self.ants.push(ant);
         }
+    }
+
+    /// Test-only: drive the surface↔underground traversal pass directly.
+    #[doc(hidden)]
+    pub fn surface_underground_traversal_for_test(&mut self) {
+        self.surface_underground_traversal();
     }
 }
 
@@ -8151,5 +8201,56 @@ mod tests {
         assert!(matches!(sim.match_status(), crate::ai::MatchStatus::InProgress));
         sim.run(50); // does not panic; both queens still alive deep underground.
         assert!(matches!(sim.match_status(), crate::ai::MatchStatus::InProgress));
+    }
+
+    // ── Task 4: Raid descent ──────────────────────────────────────────────
+
+    #[test]
+    fn raider_descends_enemy_surface_entrance_into_enemy_underground() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+
+        let mut global = SimConfig::default();
+        global.combat.raid_underground_enabled = true;
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 5, 0, 2, bug, rug);
+
+        // Place a colony-1 (red) fighter on colony-0's (black) surface entrance cell.
+        let (ex, ey) = sim.topology.module(0).world.find_nest_entrance(0).expect("black surface entrance");
+        let epos = sim.topology.module(0).world.grid_to_world(ex, ey);
+        // Reuse an existing red worker; force it onto the enemy entrance + Fighting.
+        let idx = sim.ants.iter().position(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen))
+            .expect("a red ant");
+        sim.ants[idx].module_id = 0;            // standing in black's surface nest
+        sim.ants[idx].position = epos;
+        sim.ants[idx].transition(AntState::Fighting);
+
+        sim.surface_underground_traversal_for_test(); // thin test shim
+
+        assert_eq!(sim.ants[idx].module_id, bug,
+            "red fighter on black's surface entrance should descend into black's underground");
+    }
+
+    #[test]
+    fn raid_descent_is_inert_when_disabled() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        let global = SimConfig::default(); // raid_underground_enabled == false
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 5, 0, 2, bug, rug);
+
+        let (ex, ey) = sim.topology.module(0).world.find_nest_entrance(0).unwrap();
+        let epos = sim.topology.module(0).world.grid_to_world(ex, ey);
+        let idx = sim.ants.iter().position(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen)).unwrap();
+        sim.ants[idx].module_id = 0;
+        sim.ants[idx].position = epos;
+        sim.ants[idx].transition(AntState::Fighting);
+
+        sim.surface_underground_traversal_for_test();
+        assert_eq!(sim.ants[idx].module_id, 0, "with raid disabled, the fighter must NOT descend");
     }
 }
