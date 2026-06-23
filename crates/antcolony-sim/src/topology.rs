@@ -878,6 +878,42 @@ mod tests {
         assert_eq!(m.world.get(qx, qy), Terrain::Chamber(ChamberType::QueenChamber));
     }
 
+    /// Chokepoint invariant: the UndergroundNest module boundary must be
+    /// entirely `Terrain::Solid`. The single-file entrance is carved at
+    /// `entrance_y = h-2` (interior row), so the boundary rows/columns
+    /// (y=0, y=h-1, x=0, x=w-1) must have NO non-Solid cell at all.
+    /// A second gap there would let attackers bypass the entrance chokepoint.
+    #[test]
+    fn boundary_is_solid_except_entrance() {
+        use crate::world::Terrain;
+        let mut topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let (ug_id, _) = topo.attach_underground_deep(0, 0, 24, 24, QueenDepth::Deep);
+        let m = topo.module(ug_id);
+        let w = m.world.width;
+        let h = m.world.height;
+
+        // Top and bottom boundary rows must be fully Solid.
+        for x in 0..w {
+            for &y in &[0usize, h - 1] {
+                assert!(
+                    matches!(m.world.get(x, y), Terrain::Solid),
+                    "boundary violation at x={x} y={y} (top/bottom edge) — expected Solid, got {:?}",
+                    m.world.get(x, y)
+                );
+            }
+        }
+        // Left and right boundary columns must be fully Solid.
+        for y in 0..h {
+            for &x in &[0usize, w - 1] {
+                assert!(
+                    matches!(m.world.get(x, y), Terrain::Solid),
+                    "boundary violation at x={x} y={y} (left/right edge) — expected Solid, got {:?}",
+                    m.world.get(x, y)
+                );
+            }
+        }
+    }
+
     #[test]
     fn two_colony_nest_arena_has_two_underground_modules() {
         let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
