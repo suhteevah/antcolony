@@ -85,21 +85,23 @@ fn main() -> Result<()> {
                 } else {
                     (&species[bi], &species[ai], false)
                 };
-                let mut env = MatchEnv::new_cross_species(sp_left, sp_right, seed);
+                // ── Calibration-2: chokepoint arena ──────────────────────────
+                // Route every match through the three-module arena so the
+                // terrain_attacker_cap fires on NestEntrance tiles (entrance=1)
+                // and tunnel cells (tunnel=3).  new_cross_species (flat bench)
+                // is kept as-is for training; only the harness uses the arena.
+                let mut env = MatchEnv::new_cross_species_arena(sp_left, sp_right, seed);
                 env.max_ticks = max_ticks;
 
-                // ── Calibration-1 knobs ───────────────────────────────────────
-                // Inject chokepoint attacker-cap + predation on every match
-                // identically so results stay thread-count-independent.
-                // Field path: env.sim.colony_configs[i].combat.*
+                // Inject chokepoint attacker-cap + predation identically on
+                // every match so results remain thread-count-independent.
                 for i in 0..env.sim.colony_configs.len() {
                     // Terrain-gated attacker cap (Champer & Schlenoff square→linear law).
-                    // Surface stays uncapped (255); tunnel and entrance are capped.
+                    // Surface stays uncapped (255); tunnel capped at 3; entrance at 1.
                     env.sim.colony_configs[i].combat.max_simultaneous_attackers_open = 255;
                     env.sim.colony_configs[i].combat.max_simultaneous_attackers_tunnel = 3;
                     env.sim.colony_configs[i].combat.max_simultaneous_attackers_entrance = 1;
-                    // Predation corpse-loot: only fires when predates_ants == true
-                    // (gated in simulation.rs on predates_ants && frac > 0.0).
+                    // Predation corpse-loot: only fires when predates_ants == true.
                     if env.sim.colony_configs[i].predates_ants {
                         env.sim.colony_configs[i].combat.usurp_corpse_to_killer_frac = 0.5;
                     }
@@ -307,7 +309,7 @@ mod tests {
     }
 
     fn compute_matrix_sequential(
-        species: &[antcolony_sim::species::SpeciesConfig],
+        species: &[antcolony_sim::species::Species],
         mpe: usize,
         max_ticks: u64,
     ) -> Vec<Vec<f32>> {
@@ -327,7 +329,8 @@ mod tests {
                     } else {
                         (&species[bi], &species[ai], false)
                     };
-                    let mut env = MatchEnv::new_cross_species(sp_left, sp_right, seed);
+                    // Use arena variant to mirror the production harness.
+                    let mut env = MatchEnv::new_cross_species_arena(sp_left, sp_right, seed);
                     env.max_ticks = max_ticks;
                     let mut lb = HeuristicBrain::new(5.0);
                     let mut rb = HeuristicBrain::new(5.0);
@@ -348,7 +351,7 @@ mod tests {
     }
 
     fn compute_matrix_parallel(
-        species: &[antcolony_sim::species::SpeciesConfig],
+        species: &[antcolony_sim::species::Species],
         mpe: usize,
         max_ticks: u64,
     ) -> Vec<Vec<f32>> {
@@ -371,7 +374,8 @@ mod tests {
                     } else {
                         (&species[bi], &species[ai], false)
                     };
-                    let mut env = MatchEnv::new_cross_species(sp_left, sp_right, seed);
+                    // Use arena variant to mirror the production harness.
+                    let mut env = MatchEnv::new_cross_species_arena(sp_left, sp_right, seed);
                     env.max_ticks = max_ticks;
                     let mut lb = HeuristicBrain::new(5.0);
                     let mut rb = HeuristicBrain::new(5.0);

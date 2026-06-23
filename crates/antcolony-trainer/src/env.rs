@@ -140,6 +140,64 @@ impl MatchEnv {
         Self { sim, max_ticks: 10_000, prev_workers, prev_queens_alive, prev_food }
     }
 
+    /// Cross-species match routed through the two-colony chokepoint arena.
+    ///
+    /// Identical to `new_cross_species` in every respect EXCEPT the topology:
+    /// uses the real three-module arena (`two_colony_arena((24,24),(32,32))`)
+    /// with black colony on module 0 and red colony on module 2 — the same
+    /// dimensions the PvP tournament and ladder use. Each nest module has a
+    /// `NestEntrance` tile at its centre (placed by `new_two_colony_cross_species`),
+    /// so `terrain_attacker_cap` returns `max_simultaneous_attackers_entrance`
+    /// (=1 at calibration-2 harness injection) for combat on those cells —
+    /// the cap actually bites.
+    ///
+    /// `new_cross_species` is NOT modified; it remains the training env
+    /// (flat 32×32 bench) with its byte-identical guarantee.
+    pub fn new_cross_species_arena(species_a: &Species, species_b: &Species, seed: u64) -> Self {
+        let env = Environment {
+            world_width: 32,
+            world_height: 32,
+            ..Environment::default()
+        };
+
+        let mut global = species_a.apply(&env);
+        global.world = WorldConfig { width: 32, height: 32, ..WorldConfig::default() };
+
+        let cfg_a: ColonySimConfig = species_a.apply_colony(&env);
+        let cfg_b: ColonySimConfig = species_b.apply_colony(&env);
+
+        // Three-module chokepoint arena: black nest (id 0) ↔ outworld (id 1) ↔ red nest (id 2).
+        // NestEntrance tiles are carved at (nest_w/2, nest_h/2) in each nest module by
+        // new_two_colony_cross_species, enabling terrain_attacker_cap to return the
+        // entrance cap on combat at those cells.
+        let topology = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_two_colony_cross_species(
+            global, cfg_a, cfg_b, topology, seed, 0, 2,
+        );
+
+        // Mirror new_cross_species: flip colony 0 to AI-controlled.
+        if let Some(c0) = sim.colonies.get_mut(0) {
+            c0.is_ai_controlled = true;
+        }
+
+        let prev_workers = [
+            sim.colonies.get(0).map(|c| c.population.workers).unwrap_or(0),
+            sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0),
+        ];
+        let prev_queens_alive = [1, 1];
+        let prev_food = [
+            sim.colonies.get(0).map(|c| c.food_stored).unwrap_or(0.0),
+            sim.colonies.get(1).map(|c| c.food_stored).unwrap_or(0.0),
+        ];
+        tracing::info!(
+            species_a = %species_a.id,
+            species_b = %species_b.id,
+            seed,
+            "MatchEnv::new_cross_species_arena constructed (chokepoint topology)"
+        );
+        Self { sim, max_ticks: 10_000, prev_workers, prev_queens_alive, prev_food }
+    }
+
     pub fn observe(&self, colony_id: u8) -> Option<ColonyAiState> {
         self.sim.colony_ai_state(colony_id)
     }
