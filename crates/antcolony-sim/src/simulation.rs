@@ -372,6 +372,96 @@ impl Simulation {
         }
     }
 
+    /// Cross-species **nest arena** constructor. Reuses
+    /// `new_two_colony_cross_species` for the entire colony/ant/spawn build
+    /// (byte-identical to a cross-species match on the same surface modules),
+    /// then relocates each queen into her deep `UndergroundNest` `QueenChamber`
+    /// and records the underground module on the colony so raid pathing + queen
+    /// economy can find it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_two_colony_nest_arena(
+        world_pheromone_hazards: SimConfig,
+        cfg_black: crate::config::ColonySimConfig,
+        cfg_red: crate::config::ColonySimConfig,
+        topology: Topology,
+        seed: u64,
+        nest_black_module: ModuleId,
+        nest_red_module: ModuleId,
+        black_underground: ModuleId,
+        red_underground: ModuleId,
+    ) -> Self {
+        // Build the full cross-species sim on the (5-module) nest topology.
+        let mut sim = Self::new_two_colony_cross_species(
+            world_pheromone_hazards,
+            cfg_black,
+            cfg_red,
+            topology,
+            seed,
+            nest_black_module,
+            nest_red_module,
+        );
+
+        // Record each colony's underground module.
+        if let Some(c) = sim.colonies.iter_mut().find(|c| c.id == 0) {
+            c.underground_module = Some(black_underground);
+        }
+        if let Some(c) = sim.colonies.iter_mut().find(|c| c.id == 1) {
+            c.underground_module = Some(red_underground);
+        }
+
+        // Relocate each queen into the deep QueenChamber of her UG module.
+        // Iterate ants in index order (determinism); find the first QueenChamber
+        // cell in the module and stand the queen on its world center.
+        for (cid, ug) in [(0u8, black_underground), (1u8, red_underground)] {
+            let Some(qcell) = sim.queen_chamber_cell(ug) else {
+                tracing::warn!(colony = cid, ug, "nest arena: no QueenChamber cell found; queen left on surface");
+                continue;
+            };
+            let world_pos = sim.topology.module(ug).world.grid_to_world(qcell.0, qcell.1);
+            for a in sim.ants.iter_mut() {
+                if a.colony_id == cid && matches!(a.caste, AntCaste::Queen) {
+                    tracing::info!(colony = cid, ant = a.id, ug, cell = ?qcell, "nest arena: queen relocated deep");
+                    a.module_id = ug;
+                    a.position = world_pos;
+                }
+            }
+            // Keep colony.nest_entrance_positions consistent with the UG entrance
+            // so any code reading it (obs/logging) sees the defended choke.
+            if let Some((ex, ey)) = sim.topology.module(ug).world.find_nest_entrance(cid) {
+                let epos = sim.topology.module(ug).world.grid_to_world(ex, ey);
+                if let Some(c) = sim.colonies.iter_mut().find(|c| c.id == cid) {
+                    c.nest_entrance_positions = vec![epos];
+                }
+            }
+        }
+
+        tracing::info!(
+            modules = sim.topology.modules.len(),
+            tubes = sim.topology.tubes.len(),
+            ants = sim.ants.len(),
+            black_ug = black_underground,
+            red_ug = red_underground,
+            "Simulation::new_two_colony_nest_arena (queens relocated deep)"
+        );
+        sim
+    }
+
+    /// First `QueenChamber` grid cell in a module, scanned in row-major order
+    /// (deterministic). Used to place the queen at nest-arena construction.
+    fn queen_chamber_cell(&self, module: ModuleId) -> Option<(usize, usize)> {
+        use crate::world::{ChamberType, Terrain};
+        let m = self.topology.try_module(module)?;
+        let (w, h) = (m.width(), m.height());
+        for y in 0..h {
+            for x in 0..w {
+                if m.world.get(x, y) == Terrain::Chamber(ChamberType::QueenChamber) {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    }
+
     /// Match-end detection for AI-vs-AI / 2-colony modes. Returns
     /// `MatchStatus::InProgress` while both colonies have at least one
     /// queen + at least one adult ant. Transitions to `Won` when exactly
@@ -8005,5 +8095,61 @@ mod tests {
         }
         // It either ended (a queen died) or is still in progress at the cap.
         assert!(sim.tick <= 2000);
+    }
+
+    // ── Task 3: new_two_colony_nest_arena ─────────────────────────────────
+
+    #[test]
+    fn nest_arena_relocates_queens_into_deep_underground_chambers() {
+        use crate::config::ColonySimConfig;
+        use crate::world::{ChamberType, Terrain};
+        use crate::topology::QueenDepth;
+
+        let global = SimConfig::default();
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let black_ug = topo.underground_for_colony(0).expect("black ug");
+        let red_ug = topo.underground_for_colony(1).expect("red ug");
+
+        let sim = Simulation::new_two_colony_nest_arena(
+            global, slice.clone(), slice, topo, 99, 0, 2, black_ug, red_ug,
+        );
+
+        // Each colony records its UG module.
+        assert_eq!(sim.colonies[0].underground_module, Some(black_ug));
+        assert_eq!(sim.colonies[1].underground_module, Some(red_ug));
+
+        // Each queen now lives in her UG module, on a QueenChamber cell.
+        for (cid, ug) in [(0u8, black_ug), (1u8, red_ug)] {
+            let q = sim.ants.iter().find(|a| a.colony_id == cid && matches!(a.caste, AntCaste::Queen))
+                .expect("queen exists");
+            assert_eq!(q.module_id, ug, "colony {cid} queen should be underground");
+            let m = sim.topology.module(ug);
+            let (gx, gy) = m.world.world_to_grid(q.position);
+            assert!(m.world.in_bounds(gx, gy));
+            assert_eq!(m.world.get(gx as usize, gy as usize), Terrain::Chamber(ChamberType::QueenChamber),
+                "colony {cid} queen should stand on her QueenChamber cell");
+        }
+
+        // Workers are still on the surface nest modules (raid pathing moves them
+        // later; at t=0 only the queen is relocated).
+        let surface_workers = sim.ants.iter()
+            .filter(|a| a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen) && a.module_id == 0)
+            .count();
+        assert!(surface_workers > 0, "black workers should still be on the surface nest at t=0");
+    }
+
+    #[test]
+    fn nest_arena_match_status_in_progress_at_start() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        let global = SimConfig::default();
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 7, 0, 2, bug, rug);
+        assert!(matches!(sim.match_status(), crate::ai::MatchStatus::InProgress));
+        sim.run(50); // does not panic; both queens still alive deep underground.
+        assert!(matches!(sim.match_status(), crate::ai::MatchStatus::InProgress));
     }
 }
