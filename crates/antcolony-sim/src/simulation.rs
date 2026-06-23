@@ -7948,4 +7948,62 @@ mod tests {
             "no channel must start with zero ratio"
         );
     }
+
+    // ── Task 7: cross-species determinism + BC-vs-AR smoke ───────────────
+
+    #[test]
+    fn cross_species_is_byte_deterministic() {
+        let bc = crate::species::Species::load_from_file(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/species/brachyponera_chinensis.toml")).unwrap();
+        let ar = crate::species::Species::load_from_file(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/species/aphaenogaster_rudis.toml")).unwrap();
+        let env = crate::environment::Environment { world_width: 48, world_height: 48, ..Default::default() };
+        let build = || {
+            let global = bc.apply(&env);
+            Simulation::new_two_colony_cross_species(
+                global, bc.apply_colony(&env), ar.apply_colony(&env),
+                crate::topology::Topology::two_colony_arena((24, 24), (32, 32)), 999, 0, 2)
+        };
+        let mut a = build();
+        let mut b = build();
+        a.run(400);
+        b.run(400);
+        let key = |s: &Simulation| {
+            let mut ants: Vec<_> = s.ants.iter()
+                .map(|x| (x.id, x.colony_id, x.position.x.to_bits(), x.position.y.to_bits(), x.health.to_bits()))
+                .collect();
+            ants.sort_by_key(|t| (t.0, t.1));
+            ants
+        };
+        assert_eq!(key(&a), key(&b), "cross-species must be byte-deterministic across runs");
+    }
+
+    #[test]
+    fn bc_vs_ar_smoke_terminates_without_panic() {
+        // B. chinensis (predator, sting) vs A. rudis (myrmicine). Enable the
+        // cross-species levers so the displacement asymmetry can express, run to
+        // a tick cap, assert it terminates and produces no NaN.
+        let bc = crate::species::Species::load_from_file(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/species/brachyponera_chinensis.toml")).unwrap();
+        let ar = crate::species::Species::load_from_file(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/species/aphaenogaster_rudis.toml")).unwrap();
+        let env = crate::environment::Environment { world_width: 48, world_height: 48, ..Default::default() };
+        let global = bc.apply(&env);
+        let mut a = bc.apply_colony(&env);
+        // Turn on the terrain caps so a chokepoint matters (balance levers).
+        a.combat.max_simultaneous_attackers_tunnel = 2;
+        a.combat.usurp_corpse_to_killer_frac = 0.5;
+        let mut sim = Simulation::new_two_colony_cross_species(
+            global, a, ar.apply_colony(&env),
+            crate::topology::Topology::two_colony_arena((24, 24), (32, 32)), 7, 0, 2);
+        sim.run(2000);
+        for x in &sim.ants {
+            assert!(x.health.is_finite(), "no NaN health");
+        }
+        for c in &sim.colonies {
+            assert!(c.food_stored.is_finite());
+        }
+        // It either ended (a queen died) or is still in progress at the cap.
+        assert!(sim.tick <= 2000);
+    }
 }
