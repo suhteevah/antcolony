@@ -648,6 +648,10 @@ mod env_tests {
         // Raid mechanics armed on both colony configs.
         assert!(env.sim.colony_configs[0].combat.raid_underground_enabled);
         assert!(env.sim.colony_configs[1].combat.raid_underground_enabled);
+        // B7 reserve-wake armed: the idle alarm threshold must be lowered off its
+        // 1e9 neutral default, or underground defenders never wake (guards a revert).
+        assert!(env.sim.colony_configs[0].ant.underground_idle_alarm_threshold < 1.0);
+        assert!(env.sim.colony_configs[1].ant.underground_idle_alarm_threshold < 1.0);
         // Each queen is in her UG module at construction.
         for cid in [0u8, 1u8] {
             let ug = env.sim.colonies[cid as usize].underground_module.unwrap();
