@@ -88,6 +88,23 @@ fn main() -> Result<()> {
                 let mut env = MatchEnv::new_cross_species(sp_left, sp_right, seed);
                 env.max_ticks = max_ticks;
 
+                // ── Calibration-1 knobs ───────────────────────────────────────
+                // Inject chokepoint attacker-cap + predation on every match
+                // identically so results stay thread-count-independent.
+                // Field path: env.sim.colony_configs[i].combat.*
+                for i in 0..env.sim.colony_configs.len() {
+                    // Terrain-gated attacker cap (Champer & Schlenoff square→linear law).
+                    // Surface stays uncapped (255); tunnel and entrance are capped.
+                    env.sim.colony_configs[i].combat.max_simultaneous_attackers_open = 255;
+                    env.sim.colony_configs[i].combat.max_simultaneous_attackers_tunnel = 3;
+                    env.sim.colony_configs[i].combat.max_simultaneous_attackers_entrance = 1;
+                    // Predation corpse-loot: only fires when predates_ants == true
+                    // (gated in simulation.rs on predates_ants && frac > 0.0).
+                    if env.sim.colony_configs[i].predates_ants {
+                        env.sim.colony_configs[i].combat.usurp_corpse_to_killer_frac = 0.5;
+                    }
+                }
+
                 let mut left_brain = HeuristicBrain::new(5.0);
                 let mut right_brain = HeuristicBrain::new(5.0);
 
