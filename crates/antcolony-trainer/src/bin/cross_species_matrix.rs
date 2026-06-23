@@ -5,6 +5,18 @@
 //!
 //! Usage: cross_species_matrix [--species-dir assets/species] [--mpe 50] [--max-ticks 8000]
 //!
+//! # Parallelism
+//! All N×N ordered pairs are built into a flat Vec and processed in parallel
+//! via rayon. Each closure owns its own MatchEnv and HeuristicBrain instances
+//! (no shared mutable state across threads). Results are collected by index into
+//! a flat Vec<(usize, usize, f32)> and reassembled into the winrate matrix after
+//! the parallel join.
+//!
+//! # Determinism
+//! Per-match seeds are derived solely from `(ai, bi, m)` — identical to the
+//! sequential version — so results are bit-identical regardless of thread count.
+//! Verified via RAYON_NUM_THREADS=1 vs default.
+//!
 //! # Caste-ratio asymmetry note
 //! MatchEnv::new_cross_species sets colony 0 as AI-controlled (flip from
 //! new_ai_vs_ai). Both colonies are driven by HeuristicBrain which reads
@@ -20,6 +32,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use antcolony_sim::{AiBrain, HeuristicBrain, MatchStatus};
 use antcolony_trainer::env::MatchEnv;
+use rayon::prelude::*;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -47,19 +60,25 @@ fn main() -> Result<()> {
     let n = species.len();
     tracing::info!(n, mpe, max_ticks, "cross_species_matrix: loaded roster");
 
-    // winrate[a][b] = A's winrate vs B over `mpe` side-swapped matches.
-    // Self-matches are set to 0.5 (not played).
-    let mut winrate = vec![vec![0.0f32; n]; n];
+    // Build flat list of all ordered pairs (ai, bi), including self-pairs.
+    // Self-pairs are resolved to 0.5 without simulation inside the closure.
+    let pairs: Vec<(usize, usize)> = (0..n)
+        .flat_map(|ai| (0..n).map(move |bi| (ai, bi)))
+        .collect();
 
-    for ai in 0..n {
-        for bi in 0..n {
+    // Run all pairs in parallel. Each element returns (ai, bi, winrate).
+    // Determinism: seed is a pure function of (ai, bi, m) — no shared RNG.
+    // Each closure owns its own MatchEnv + HeuristicBrain (no &mut crossing threads).
+    let flat_results: Vec<(usize, usize, f32)> = pairs
+        .into_par_iter()
+        .map(|(ai, bi)| {
             if ai == bi {
-                winrate[ai][bi] = 0.5;
-                continue;
+                return (ai, bi, 0.5f32);
             }
             let mut a_wins = 0.0f32;
             for m in 0..mpe {
                 // Side-swap on parity to cancel first-move/topology bias.
+                // Seed is deterministic: identical to sequential version.
                 let seed = ((ai as u64) << 40) ^ ((bi as u64) << 24) ^ (m as u64);
                 let (sp_left, sp_right, left_is_a) = if m % 2 == 0 {
                     (&species[ai], &species[bi], true)
@@ -82,8 +101,28 @@ fn main() -> Result<()> {
                     a_wins += 1.0;
                 }
             }
-            winrate[ai][bi] = a_wins / mpe as f32;
-        }
+            let wr = a_wins / mpe as f32;
+            tracing::debug!(
+                ai,
+                bi,
+                species_a = %species[ai].id,
+                species_b = %species[bi].id,
+                winrate = wr,
+                "pair complete"
+            );
+            (ai, bi, wr)
+        })
+        .collect();
+
+    // Reassemble into winrate matrix. The collect() above joins all threads;
+    // results arrive in any order but are indexed by (ai, bi).
+    let mut winrate = vec![vec![0.0f32; n]; n];
+    for (ai, bi, wr) in flat_results {
+        winrate[ai][bi] = wr;
+    }
+
+    // Log one line per row for progress visibility (mirrors sequential "row complete").
+    for ai in 0..n {
         tracing::info!(species = %species[ai].id, ai, "row complete");
     }
 
@@ -208,5 +247,180 @@ fn run_to_end(
         MatchStatus::Won { winner: 0, .. } => Outcome::LeftWin,
         MatchStatus::Won { winner: 1, .. } => Outcome::RightWin,
         _ => Outcome::Draw,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use antcolony_sim::{AiBrain, HeuristicBrain, MatchStatus};
+    use antcolony_trainer::env::MatchEnv;
+    use rayon::prelude::*;
+
+    enum Outcome {
+        LeftWin,
+        RightWin,
+        Draw,
+    }
+
+    fn run_to_end_t(
+        env: &mut MatchEnv,
+        left: &mut dyn AiBrain,
+        right: &mut dyn AiBrain,
+    ) -> Outcome {
+        loop {
+            let sl = env.observe(0);
+            let sr = env.observe(1);
+            let (Some(sl), Some(sr)) = (sl, sr) else {
+                break;
+            };
+            let al = left.decide(&sl);
+            let ar = right.decide(&sr);
+            let step = env.step(&al, &ar);
+            if step.done || env.sim.tick >= env.max_ticks {
+                break;
+            }
+        }
+        match env.sim.match_status() {
+            MatchStatus::Won { winner: 0, .. } => Outcome::LeftWin,
+            MatchStatus::Won { winner: 1, .. } => Outcome::RightWin,
+            _ => Outcome::Draw,
+        }
+    }
+
+    fn compute_matrix_sequential(
+        species: &[antcolony_sim::species::SpeciesConfig],
+        mpe: usize,
+        max_ticks: u64,
+    ) -> Vec<Vec<f32>> {
+        let n = species.len();
+        let mut winrate = vec![vec![0.0f32; n]; n];
+        for ai in 0..n {
+            for bi in 0..n {
+                if ai == bi {
+                    winrate[ai][bi] = 0.5;
+                    continue;
+                }
+                let mut a_wins = 0.0f32;
+                for m in 0..mpe {
+                    let seed = ((ai as u64) << 40) ^ ((bi as u64) << 24) ^ (m as u64);
+                    let (sp_left, sp_right, left_is_a) = if m % 2 == 0 {
+                        (&species[ai], &species[bi], true)
+                    } else {
+                        (&species[bi], &species[ai], false)
+                    };
+                    let mut env = MatchEnv::new_cross_species(sp_left, sp_right, seed);
+                    env.max_ticks = max_ticks;
+                    let mut lb = HeuristicBrain::new(5.0);
+                    let mut rb = HeuristicBrain::new(5.0);
+                    let outcome = run_to_end_t(&mut env, &mut lb, &mut rb);
+                    let a_won = match outcome {
+                        Outcome::LeftWin => left_is_a,
+                        Outcome::RightWin => !left_is_a,
+                        Outcome::Draw => false,
+                    };
+                    if a_won {
+                        a_wins += 1.0;
+                    }
+                }
+                winrate[ai][bi] = a_wins / mpe as f32;
+            }
+        }
+        winrate
+    }
+
+    fn compute_matrix_parallel(
+        species: &[antcolony_sim::species::SpeciesConfig],
+        mpe: usize,
+        max_ticks: u64,
+    ) -> Vec<Vec<f32>> {
+        let n = species.len();
+        let pairs: Vec<(usize, usize)> = (0..n)
+            .flat_map(|ai| (0..n).map(move |bi| (ai, bi)))
+            .collect();
+
+        let flat_results: Vec<(usize, usize, f32)> = pairs
+            .into_par_iter()
+            .map(|(ai, bi)| {
+                if ai == bi {
+                    return (ai, bi, 0.5f32);
+                }
+                let mut a_wins = 0.0f32;
+                for m in 0..mpe {
+                    let seed = ((ai as u64) << 40) ^ ((bi as u64) << 24) ^ (m as u64);
+                    let (sp_left, sp_right, left_is_a) = if m % 2 == 0 {
+                        (&species[ai], &species[bi], true)
+                    } else {
+                        (&species[bi], &species[ai], false)
+                    };
+                    let mut env = MatchEnv::new_cross_species(sp_left, sp_right, seed);
+                    env.max_ticks = max_ticks;
+                    let mut lb = HeuristicBrain::new(5.0);
+                    let mut rb = HeuristicBrain::new(5.0);
+                    let outcome = run_to_end_t(&mut env, &mut lb, &mut rb);
+                    let a_won = match outcome {
+                        Outcome::LeftWin => left_is_a,
+                        Outcome::RightWin => !left_is_a,
+                        Outcome::Draw => false,
+                    };
+                    if a_won {
+                        a_wins += 1.0;
+                    }
+                }
+                (ai, bi, a_wins / mpe as f32)
+            })
+            .collect();
+
+        let mut winrate = vec![vec![0.0f32; n]; n];
+        for (ai, bi, wr) in flat_results {
+            winrate[ai][bi] = wr;
+        }
+        winrate
+    }
+
+    /// Confirms parallel == sequential for small roster / small mpe.
+    /// Determinism comes from per-(ai,bi,m) seeds, not thread scheduling,
+    /// so results are bit-identical at any RAYON_NUM_THREADS value.
+    #[test]
+    fn parallel_equals_sequential() {
+        let species_dir = PathBuf::from(
+            std::env::var("ANTCOLONY_SPECIES_DIR")
+                .unwrap_or_else(|_| "../../assets/species".to_owned()),
+        );
+        let species = match antcolony_sim::species::load_species_dir(&species_dir) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "parallel_equals_sequential: skipping — could not load species dir \
+                     {:?}: {}",
+                    species_dir, e
+                );
+                return;
+            }
+        };
+
+        let mpe = 4;
+        let max_ticks = 400;
+
+        let seq = compute_matrix_sequential(&species, mpe, max_ticks);
+        let par = compute_matrix_parallel(&species, mpe, max_ticks);
+
+        assert_eq!(
+            seq.len(),
+            par.len(),
+            "matrix row count mismatch: seq={} par={}",
+            seq.len(),
+            par.len()
+        );
+        for (ai, (row_s, row_p)) in seq.iter().zip(par.iter()).enumerate() {
+            for (bi, (vs, vp)) in row_s.iter().zip(row_p.iter()).enumerate() {
+                assert_eq!(
+                    vs.to_bits(),
+                    vp.to_bits(),
+                    "bit mismatch at [{ai}][{bi}]: seq={vs} par={vp}"
+                );
+            }
+        }
     }
 }

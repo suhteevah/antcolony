@@ -29,3 +29,7 @@ path = "src/bin/ppo_train.rs"
 [[bin]]
 name = "tournament"
 path = "src/bin/tournament.rs"
+
+[[bin]]
+name = "cross_species_matrix"
+path = "src/bin/cross_species_matrix.rs"
