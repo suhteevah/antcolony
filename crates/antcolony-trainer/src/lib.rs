@@ -39,7 +39,7 @@ pub use joint_ppo::{JointPpoConfig, JointPpoTrainer, JointRollout, JointLossStat
 pub use reward::{ColonyMetrics, RewardConfig, compute_step_reward};
 pub use hierarchical::obs_to_tensors::{rich_to_tensors, ant_obs_to_tensors, rich_batch_to_tensors};
 
-pub use eval::{EvalReport, evaluate_hac};
+pub use eval::{EvalReport, evaluate_hac, evaluate_hac_cross_species};
 pub use phase3::{Phase3Config, run_phase3, Phase3Report};
 pub use backend::{Backend, CandleBackend};
 pub use policy::ActorCritic;

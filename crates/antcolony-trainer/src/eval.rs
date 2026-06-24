@@ -8,7 +8,7 @@ use anyhow::Result;
 use candle_core::Device;
 
 use antcolony_sim::ai::observation::AntModulators;
-use antcolony_sim::MatchStatus;
+use antcolony_sim::{AiBrain, HeuristicBrain, MatchStatus};
 
 use crate::env::{MatchEnv, DECISION_CADENCE};
 use crate::hierarchical::obs_to_tensors::{ant_obs_to_tensors, rich_to_tensors};
@@ -491,20 +491,32 @@ pub fn play_pair(
 ) -> Result<(f32, f32, MatchEnd)> {
     let mut env = MatchEnv::new(seed);
     env.max_ticks = max_ticks;
+    play_pair_in(left, right, &mut env, device)
+}
+
+/// Like `play_pair` but drives a CALLER-SUPPLIED env, so the match can run in any
+/// arena (e.g. a cross-species nest arena) rather than the default same-species
+/// `MatchEnv::new`. Identical drive order; `env.max_ticks` must be set by caller.
+pub fn play_pair_in(
+    left: &mut crate::tournament::Controller,
+    right: &mut crate::tournament::Controller,
+    env: &mut MatchEnv,
+    device: &Device,
+) -> Result<(f32, f32, MatchEnd)> {
     loop {
-        let cl = commander_phase(left, 0u8, &mut env, device)?;
+        let cl = commander_phase(left, 0u8, env, device)?;
         if matches!(cl, CommanderResult::Gone) {
             break;
         }
-        let cr = commander_phase(right, 1u8, &mut env, device)?;
+        let cr = commander_phase(right, 1u8, env, device)?;
         if matches!(cr, CommanderResult::Gone) {
             break;
         }
 
         let mut done = false;
         for _ in 0..DECISION_CADENCE {
-            ant_phase(left, 0u8, &cl, &mut env, device)?;
-            ant_phase(right, 1u8, &cr, &mut env, device)?;
+            ant_phase(left, 0u8, &cl, env, device)?;
+            ant_phase(right, 1u8, &cr, env, device)?;
             env.sim.tick();
             if !matches!(env.sim.match_status(), MatchStatus::InProgress)
                 || env.sim.tick >= env.max_ticks
@@ -521,6 +533,146 @@ pub fn play_pair(
     let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0) as f32;
     let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
     Ok(score_match(env.sim.match_status(), lw, rw))
+}
+
+/// Chokepoint attacker-cap + predation + cyclic-clade knobs, applied IDENTICALLY
+/// to `cross_species_matrix` / `eval_mlp_vs_heuristic` so a trained HAC is scored
+/// in the exact arena it trained in. (`venom_cycle` is read from GLOBAL combat.)
+fn apply_cross_species_knobs(env: &mut MatchEnv, venom_cycle: f32) {
+    env.sim.config.combat.venom_cycle_strength = venom_cycle;
+    for i in 0..env.sim.colony_configs.len() {
+        env.sim.colony_configs[i].combat.max_simultaneous_attackers_open = 255;
+        env.sim.colony_configs[i].combat.max_simultaneous_attackers_tunnel = 3;
+        env.sim.colony_configs[i].combat.max_simultaneous_attackers_entrance = 1;
+        if env.sim.colony_configs[i].predates_ants {
+            env.sim.colony_configs[i].combat.usurp_corpse_to_killer_frac = 0.5;
+        }
+    }
+}
+
+/// Drive one cross-species match: the HAC controls `hac_side`, `brain` the other.
+/// Mirrors `play_match`'s commander+ant inference but parameterized by side.
+fn cross_match_hac(
+    hac: &HierarchicalActorCritic,
+    device: &Device,
+    env: &mut MatchEnv,
+    hac_side: u8,
+    brain: &mut dyn AiBrain,
+) -> Result<MatchEnd> {
+    let opp_side = 1 - hac_side;
+    loop {
+        let rich = match env.sim.colony_rich_observation(hac_side) {
+            Some(r) => r,
+            None => break,
+        };
+        let (s, p, h) = rich_to_tensors(&rich, device)?;
+        let (action, intent, _v) = hac.mean_commander_action(&s, &p, &h)?;
+        let av: Vec<f32> = action.flatten_all()?.to_vec1()?;
+        let dec = antcolony_sim::AiDecision {
+            caste_ratio_worker: av[0], caste_ratio_soldier: av[1], caste_ratio_breeder: av[2],
+            forage_weight: av[3], dig_weight: av[4], nurse_weight: av[5], research_choice: None,
+        };
+        env.sim.apply_ai_decision(hac_side, &dec);
+        let iv: Vec<f32> = intent.flatten_all()?.to_vec1()?;
+        let mut intent_arr = [0.0f32; 64];
+        intent_arr.copy_from_slice(&iv);
+        env.sim.apply_commander_intent(hac_side, &intent_arr);
+        if let Some(sr) = env.sim.colony_ai_state(opp_side) {
+            let dr = brain.decide(&sr);
+            env.sim.apply_ai_decision(opp_side, &dr);
+        }
+        let mut done = false;
+        for _ in 0..DECISION_CADENCE {
+            let obs = env.sim.per_ant_observations(hac_side);
+            if !obs.is_empty() {
+                let (cone, internal, intent_b) = ant_obs_to_tensors(&obs, &intent, device)?;
+                let mods_t = hac.mean_ant_modulator(&cone, &internal, &intent_b)?;
+                let flat: Vec<f32> = mods_t.flatten_all()?.to_vec1()?;
+                let mut mods = Vec::with_capacity(obs.len());
+                let mut ids = Vec::with_capacity(obs.len());
+                for (k, o) in obs.iter().enumerate() {
+                    let off = k * 5;
+                    mods.push(AntModulators {
+                        alpha_mult: flat[off], beta_mult: flat[off + 1], exploration_mod: flat[off + 2],
+                        deposit_mult: flat[off + 3], state_bias: flat[off + 4],
+                    });
+                    ids.push(o.ant_id);
+                }
+                env.sim.apply_ant_modulators(hac_side, &mods, &ids);
+            }
+            env.sim.tick();
+            if !matches!(env.sim.match_status(), MatchStatus::InProgress)
+                || env.sim.tick >= env.max_ticks
+            {
+                done = true;
+                break;
+            }
+        }
+        if done {
+            break;
+        }
+    }
+    let lw = env.sim.colonies.first().map(|c| c.population.workers).unwrap_or(0) as f32;
+    let rw = env.sim.colonies.get(1).map(|c| c.population.workers).unwrap_or(0) as f32;
+    let (_, _, end) = score_match(env.sim.match_status(), lw, rw);
+    Ok(end)
+}
+
+/// Cross-species win-matrix of a trained HAC vs `HeuristicBrain`. For every
+/// ordered (hac_species `ai`, heur_species `bi`) pair, play `mpe` side-swapped
+/// matches in the cross-species (nest) arena with `venom_cycle` armed; record the
+/// HAC's DECISIVE winrate (a Won by the HAC's physical colony; draws/timeouts =
+/// not-won, matching `eval_mlp_vs_heuristic`). Returns the N×N winrate matrix
+/// (rows: HAC plays; cols: heuristic plays). Parallel over cells (shares `&hac`).
+pub fn evaluate_hac_cross_species(
+    hac: &HierarchicalActorCritic,
+    device: &Device,
+    species: &[antcolony_sim::species::Species],
+    mpe: usize,
+    max_ticks: u64,
+    nest: bool,
+    venom_cycle: f32,
+) -> Result<Vec<Vec<f32>>> {
+    use rayon::prelude::*;
+    let n = species.len();
+    let pairs: Vec<(usize, usize)> =
+        (0..n).flat_map(|ai| (0..n).map(move |bi| (ai, bi))).collect();
+    let flat: Vec<(usize, usize, f32)> = pairs
+        .par_iter()
+        .map(|&(ai, bi)| -> Result<(usize, usize, f32)> {
+            let mut hac_wins = 0.0f32;
+            for m in 0..mpe {
+                let seed = ((ai as u64) << 40) ^ ((bi as u64) << 24) ^ (m as u64);
+                // Side-swap: even → HAC is colony 0 (species ai), odd → colony 1.
+                let hac_side: u8 = if m % 2 == 0 { 0 } else { 1 };
+                let (sp0, sp1) = if hac_side == 0 {
+                    (&species[ai], &species[bi])
+                } else {
+                    (&species[bi], &species[ai])
+                };
+                let mut env = if nest {
+                    MatchEnv::new_cross_species_nest_arena(sp0, sp1, seed)
+                } else {
+                    MatchEnv::new_cross_species_arena(sp0, sp1, seed)
+                };
+                env.max_ticks = max_ticks;
+                apply_cross_species_knobs(&mut env, venom_cycle);
+                let mut brain = HeuristicBrain::new(5.0);
+                let end = cross_match_hac(hac, device, &mut env, hac_side, &mut brain)?;
+                let won = (matches!(end, MatchEnd::WonLeft) && hac_side == 0)
+                    || (matches!(end, MatchEnd::WonRight) && hac_side == 1);
+                if won {
+                    hac_wins += 1.0;
+                }
+            }
+            Ok((ai, bi, hac_wins / mpe as f32))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut wr = vec![vec![0.0f32; n]; n];
+    for (ai, bi, v) in flat {
+        wr[ai][bi] = v;
+    }
+    Ok(wr)
 }
 
 /// Combined head-to-head win-rate of checkpoint A versus checkpoint B.

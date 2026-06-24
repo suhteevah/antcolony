@@ -47,11 +47,23 @@ This document contains everything needed to implement the ant colony simulation 
 - **▶ RUNNING NOW:** `bench/hac-xspecies-venom3/` (PID 1854 at handoff; 100 iters,
   8 envs, 16 cycles, cross-species nest venom 3.0; ~2-3h CPU on kokonoe). Read
   `train.log` — does the bench curve keep climbing?
-- **▶ REMAINING for the cross-species VERDICT:** the phase3 eval is the SAME-species
-  7-archetype bench (proxy). Need a **cross-species HAC eval** (HAC saves
-  safetensors; `eval_mlp_vs_heuristic` loads MlpBrain JSON) — adapt the
-  cross_species_matrix/eval to drive colony 0 with a loaded HAC (`load_frozen_hac`)
-  vs HeuristicBrain across the species roster. Buildable while the run trains.
+- **✅ Cross-species HAC eval BUILT** (`eval.rs::evaluate_hac_cross_species` +
+  `play_pair_in` env-injecting refactor + bin `eval_hac_vs_heuristic`): loads a HAC
+  safetensors via `load_frozen_hac`, plays it (side-swapped) vs HeuristicBrain
+  across the N×N species grid in the nest+venom arena, reports overall + diagonal.
+- **▶ VERDICT (NEGATIVE, preliminary): the HAC ALSO plateaus at heuristic parity
+  in the cross-species meta.** The 100-iter run's `hac_best` (iter20) scores
+  **OVERALL 0.5025 / DIAGONAL 0.550** vs heuristic (mpe=4, noisy) — dead-even,
+  only marginally above the flat brain (0.502 / 0.51). The capacity lever did NOT
+  crack the intransitive meta either. CAVEATS making this PRELIMINARY: (a) mpe=4 is
+  noisy; a denoised checkpoint sweep (hac_best/iter40/iter60 @ mpe=8) is in
+  `scratch/hac_xs_sweep.txt`. (b) hac_best = the SAME-species-bench peak (iter20),
+  which may not be the cross-species-best. (c) **the run UNDERPERFORMED even on the
+  same-species bench** — curve peaked 0.676@iter20 then declined to 0.519@iter80
+  (vs the 0.857 SOTA), so 100 iters of cross-species curriculum is weak/short;
+  more iters + grad-clip-tuning, or the deferred obs-normalization (means may be
+  growing and degrading quality short of a full freeze), could lift it. The
+  intransitive meta looks genuinely hard for BOTH architectures at this budget.
 - Plan: `docs/superpowers/plans/2026-06-24-hac-cross-species.md` (tasks 1-2
   obviated by the de-risking; task 3 done; tasks 5-7 = eval + run remain).
 
