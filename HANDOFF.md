@@ -14,6 +14,30 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## ⮕ SESSION HANDOFF — 2026-06-23
+
+**Project Status:** 🟢 **UNDERGROUND NEST-LAYER ARENA + RAID built, opus-reviewed (merge-ready, byte-identical default HOLDS), and MERGED to `main` (`38c43fe`).** The 2nd arena expansion. Turns a deep-queen nest from an *unreachable bunker* into a *contested siege* — a small defender survives **8.3× longer** behind the tunnel chokepoint (flat=wiped@188 vs nest=survives 1555, with 43 raiders actually descending). This is the biology-grounded lever (Champer & Schlenoff square→linear chokepoint) meant to break the strict cross-species dominance hierarchy into **intransitivity**.
+
+**What Was Done (built via SDD on `feat/arena-nest-layer`, 17 commits):**
+- **T1–T5 + brood fix:** `QueenDepth` + `Topology::two_colony_nest_arena` (5-module: 3 surface + 2 `UndergroundNest`, deep `QueenChamber` behind entrance + L-bend tunnel); `Simulation::new_two_colony_nest_arena` (relocates queens deep, records `underground_module`); raid descent (gated `combat.raid_underground_enabled`); B7 underground lazy-worker alarm wake (gated `ant.underground_idle_alarm_threshold`, default 1e9); nest-arena newborns hatch in the UG.
+- **T6 + global-config fix:** `MatchEnv::new_cross_species_nest_arena` + `--nest` on `cross_species_matrix`. **Found+fixed a latent T6 inert-gap:** the nest flags were set per-colony but `sense_and_decide`/the descent arm read `self.config` (GLOBAL) → the matrix's mechanics were dead. Now set on `global`.
+- **T7 inversion test** (`tests/nest_arena.rs`): the defensive-inversion + tunnel-cap demos. Engagement-instrumented (peak enemy in defender UG).
+- **RS1 raid-seeking** (`is_raider` + `raid_seek_tick` + `enemy_scent_heading`, colony_scent gradient ascent): built + opus-reviewed, but **investigation proved it's NOT the lever** — the normal swarm already self-delivers to the enemy nest (109 attackers; only 1/12 steered raiders arrive). Kept as an inert-by-default primitive.
+- **RS3 descent chokepoint** (`combat.raid_descent_per_tick`): 0=legacy exact-cell descent (T4 preserved); >0=any non-queen enemy within radius-1 of the entrance descends, capped N/tick/entrance (the real lever — turns the entrance into a trickle bottleneck).
+- **RS4 UG garrison** (`ant.nest_garrison_count`): the nest ctor relocates N initial workers per colony into the UG so the choke has defenders (initial workers otherwise all surface-spawn).
+- **Verification:** full sim suite GREEN (210 lib + integration, 300-tick `to_bits` byte-determinism guard, T4 legacy-descent tests); trainer GREEN; opus whole-branch review = **merge-ready** (byte-identical default verified field-by-field, no Critical/Important).
+
+**What's Next / RUNNING NOW:**
+1. **▶ Task 8 experiment RUNNING in background** (`scratch/run_task8.sh`, by-id task): the cross-species win-matrix at **mpe=50, max-ticks=4000** on BOTH arenas → `scratch/xspecies_surface_mpe50_v2.txt` + `scratch/xspecies_nest_mpe50.txt`. **The verdict question:** does the nest arena introduce **intransitive 3-cycles** / break the surface baseline's degeneracy (formica_rufa all-win, temnothorax all-lose, 0 cycles)? Pilot (mpe=2) already showed formica_rufa LOSING its all-win status under --nest. **Read both files' `# intransitive 3-cycles:` + degenerate-row warnings when the run lands.**
+2. **Watch for the SYMMETRIC-QUEEN-DEPTH null risk:** both colonies have protected deep queens → many matches may DRAW (neither cracks the other's nest) → mushy matrix. If so, that's a reportable finding; consider asymmetric depth or a population tie-breaker on timeout.
+3. **Follow-up Minors (non-blocking, from the opus review):** (#1) garrison can leak back to surface via the own-colony ascent arm — place garrison in an adjacent UndergroundNest/tunnel cell (cap 3), NOT the entrance cell and NOT the QueenChamber (chamber terrain = open cap 255). Fixing strengthens the defender → may matter for the cycle signal. (#4) raid-seeking plan-doc signature drift. (#5) `default_underground_idle_alarm_pub` visibility-comment nit.
+
+**Notes for Next Session:**
+- The nest arena's mechanics are read from the **GLOBAL** `SimConfig` (`raid_underground_enabled`, `raid_descent_per_tick`, `underground_idle_alarm_threshold`) — set them on `global`, not per-colony. Per-colony: the terrain caps (`max_simultaneous_attackers_*`, read per-attacker in combat) + `nest_garrison_count` (read by the ctor).
+- Biology: nest defense / chokepoint = `docs/biology/interspecific/{02,04,05}-*.md`. Plan/ledger: `docs/superpowers/plans/2026-06-23-{arena-nest-layer,raid-seeking}.md` + `.superpowers/sdd/progress.md` (full reframe trail).
+
+---
+
 ## ⮕ SESSION HANDOFF — 2026-06-22
 
 **Project Status:** 🟢 **Ladder League built + merged to `main` (4bf0ab9); cnc CUDA bin built; run STAGED, launch DEFERRED to Matt on a production gate.** Also ran the PvP tournament (2026-06-21) which justified this whole feature.
