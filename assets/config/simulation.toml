@@ -42,3 +42,25 @@ worker_attack = 1.0
 soldier_attack = 3.0
 worker_health = 10.0
 soldier_health = 25.0
+
+# ── Cross-species / arena levers (ALL OFF by default — tune, then flip on) ──
+# These are intentionally inert at these values so existing sims stay
+# byte-identical. Raise them only when we explicitly enable an arena experiment.
+
+# Intransitivity dial: cyclic clade type-chart strength (rock-paper-scissors over
+# the 4 ant subfamilies). 0.0 = OFF (legacy "armed-clade-beats-naive" matrix,
+# transitive). >0 = each clade deals ×strength vs the clade it beats, ×1/strength
+# vs the clade that beats it. Sweep result (10-species matrix): 0→0 cycles,
+# 2.0→24, 3.0→45, 5.0→60 (fully non-dominated). Sweet spot ≈ 2–3 (type AND stats
+# both matter). Leave at 0.0 until we say go.
+venom_cycle_strength = 0.0
+
+# Underground nest-layer levers (the nest arena sets these; 0/false = OFF).
+# raid_underground_enabled: let enemy fighters descend an enemy nest entrance.
+raid_underground_enabled = false
+# raid_descent_per_tick: 0 = legacy exact-cell descent; >0 = chokepoint trickle
+# (any enemy within 1 cell of the entrance descends, capped N/tick/entrance).
+raid_descent_per_tick = 0
+# tunnel_cap_body_size_ref_mm: 0 = OFF; >0 scales the tunnel/entrance attacker
+# cap by defender body size / ref (small species = tighter fortress).
+tunnel_cap_body_size_ref_mm = 0.0

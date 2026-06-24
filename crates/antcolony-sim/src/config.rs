@@ -649,8 +649,29 @@ mod tests {
         assert_eq!(cfg.combat.raid_party_size, 0);
         assert_eq!(cfg.combat.raid_descent_per_tick, 0);
         assert_eq!(cfg.combat.tunnel_cap_body_size_ref_mm, 0.0);
+        assert_eq!(cfg.combat.venom_cycle_strength, 0.0);
         assert_eq!(cfg.ant.speed_worker, 3.0);
         assert!(cfg.ant.underground_idle_alarm_threshold >= 1.0e8);
+    }
+
+    #[test]
+    fn venom_cycle_strength_round_trips_from_toml() {
+        // The dial is a real tunable config knob (not flag-only): a TOML value parses.
+        let toml = "[combat]\nvenom_cycle_strength = 2.5\n";
+        let cfg = SimConfig::load_from_str(toml).expect("parse");
+        assert_eq!(cfg.combat.venom_cycle_strength, 2.5);
+    }
+
+    #[test]
+    fn canonical_simulation_toml_parses_with_arena_levers_off() {
+        // Guards assets/config/simulation.toml: it must parse and every
+        // cross-species/arena lever must be OFF (the "tune before we say go" state).
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/simulation.toml");
+        let cfg = SimConfig::load_from_file(path).expect("canonical simulation.toml must parse");
+        assert_eq!(cfg.combat.venom_cycle_strength, 0.0, "venom cycle must ship OFF");
+        assert!(!cfg.combat.raid_underground_enabled, "raid descent must ship OFF");
+        assert_eq!(cfg.combat.raid_descent_per_tick, 0, "descent chokepoint must ship OFF");
+        assert_eq!(cfg.combat.tunnel_cap_body_size_ref_mm, 0.0, "body-size cap must ship OFF");
     }
 
     #[test]
