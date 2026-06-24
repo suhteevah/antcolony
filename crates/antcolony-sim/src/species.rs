@@ -333,6 +333,12 @@ impl Species {
             // digs faster. Compounds with the per-tile substrate rate
             // already applied in `dig_tick`.
             species_dig_multiplier: self.substrate.dig_speed_multiplier,
+            // Arena nest layer: keep inert default — species TOMLs don't
+            // set this yet; the nest-arena feature will wire it in a later task.
+            underground_idle_alarm_threshold: crate::config::default_underground_idle_alarm_pub(),
+            // Arena nest layer: no garrison by default — the nest arena sets
+            // this per-colony at construction, not via species TOMLs.
+            nest_garrison_count: 0,
         };
 
         // queen_egg_rate is fraction-of-egg-per-tick.

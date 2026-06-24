@@ -45,6 +45,7 @@ fn main() -> Result<()> {
     let mut species_dir = PathBuf::from("assets/species");
     let mut mpe = 50usize;
     let mut max_ticks = 8000u64;
+    let mut nest = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut next = || args.next().expect("flag needs a value");
@@ -52,6 +53,7 @@ fn main() -> Result<()> {
             "--species-dir" => species_dir = PathBuf::from(next()),
             "--mpe" => mpe = next().parse()?,
             "--max-ticks" => max_ticks = next().parse()?,
+            "--nest" => nest = true,
             other => tracing::warn!(arg = other, "unknown flag, ignoring"),
         }
     }
@@ -85,13 +87,18 @@ fn main() -> Result<()> {
                 } else {
                     (&species[bi], &species[ai], false)
                 };
-                // ── Calibration-2: chokepoint arena ──────────────────────────
-                // Route every match through the three-module arena so the
-                // terrain_attacker_cap fires on NestEntrance tiles (entrance=1)
-                // and tunnel cells (tunnel=3).  new_cross_species (flat bench)
-                // is kept as-is for training; only the harness uses the arena.
-                let mut env = MatchEnv::new_cross_species_arena(sp_left, sp_right, seed);
+                // ── Arena selection ──────────────────────────────────────────
+                // Default: three-module chokepoint arena (terrain_attacker_cap
+                // fires on NestEntrance=1 / tunnel=3 cells).
+                // With --nest: five-module underground nest arena (raid descent
+                // + UG lazy-worker reserve mechanics engaged).
+                let mut env = if nest {
+                    MatchEnv::new_cross_species_nest_arena(sp_left, sp_right, seed)
+                } else {
+                    MatchEnv::new_cross_species_arena(sp_left, sp_right, seed)
+                };
                 env.max_ticks = max_ticks;
+                tracing::debug!(nest, "arena selected for match");
 
                 // Inject chokepoint attacker-cap + predation identically on
                 // every match so results remain thread-count-independent.
@@ -209,6 +216,7 @@ fn main() -> Result<()> {
         })
         .collect();
 
+    println!("# arena: {}", if nest { "underground-nest (5-module)" } else { "flat chokepoint (3-module)" });
     println!("# intransitive 3-cycles: {}", cycles);
     if !all_win_rows.is_empty() {
         println!(

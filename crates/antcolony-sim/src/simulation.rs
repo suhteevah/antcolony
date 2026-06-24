@@ -372,6 +372,130 @@ impl Simulation {
         }
     }
 
+    /// Cross-species **nest arena** constructor. Reuses
+    /// `new_two_colony_cross_species` for the entire colony/ant/spawn build
+    /// (byte-identical to a cross-species match on the same surface modules),
+    /// then relocates each queen into her deep `UndergroundNest` `QueenChamber`
+    /// and records the underground module on the colony so raid pathing + queen
+    /// economy can find it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_two_colony_nest_arena(
+        world_pheromone_hazards: SimConfig,
+        cfg_black: crate::config::ColonySimConfig,
+        cfg_red: crate::config::ColonySimConfig,
+        topology: Topology,
+        seed: u64,
+        nest_black_module: ModuleId,
+        nest_red_module: ModuleId,
+        black_underground: ModuleId,
+        red_underground: ModuleId,
+    ) -> Self {
+        // Build the full cross-species sim on the (5-module) nest topology.
+        let mut sim = Self::new_two_colony_cross_species(
+            world_pheromone_hazards,
+            cfg_black,
+            cfg_red,
+            topology,
+            seed,
+            nest_black_module,
+            nest_red_module,
+        );
+
+        // Record each colony's underground module.
+        if let Some(c) = sim.colonies.iter_mut().find(|c| c.id == 0) {
+            c.underground_module = Some(black_underground);
+        }
+        if let Some(c) = sim.colonies.iter_mut().find(|c| c.id == 1) {
+            c.underground_module = Some(red_underground);
+        }
+
+        // Relocate each queen into the deep QueenChamber of her UG module.
+        // Iterate ants in index order (determinism); find the first QueenChamber
+        // cell in the module and stand the queen on its world center.
+        for (cid, ug) in [(0u8, black_underground), (1u8, red_underground)] {
+            let Some(qcell) = sim.queen_chamber_cell(ug) else {
+                tracing::warn!(colony = cid, ug, "nest arena: no QueenChamber cell found; queen left on surface");
+                continue;
+            };
+            let world_pos = sim.topology.module(ug).world.grid_to_world(qcell.0, qcell.1);
+            for a in sim.ants.iter_mut() {
+                if a.colony_id == cid && matches!(a.caste, AntCaste::Queen) {
+                    tracing::info!(colony = cid, ant = a.id, ug, cell = ?qcell, "nest arena: queen relocated deep");
+                    a.module_id = ug;
+                    a.position = world_pos;
+                }
+            }
+            // Keep colony.nest_entrance_positions consistent with the UG entrance
+            // so any code reading it (obs/logging) sees the defended choke.
+            if let Some((ex, ey)) = sim.topology.module(ug).world.find_nest_entrance(cid) {
+                let epos = sim.topology.module(ug).world.grid_to_world(ex, ey);
+                if let Some(c) = sim.colonies.iter_mut().find(|c| c.id == cid) {
+                    c.nest_entrance_positions = vec![epos];
+                }
+            }
+        }
+
+        // Garrison: station each colony's configured number of initial workers
+        // in its UG (relocated off the surface) so the deep queen has defenders
+        // holding the tunnels. Default `nest_garrison_count = 0` ⇒ none (legacy).
+        // Symmetric: each colony defends its own nest. Place them on the UG
+        // entrance landing cell — where descending raiders arrive — so the B7
+        // wake + tunnel cap let a few hold many.
+        for (cid, ug) in [(0u8, black_underground), (1u8, red_underground)] {
+            let garrison = sim
+                .colony_configs
+                .get(cid as usize)
+                .map(|c| c.ant.nest_garrison_count)
+                .unwrap_or(0);
+            if garrison == 0 {
+                continue;
+            }
+            let Some((ex, ey)) = sim.topology.module(ug).world.find_nest_entrance(cid) else {
+                tracing::warn!(colony = cid, ug, "nest arena: no UG entrance; garrison skipped");
+                continue;
+            };
+            let landing = sim.topology.module(ug).world.grid_to_world(ex, ey);
+            let mut placed = 0u32;
+            for a in sim.ants.iter_mut() {
+                if placed >= garrison {
+                    break;
+                }
+                if a.colony_id == cid && !matches!(a.caste, AntCaste::Queen) {
+                    a.module_id = ug;
+                    a.position = landing;
+                    placed += 1;
+                }
+            }
+            tracing::info!(colony = cid, ug, garrison = placed, "nest arena: UG garrison stationed");
+        }
+
+        tracing::info!(
+            modules = sim.topology.modules.len(),
+            tubes = sim.topology.tubes.len(),
+            ants = sim.ants.len(),
+            black_ug = black_underground,
+            red_ug = red_underground,
+            "Simulation::new_two_colony_nest_arena (queens relocated deep)"
+        );
+        sim
+    }
+
+    /// First `QueenChamber` grid cell in a module, scanned in row-major order
+    /// (deterministic). Used to place the queen at nest-arena construction.
+    fn queen_chamber_cell(&self, module: ModuleId) -> Option<(usize, usize)> {
+        use crate::world::{ChamberType, Terrain};
+        let m = self.topology.try_module(module)?;
+        let (w, h) = (m.width(), m.height());
+        for y in 0..h {
+            for x in 0..w {
+                if m.world.get(x, y) == Terrain::Chamber(ChamberType::QueenChamber) {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    }
+
     /// Match-end detection for AI-vs-AI / 2-colony modes. Returns
     /// `MatchStatus::InProgress` while both colonies have at least one
     /// queen + at least one adult ant. Transitions to `Won` when exactly
@@ -1488,6 +1612,7 @@ impl Simulation {
         self.temperature_tick();
         self.sense_and_decide();
         self.avenger_tick();
+        self.raid_seek_tick();
         self.follower_steering();
         self.beacon_tick();
         self.movement();
@@ -1626,7 +1751,7 @@ impl Simulation {
                 }
                 let forage_prob = forage_by_colony[ant.colony_id as usize];
                 let nurse_prob = nurse_by_colony[ant.colony_id as usize];
-                let next = decide_next_state(
+                let mut next = decide_next_state(
                     ant,
                     &module.world,
                     &module.pheromones,
@@ -1636,6 +1761,38 @@ impl Simulation {
                     nurse_prob,
                     &mut local_rng,
                 );
+
+                // B7: underground lazy-worker reserve wake. An Idle non-Queen
+                // ant inside an UndergroundNest module wakes to Fighting when
+                // local alarm pheromone exceeds the reserve threshold. Default
+                // threshold is 1e9 (unreachable) so this arm is inert for every
+                // existing sim; the nest arena lowers it (Task 6). Local
+                // information only — alarm read at the ant's own (module, cell)
+                // position — no global map access (CLAUDE.md rule 4).
+                if ant.state == AntState::Idle
+                    && !matches!(ant.caste, AntCaste::Queen)
+                    && module.kind == ModuleKind::UndergroundNest
+                {
+                    let (gx, gy) = module.world.world_to_grid(ant.position);
+                    if module.world.in_bounds(gx, gy) {
+                        let alarm = module.pheromones.read(
+                            gx as usize,
+                            gy as usize,
+                            PheromoneLayer::Alarm,
+                        );
+                        if alarm > cfg.ant.underground_idle_alarm_threshold {
+                            tracing::debug!(
+                                ant = ant.id,
+                                colony = ant.colony_id,
+                                alarm,
+                                threshold = cfg.ant.underground_idle_alarm_threshold,
+                                "B7: underground idle worker woke to Fighting"
+                            );
+                            next = Some(AntState::Fighting);
+                        }
+                    }
+                }
+
                 (h, next)
             })
             .collect();
@@ -3236,6 +3393,73 @@ impl Simulation {
                 }
             }
         }
+
+        // ── Raid descent (spec A3/B6): enemy fighters/usurpers flow DOWN an
+        // enemy nest entrance into that colony's UndergroundNest, then follow
+        // the alarm gradient toward the deep queen. Gated; default OFF so all
+        // existing sims are byte-identical. Iterate ants in index order.
+        if self.config.combat.raid_underground_enabled {
+            // Chokepoint throughput. 0 ⇒ legacy descent (exact cell, combat
+            // state / raider gate, unbounded). >0 ⇒ any non-queen enemy within
+            // Chebyshev radius 1 of the entrance descends, capped per entrance
+            // per tick so the swarm queues and trickles underground. The cap
+            // keys on the DEFENDING colony (`ecid`) so each entrance has its own
+            // budget.
+            let per_tick = self.config.combat.raid_descent_per_tick;
+            let mut descents: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
+            for ant in self.ants.iter_mut() {
+                if matches!(ant.caste, AntCaste::Queen) {
+                    continue;
+                }
+                let legacy_eligible = matches!(ant.state, AntState::Fighting | AntState::Usurping)
+                    || ant.is_raider;
+                if per_tick == 0 && !legacy_eligible {
+                    continue;
+                }
+                // Is this ant on (legacy) / within radius 1 (chokepoint) of the
+                // SURFACE entrance of an ENEMY colony with an underground module?
+                for &(ecid, surf_mod, surf_pos, ug_mod, ug_pos) in entrance_pairs.iter() {
+                    if ecid == ant.colony_id {
+                        continue; // own nest is handled by the existing arms
+                    }
+                    if ant.module_id != surf_mod {
+                        continue;
+                    }
+                    let (gx, gy) = self
+                        .topology
+                        .module(surf_mod)
+                        .world
+                        .world_to_grid(ant.position);
+                    let on_entrance = if per_tick == 0 {
+                        (gx, gy) == (surf_pos.x as i64, surf_pos.y as i64)
+                    } else {
+                        (gx - surf_pos.x as i64).abs() <= 1 && (gy - surf_pos.y as i64).abs() <= 1
+                    };
+                    if !on_entrance {
+                        continue;
+                    }
+                    if per_tick > 0 {
+                        let n = descents.entry(ecid).or_insert(0);
+                        if *n >= per_tick {
+                            break; // entrance is saturated this tick — queue
+                        }
+                        *n += 1;
+                    }
+                    tracing::debug!(
+                        tick = self.tick,
+                        ant = ant.id,
+                        raider_colony = ant.colony_id,
+                        target_colony = ecid,
+                        from_module = surf_mod,
+                        to_module = ug_mod,
+                        "raid: enemy entrance descent"
+                    );
+                    ant.module_id = ug_mod;
+                    ant.position = ug_pos;
+                    break;
+                }
+            }
+        }
     }
 
     /// Promote idle workers to `Digging` based on the colony's
@@ -3600,6 +3824,140 @@ impl Simulation {
         }
     }
 
+    /// Local enemy-territory gradient for a raider. Reads the signed
+    /// `ColonyScent` layer at the ant's 8 neighbour cells and returns a heading
+    /// toward the neighbour that maximises ENEMY scent — most-negative scent for
+    /// colony 0, most-positive for any other colony. Returns `None` when no
+    /// neighbour improves on the current cell (no usable signal), so the caller
+    /// leaves the ant's ACO heading intact and it keeps wandering until it picks
+    /// up the enemy gradient. Local information only (CLAUDE.md rule 4).
+    fn enemy_scent_heading(
+        module: &crate::module::Module,
+        position: Vec2,
+        colony_id: u8,
+    ) -> Option<f32> {
+        let enemy_sign = if colony_id == 0 { -1.0_f32 } else { 1.0_f32 };
+        let (cx, cy) = module.world.world_to_grid(position);
+        let score = |gx: i64, gy: i64| -> Option<f32> {
+            if !module.world.in_bounds(gx, gy) {
+                return None;
+            }
+            Some(
+                enemy_sign
+                    * module.pheromones.read(
+                        gx as usize,
+                        gy as usize,
+                        crate::pheromone::PheromoneLayer::ColonyScent,
+                    ),
+            )
+        };
+        let here = score(cx, cy)?;
+        let mut best: Option<(f32, i64, i64)> = None;
+        for (dx, dy) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
+            let (gx, gy) = (cx + dx, cy + dy);
+            if let Some(s) = score(gx, gy) {
+                if best.map(|(bs, _, _)| s > bs).unwrap_or(true) {
+                    best = Some((s, gx, gy));
+                }
+            }
+        }
+        let (bs, bgx, bgy) = best?;
+        // Strict ascent: only steer if a neighbour beats the current cell.
+        if bs <= here + 1e-6 {
+            return None;
+        }
+        let target = module.world.grid_to_world(bgx as usize, bgy as usize);
+        let delta = target - position;
+        if delta.length_squared() <= 1e-9 {
+            return None;
+        }
+        Some(delta.y.atan2(delta.x))
+    }
+
+    /// Raid-seeking (gated). Designates up to `raid_party_size` raiders per
+    /// colony and overrides each raider's heading toward the enemy nest via the
+    /// enemy `ColonyScent` gradient (`enemy_scent_heading`). Runs after
+    /// `avenger_tick` and before `movement`, so the override is what `movement`
+    /// consumes. Once a raider reaches an enemy surface entrance,
+    /// `surface_underground_traversal`'s raid-descent arm carries it under; the
+    /// same gradient then steers it toward the deep queen (she deposits scent
+    /// every tick, so her chamber is the underground enemy-scent maximum).
+    ///
+    /// Biology: raids orient to target-colony nest odor (see
+    /// docs/biology/interspecific/05-raiding-usurpation-and-who-wins.md).
+    ///
+    /// Default OFF: early-returns before touching any ant or `self.rng`, so the
+    /// default sim path is byte-identical.
+    pub fn raid_seek_tick(&mut self) {
+        if !self.config.combat.raid_seeking_enabled || self.config.combat.raid_party_size == 0 {
+            return;
+        }
+        let party = self.config.combat.raid_party_size as usize;
+        for cid in 0..self.colonies.len() {
+            let colony_id = self.colonies[cid].id;
+            // Deterministic top-up of the raid party by ascending ant index
+            // (no RNG — keeps determinism decoupled from this system).
+            let current = self
+                .ants
+                .iter()
+                .filter(|a| a.colony_id == colony_id && a.is_raider)
+                .count();
+            if current < party {
+                let mut to_promote = party - current;
+                for a in self.ants.iter_mut() {
+                    if to_promote == 0 {
+                        break;
+                    }
+                    if a.colony_id == colony_id
+                        && !a.is_raider
+                        && !matches!(a.caste, AntCaste::Queen)
+                        && !a.is_in_transit()
+                    {
+                        a.is_raider = true;
+                        tracing::debug!(
+                            colony = colony_id,
+                            ant = a.id,
+                            "raid_seek_tick: ant promoted to raider"
+                        );
+                        to_promote -= 1;
+                    }
+                }
+            }
+        }
+        // Steer every raider by its local enemy-scent gradient.
+        for i in 0..self.ants.len() {
+            if !self.ants[i].is_raider || self.ants[i].is_in_transit() {
+                continue;
+            }
+            let (pos, mid, colony_id) = (
+                self.ants[i].position,
+                self.ants[i].module_id,
+                self.ants[i].colony_id,
+            );
+            let Some(module) = self.topology.try_module(mid) else {
+                continue;
+            };
+            if let Some(h) = Self::enemy_scent_heading(module, pos, colony_id) {
+                self.ants[i].heading = h;
+                tracing::trace!(
+                    ant = self.ants[i].id,
+                    colony = colony_id,
+                    heading = h,
+                    "raid_seek_tick: raider steered toward enemy scent"
+                );
+            }
+        }
+    }
+
     /// Phase 4: simple red-colony AI. For any colony flagged
     /// `is_ai_controlled`, nudge its `caste_ratio` toward soldiers when
     /// it's taking casualties and nudge `behavior_weights` toward forage
@@ -3895,7 +4253,7 @@ impl Simulation {
             colony_diapause.push((c.id, in_diapause));
         }
 
-        let mut to_spawn: Vec<(u8, AntCaste, Vec2)> = Vec::new();
+        let mut to_spawn: Vec<(u8, AntCaste, Vec2, crate::module::ModuleId)> = Vec::new();
         let mut starve: Vec<(u8, u32)> = Vec::new();
 
         for colony in self.colonies.iter_mut() {
@@ -4348,13 +4706,40 @@ impl Simulation {
                     if colony.pupae > 0 {
                         colony.pupae -= 1;
                     }
-                    let pos = if colony.nest_entrance_positions.is_empty() {
-                        Vec2::ZERO
-                    } else {
-                        let i = self.rng.gen_range(0..colony.nest_entrance_positions.len());
-                        colony.nest_entrance_positions[i]
-                    };
-                    to_spawn.push((colony.id, b.caste, pos));
+                    let (pos, spawn_module) =
+                        if let Some(ug_id) = colony.underground_module {
+                            // Nest-arena path: newborns hatch in the underground
+                            // module where the queen lives. The nest_entrance_positions
+                            // list was set to the UG entrance world-position at
+                            // construction, so it is valid inside the UG module.
+                            let p = if colony.nest_entrance_positions.is_empty() {
+                                Vec2::ZERO
+                            } else {
+                                // Always use index 0; UG colonies have exactly one
+                                // entrance. No RNG draw — determinism preserved on
+                                // the legacy (None) path.
+                                colony.nest_entrance_positions[0]
+                            };
+                            tracing::debug!(
+                                colony_id = colony.id,
+                                ug_module = ug_id,
+                                ?p,
+                                "newborn hatches in underground module"
+                            );
+                            (p, ug_id)
+                        } else {
+                            // Default/legacy path — byte-identical, no RNG reorder.
+                            let p = if colony.nest_entrance_positions.is_empty() {
+                                Vec2::ZERO
+                            } else {
+                                let i = self.rng.gen_range(
+                                    0..colony.nest_entrance_positions.len(),
+                                );
+                                colony.nest_entrance_positions[i]
+                            };
+                            (p, 0u16)
+                        };
+                    to_spawn.push((colony.id, b.caste, pos, spawn_module));
                     match b.caste {
                         AntCaste::Worker => colony.population.workers += 1,
                         AntCaste::Soldier => colony.population.soldiers += 1,
@@ -4449,7 +4834,7 @@ impl Simulation {
             }
         }
 
-        for (cid, caste, pos) in to_spawn {
+        for (cid, caste, pos, mod_id) in to_spawn {
             let id = self.next_ant_id;
             self.next_ant_id = self.next_ant_id.saturating_add(1);
             let health = match caste {
@@ -4458,15 +4843,22 @@ impl Simulation {
             };
             let heading = self.rng.gen_range(0.0..std::f32::consts::TAU);
             let mut ant = Ant::new_with_caste(id, cid, pos, heading, health, caste);
-            ant.module_id = 0;
+            ant.module_id = mod_id;
             tracing::debug!(
                 colony_id = cid,
                 ant_id = id,
                 caste = ?caste,
+                module_id = mod_id,
                 "adult spawned"
             );
             self.ants.push(ant);
         }
+    }
+
+    /// Test-only: drive the surface↔underground traversal pass directly.
+    #[doc(hidden)]
+    pub fn surface_underground_traversal_for_test(&mut self) {
+        self.surface_underground_traversal();
     }
 }
 
@@ -4751,6 +5143,7 @@ pub fn spawn_initial_ants(
         module_id: 0,
         transit: None,
         is_avenger: false,
+        is_raider: false,
         is_player: false,
         follow_leader: None,
         dig_progress: 0,
@@ -8005,5 +8398,391 @@ mod tests {
         }
         // It either ended (a queen died) or is still in progress at the cap.
         assert!(sim.tick <= 2000);
+    }
+
+    // ── Task 3: new_two_colony_nest_arena ─────────────────────────────────
+
+    #[test]
+    fn nest_arena_relocates_queens_into_deep_underground_chambers() {
+        use crate::config::ColonySimConfig;
+        use crate::world::{ChamberType, Terrain};
+        use crate::topology::QueenDepth;
+
+        let global = SimConfig::default();
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let black_ug = topo.underground_for_colony(0).expect("black ug");
+        let red_ug = topo.underground_for_colony(1).expect("red ug");
+
+        let sim = Simulation::new_two_colony_nest_arena(
+            global, slice.clone(), slice, topo, 99, 0, 2, black_ug, red_ug,
+        );
+
+        // Each colony records its UG module.
+        assert_eq!(sim.colonies[0].underground_module, Some(black_ug));
+        assert_eq!(sim.colonies[1].underground_module, Some(red_ug));
+
+        // Each queen now lives in her UG module, on a QueenChamber cell.
+        for (cid, ug) in [(0u8, black_ug), (1u8, red_ug)] {
+            let q = sim.ants.iter().find(|a| a.colony_id == cid && matches!(a.caste, AntCaste::Queen))
+                .expect("queen exists");
+            assert_eq!(q.module_id, ug, "colony {cid} queen should be underground");
+            let m = sim.topology.module(ug);
+            let (gx, gy) = m.world.world_to_grid(q.position);
+            assert!(m.world.in_bounds(gx, gy));
+            assert_eq!(m.world.get(gx as usize, gy as usize), Terrain::Chamber(ChamberType::QueenChamber),
+                "colony {cid} queen should stand on her QueenChamber cell");
+        }
+
+        // Workers are still on the surface nest modules (raid pathing moves them
+        // later; at t=0 only the queen is relocated).
+        let surface_workers = sim.ants.iter()
+            .filter(|a| a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen) && a.module_id == 0)
+            .count();
+        assert!(surface_workers > 0, "black workers should still be on the surface nest at t=0");
+    }
+
+    #[test]
+    fn nest_arena_match_status_in_progress_at_start() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        let global = SimConfig::default();
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 7, 0, 2, bug, rug);
+        assert!(matches!(sim.match_status(), crate::ai::MatchStatus::InProgress));
+        sim.run(50); // does not panic; both queens still alive deep underground.
+        assert!(matches!(sim.match_status(), crate::ai::MatchStatus::InProgress));
+    }
+
+    // ── Task 4: Raid descent ──────────────────────────────────────────────
+
+    #[test]
+    fn raider_descends_enemy_surface_entrance_into_enemy_underground() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+
+        let mut global = SimConfig::default();
+        global.combat.raid_underground_enabled = true;
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 5, 0, 2, bug, rug);
+
+        // Place a colony-1 (red) fighter on colony-0's (black) surface entrance cell.
+        let (ex, ey) = sim.topology.module(0).world.find_nest_entrance(0).expect("black surface entrance");
+        let epos = sim.topology.module(0).world.grid_to_world(ex, ey);
+        // Reuse an existing red worker; force it onto the enemy entrance + Fighting.
+        let idx = sim.ants.iter().position(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen))
+            .expect("a red ant");
+        sim.ants[idx].module_id = 0;            // standing in black's surface nest
+        sim.ants[idx].position = epos;
+        sim.ants[idx].transition(AntState::Fighting);
+
+        sim.surface_underground_traversal_for_test(); // thin test shim
+
+        assert_eq!(sim.ants[idx].module_id, bug,
+            "red fighter on black's surface entrance should descend into black's underground");
+    }
+
+    #[test]
+    fn raid_descent_is_inert_when_disabled() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        let global = SimConfig::default(); // raid_underground_enabled == false
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 5, 0, 2, bug, rug);
+
+        let (ex, ey) = sim.topology.module(0).world.find_nest_entrance(0).unwrap();
+        let epos = sim.topology.module(0).world.grid_to_world(ex, ey);
+        let idx = sim.ants.iter().position(|a| a.colony_id == 1 && !matches!(a.caste, AntCaste::Queen)).unwrap();
+        sim.ants[idx].module_id = 0;
+        sim.ants[idx].position = epos;
+        sim.ants[idx].transition(AntState::Fighting);
+
+        sim.surface_underground_traversal_for_test();
+        assert_eq!(sim.ants[idx].module_id, 0, "with raid disabled, the fighter must NOT descend");
+    }
+
+    // ── Task 5: Underground lazy-worker alarm wake (B7) ──────────────────
+
+    #[test]
+    fn underground_idle_worker_wakes_to_fighting_on_alarm() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        use crate::pheromone::PheromoneLayer;
+
+        let mut global = SimConfig::default();
+        global.ant.underground_idle_alarm_threshold = 0.3; // nest-arena style low reserve threshold
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 3, 0, 2, bug, rug);
+
+        // Put a black worker, Idle, in the black UG on an Empty tunnel cell.
+        let (ex, ey) = sim.topology.module(bug).world.find_nest_entrance(0).unwrap();
+        let cell = (ex, ey.saturating_sub(1)); // one step into the tunnel
+        let pos = sim.topology.module(bug).world.grid_to_world(cell.0, cell.1);
+        let idx = sim.ants.iter().position(|a| a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen)).unwrap();
+        sim.ants[idx].module_id = bug;
+        sim.ants[idx].position = pos;
+        sim.ants[idx].transition(AntState::Idle);
+
+        // Raise alarm above the threshold at that cell.
+        sim.topology.module_mut(bug).pheromones.deposit(cell.0, cell.1, PheromoneLayer::Alarm, 5.0, 10.0);
+
+        sim.run(1); // one tick runs the decision pass.
+        assert_eq!(sim.ants[idx].state, AntState::Fighting,
+            "underground idle worker should wake to Fighting when alarm > threshold");
+    }
+
+    #[test]
+    fn underground_idle_wake_inert_by_default() {
+        // Default threshold (1e9) => never wakes, so the surface game is unchanged.
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        use crate::pheromone::PheromoneLayer;
+        let global = SimConfig::default();
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (topo.underground_for_colony(0).unwrap(), topo.underground_for_colony(1).unwrap());
+        let mut sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 3, 0, 2, bug, rug);
+        // Zero out forage/nurse weights so the ant stays Idle from normal FSM;
+        // only the B7 wake arm could transition it to Fighting.
+        for c in &mut sim.colonies {
+            c.behavior_weights.forage = 0.0;
+            c.behavior_weights.nurse = 0.0;
+        }
+        let (ex, ey) = sim.topology.module(bug).world.find_nest_entrance(0).unwrap();
+        let cell = (ex, ey.saturating_sub(1));
+        let pos = sim.topology.module(bug).world.grid_to_world(cell.0, cell.1);
+        let idx = sim.ants.iter().position(|a| a.colony_id == 0 && !matches!(a.caste, AntCaste::Queen)).unwrap();
+        sim.ants[idx].module_id = bug;
+        sim.ants[idx].position = pos;
+        sim.ants[idx].transition(AntState::Idle);
+        sim.topology.module_mut(bug).pheromones.deposit(cell.0, cell.1, PheromoneLayer::Alarm, 5.0, 10.0);
+        sim.run(1);
+        // With default threshold (1e9) the B7 arm never fires; the ant stays Idle
+        // (normal FSM also keeps it Idle since forage and nurse weights are both 0).
+        assert_eq!(sim.ants[idx].state, AntState::Idle, "default threshold must keep the worker Idle");
+    }
+
+    // ── Brood-spawn fix: newborns in UG module ────────────────────────────
+
+    #[test]
+    fn nest_arena_newborns_spawn_in_ug_module() {
+        // Regression guard for the brood-spawn defect where hatchlings were
+        // assigned module_id = 0 (surface) while their position was the UG
+        // entrance coordinate — spawning them in limbo.
+        //
+        // This test creates a nest-arena sim, injects a pupa that is already
+        // at max age (ready to eclose immediately), runs one economy tick, and
+        // asserts the resulting adult lives in the UG module, not on the surface.
+        use crate::colony::{Brood, BroodStage};
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+
+        let mut global = SimConfig::default();
+        // Give the colony plenty of food so the economy tick doesn't starve it.
+        global.colony.initial_food = 5000.0;
+        global.colony.pupa_stage_ticks = 1; // minimum maturation so one tick is enough
+        let slice = ColonySimConfig::from(&global);
+        let topo =
+            Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let bug = topo.underground_for_colony(0).expect("black ug");
+        let rug = topo.underground_for_colony(1).expect("red ug");
+
+        let mut sim = Simulation::new_two_colony_nest_arena(
+            global,
+            slice.clone(),
+            slice,
+            topo,
+            /* initial_workers */ 5,
+            0,
+            2,
+            bug,
+            rug,
+        );
+
+        // Sanity: colony 0 knows its UG module.
+        assert_eq!(
+            sim.colonies[0].underground_module,
+            Some(bug),
+            "colony 0 must have underground_module set"
+        );
+
+        // Capture the set of ant IDs that exist before the hatch.
+        let ids_before: std::collections::HashSet<u32> =
+            sim.ants.iter().map(|a| a.id).collect();
+
+        // Inject a ready-to-eclose pupa into colony 0's brood queue.
+        {
+            let c0 = sim
+                .colonies
+                .iter_mut()
+                .find(|c| c.id == 0)
+                .expect("colony 0");
+            let ready_pupa = Brood {
+                stage: BroodStage::Pupa,
+                age: u32::MAX, // guaranteed >= pupa_stage_ticks
+                caste: crate::ant::AntCaste::Worker,
+            };
+            c0.brood.push(ready_pupa);
+            c0.pupae += 1;
+        }
+
+        // Run one full economy tick so the pupa ecloses.
+        sim.run(1);
+
+        // Identify the newly-hatched ants (IDs that weren't present before).
+        let new_ants: Vec<_> = sim
+            .ants
+            .iter()
+            .filter(|a| a.colony_id == 0 && !ids_before.contains(&a.id))
+            .collect();
+        assert!(
+            !new_ants.is_empty(),
+            "at least one new colony-0 ant should have hatched"
+        );
+
+        // Every newly-hatched adult for colony 0 must be in the UG module, not
+        // on the surface (module_id 0). This is the core regression guard.
+        for ant in &new_ants {
+            assert_eq!(
+                ant.module_id, bug,
+                "colony-0 newborn (id={}) must be in UG module {} (not surface 0)",
+                ant.id, bug
+            );
+        }
+
+        // Also confirm: the position stored on each new ant is a valid cell
+        // inside the UG module (not arbitrary surface coords).
+        let ug_module = sim.topology.module(bug);
+        for ant in &new_ants {
+            let (gx, gy) = ug_module.world.world_to_grid(ant.position);
+            assert!(
+                ug_module.world.in_bounds(gx, gy),
+                "colony-0 newborn (id={}) position {:?} must be inside UG module bounds (gx={gx}, gy={gy})",
+                ant.id, ant.position
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_surface_colony_newborns_unaffected_by_ug_fix() {
+        // Back-compat guard: a colony with underground_module = None (legacy/surface
+        // arena) must produce newborns on module 0, byte-identical to the old path.
+        use crate::colony::{Brood, BroodStage};
+        use crate::config::ColonySimConfig;
+
+        let mut global = SimConfig::default();
+        global.colony.initial_food = 5000.0;
+        global.colony.pupa_stage_ticks = 1;
+        let topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_two_colony_with_topology(global, topo, 0, 0, 1);
+
+        // Legacy sim: no colony has underground_module set.
+        for c in &sim.colonies {
+            assert_eq!(
+                c.underground_module, None,
+                "legacy sim must not have underground_module"
+            );
+        }
+
+        let before_count = sim.ants.iter().filter(|a| a.colony_id == 0).count();
+
+        {
+            let c0 = sim.colonies.iter_mut().find(|c| c.id == 0).expect("colony 0");
+            c0.brood.push(Brood {
+                stage: BroodStage::Pupa,
+                age: u32::MAX,
+                caste: crate::ant::AntCaste::Worker,
+            });
+            c0.pupae += 1;
+        }
+
+        sim.run(1);
+
+        let after_count = sim.ants.iter().filter(|a| a.colony_id == 0).count();
+        assert!(after_count > before_count, "newborn must hatch");
+
+        // All non-queen workers for colony 0 must be on module 0 (surface).
+        for ant in sim.ants.iter().filter(|a| a.colony_id == 0) {
+            if matches!(ant.caste, crate::ant::AntCaste::Queen) {
+                continue;
+            }
+            assert_eq!(
+                ant.module_id, 0,
+                "legacy colony-0 newborn (id={}) must remain on surface module 0",
+                ant.id
+            );
+        }
+    }
+
+    // ── Task 1: Raid-seeking behavior ─────────────────────────────────────
+
+    #[test]
+    fn raid_seek_is_inert_when_disabled() {
+        // Default config: no ant is ever marked a raider, headings are unchanged
+        // by raid_seek_tick (it early-returns). Guards the byte-identical default.
+        let topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_two_colony_with_topology(SimConfig::default(), topo, 7, 0, 2);
+        sim.run(50);
+        assert!(
+            sim.ants.iter().all(|a| !a.is_raider),
+            "no raiders may be designated when raid_seeking_enabled is false"
+        );
+    }
+
+    #[test]
+    fn raid_seek_designates_party_and_steers_toward_enemy_scent() {
+        let mut g = SimConfig::default();
+        g.combat.raid_seeking_enabled = true;
+        g.combat.raid_party_size = 3;
+        let topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_two_colony_with_topology(g, topo, 7, 0, 2);
+
+        // (a) Designate the party.
+        sim.raid_seek_tick();
+        let raider_idx = sim
+            .ants
+            .iter()
+            .position(|a| a.colony_id == 0 && a.is_raider)
+            .expect("a colony-0 raider must be designated");
+        assert_eq!(
+            sim.ants.iter().filter(|a| a.colony_id == 0 && a.is_raider).count(),
+            3,
+            "exactly raid_party_size raiders designated"
+        );
+
+        // (b) Steering: place that raider on a known interior cell and lay a stronger
+        // ENEMY (colony 1 = negative-sign) scent one cell to its EAST so the local
+        // gradient is unambiguous, then re-run and assert it steers east (cos>0).
+        let m0 = sim.ants[raider_idx].module_id;
+        // An interior cell with room for an east neighbour (arenas are >= 24x24).
+        let (cx, cy) = (10i64, 10i64);
+        let here = sim
+            .topology
+            .module(m0)
+            .world
+            .grid_to_world(cx as usize, cy as usize);
+        sim.ants[raider_idx].position = here;
+        {
+            let module = sim.topology.module_mut(m0);
+            // weak enemy scent here, strong to the east => gradient points east.
+            module.pheromones.deposit_territory(cx as usize, cy as usize, 1, 1.0, 10.0);
+            module
+                .pheromones
+                .deposit_territory((cx + 1) as usize, cy as usize, 1, 8.0, 10.0);
+        }
+        sim.raid_seek_tick();
+        assert!(
+            sim.ants[raider_idx].heading.cos() > 0.3,
+            "raider should be steered east toward the stronger enemy scent (heading={})",
+            sim.ants[raider_idx].heading
+        );
     }
 }

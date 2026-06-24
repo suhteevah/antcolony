@@ -295,6 +295,11 @@ pub struct ColonyState {
     /// active channel. Used to detect interrupt (channeler died/fled).
     #[serde(default)]
     pub usurp_attacker_colony: Option<u8>,
+    /// The colony's private `UndergroundNest` module, if the arena built one
+    /// (nest-arena only). Used to pair raid descent + find the deep queen.
+    /// `None` for surface-only / legacy sims (back-compat).
+    #[serde(default)]
+    pub underground_module: Option<crate::module::ModuleId>,
 }
 
 impl ColonyState {
@@ -343,6 +348,7 @@ impl ColonyState {
             starvation_deaths_cumulative: 0,
             usurp_progress_ticks: 0,
             usurp_attacker_colony: None,
+            underground_module: None,
         }
     }
 
@@ -423,6 +429,12 @@ impl Default for ColonyState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colony_state_underground_module_defaults_none() {
+        let c = ColonyState::new(0, 100.0, glam::Vec2::new(5.0, 5.0));
+        assert_eq!(c.underground_module, None);
+    }
 
     #[test]
     fn colony_state_starts_with_empty_history_and_zero_intent() {

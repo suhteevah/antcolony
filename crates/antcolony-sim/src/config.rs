@@ -204,10 +204,34 @@ pub struct AntConfig {
     /// Cross-ref: docs/biology-roadmap.md §"Phase B sim hooks" #7.
     #[serde(default = "default_species_dig_multiplier")]
     pub species_dig_multiplier: f32,
+    /// Arena nest layer (spec A5/B7): underground `Idle` workers wake to
+    /// `Fighting` when local alarm exceeds this. Defaults to an effectively
+    /// unreachable value so the wake arm is INERT for existing configs (the
+    /// nest arena lowers it, e.g. to 0.3). Distinct, lower than the surface
+    /// alarm response by design (reserve "lazy worker" defenders).
+    #[serde(default = "default_underground_idle_alarm")]
+    pub underground_idle_alarm_threshold: f32,
+    /// Arena nest layer: how many of this colony's INITIAL workers are stationed
+    /// in its `UndergroundNest` at construction (relocated off the surface) to
+    /// garrison the chokepoint. `0` (default) ⇒ all initial workers surface-spawn
+    /// (legacy), so non-nest sims are unaffected. The nest arena sets it so the
+    /// deep queen has defenders holding the tunnels against descending raiders.
+    #[serde(default)]
+    pub nest_garrison_count: u32,
 }
 
 fn default_species_dig_multiplier() -> f32 {
     1.0
+}
+
+fn default_underground_idle_alarm() -> f32 {
+    1.0e9
+}
+
+/// Public alias so `species.rs` can initialize `AntConfig` struct
+/// literals without duplicating the magic constant.
+pub(crate) fn default_underground_idle_alarm_pub() -> f32 {
+    default_underground_idle_alarm()
 }
 
 fn default_min_diapause_days() -> u32 {
@@ -355,6 +379,37 @@ pub struct CombatConfig {
     /// killer colony's food store (predation feedback). 0.0 = off.
     #[serde(default)]
     pub usurp_corpse_to_killer_frac: f32,
+    /// Arena nest layer (spec A3/B6): when true, enemy raiders in
+    /// `Fighting`/`Usurping` may descend an enemy `NestEntrance` into that
+    /// colony's `UndergroundNest` and flow toward the deep queen along the
+    /// alarm gradient. `false` = legacy traversal (own-colony descent only),
+    /// so all existing sims are byte-identical.
+    #[serde(default)]
+    pub raid_underground_enabled: bool,
+    /// When true, `raid_seek_tick` designates up to `raid_party_size` raiders
+    /// per colony and steers them toward the enemy nest via the enemy
+    /// `ColonyScent` gradient. Default false ⇒ inert (byte-identical).
+    /// Pairs with `raid_underground_enabled`: seeking walks raiders ONTO the
+    /// enemy surface entrance, and `raid_underground_enabled` is what then lets
+    /// them descend it. Enable both for a full surface→underground assault; the
+    /// nest arena sets both.
+    #[serde(default)]
+    pub raid_seeking_enabled: bool,
+    /// Number of ants per colony designated as raiders when seeking is on.
+    /// 0 ⇒ no raiders. The raid party advances on the enemy nest while the
+    /// rest of the colony forages/defends normally.
+    #[serde(default)]
+    pub raid_party_size: u32,
+    /// Descent throughput at an enemy nest entrance (the chokepoint).
+    /// `0` (default) ⇒ legacy descent: only an enemy in `Fighting`/`Usurping`
+    /// (or a designated raider) standing EXACTLY on the entrance cell descends,
+    /// unbounded per tick — preserves the original A3/B6 behavior and tests.
+    /// `> 0` ⇒ chokepoint descent: ANY non-queen enemy within Chebyshev radius 1
+    /// of the entrance descends, but at most this many per entrance per tick, so
+    /// a swarm queues and trickles underground one wave at a time. Only active
+    /// when `raid_underground_enabled`, so the default path stays byte-identical.
+    #[serde(default)]
+    pub raid_descent_per_tick: u32,
 }
 
 fn default_attackers_uncapped() -> u32 {
@@ -426,6 +481,8 @@ impl Default for AntConfig {
             nocturnal: false,
             sting_potency: 0.0,
             species_dig_multiplier: 1.0,
+            underground_idle_alarm_threshold: default_underground_idle_alarm(),
+            nest_garrison_count: 0,
         }
     }
 }
@@ -480,6 +537,10 @@ impl Default for CombatConfig {
             usurp_gate_defender_floor: 0,
             usurp_channel_ticks: 0,
             usurp_corpse_to_killer_frac: 0.0,
+            raid_underground_enabled: false,
+            raid_seeking_enabled: false,
+            raid_party_size: 0,
+            raid_descent_per_tick: 0,
         }
     }
 }
@@ -537,6 +598,35 @@ impl SimConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nest_arena_config_flags_are_behavior_neutral_by_default() {
+        let sc = SimConfig::default();
+        // Raid descent is OFF by default => existing sims byte-identical.
+        assert!(!sc.combat.raid_underground_enabled);
+        // Raid seeking is OFF by default => existing sims byte-identical.
+        assert!(!sc.combat.raid_seeking_enabled);
+        assert_eq!(sc.combat.raid_party_size, 0);
+        assert_eq!(sc.combat.raid_descent_per_tick, 0);
+        // Idle-wake threshold defaults to an effectively-unreachable value so the
+        // underground idle-wake arm never fires for existing configs.
+        assert!(sc.ant.underground_idle_alarm_threshold >= 1.0e8);
+        assert_eq!(sc.ant.nest_garrison_count, 0);
+    }
+
+    #[test]
+    fn nest_arena_flags_round_trip_via_toml_with_neutral_defaults() {
+        // A combat/ant block omitting the new keys keeps the neutral defaults.
+        let toml = "[combat]\nworker_attack = 2.0\n[ant]\nspeed_worker = 3.0\n";
+        let cfg = SimConfig::load_from_str(toml).expect("parse");
+        assert_eq!(cfg.combat.worker_attack, 2.0);
+        assert!(!cfg.combat.raid_underground_enabled);
+        assert!(!cfg.combat.raid_seeking_enabled);
+        assert_eq!(cfg.combat.raid_party_size, 0);
+        assert_eq!(cfg.combat.raid_descent_per_tick, 0);
+        assert_eq!(cfg.ant.speed_worker, 3.0);
+        assert!(cfg.ant.underground_idle_alarm_threshold >= 1.0e8);
+    }
 
     #[test]
     fn colony_sim_config_from_sim_config_is_behavior_neutral() {

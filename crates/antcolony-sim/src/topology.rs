@@ -12,6 +12,22 @@ use serde::{Deserialize, Serialize};
 use crate::module::{Module, ModuleId, ModuleKind, PortPos};
 use crate::tube::{Tube, TubeEnd, TubeId};
 
+/// Where in an `UndergroundNest` module the queen chamber is carved, relative
+/// to the surface-aligned entrance. Deeper = more tunnel between the entrance
+/// chokepoint and the queen (serial chokepoints; spec S1/B3). `Deep` is the
+/// V1 arena default for symmetric PvP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QueenDepth {
+    /// Queen chamber 1 row below the entrance (≈ legacy `attach_underground`).
+    Shallow,
+    /// Queen chamber at ~40% module depth.
+    Mid,
+    /// Queen chamber near the module floor (~80% depth) — maximum protection.
+    #[default]
+    Deep,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Topology {
     pub modules: Vec<Module>,
@@ -384,6 +400,111 @@ impl Topology {
         id
     }
 
+    /// Like `attach_underground`, but the `QueenChamber` is carved at a depth
+    /// set by `depth`, behind a single-file entrance and a tunnel corridor, so
+    /// the combat cap (entrance=1, tunnel=N) gates any assault on the queen.
+    /// Returns `(new_module_id, queen_chamber_grid_cell)`.
+    pub fn attach_underground_deep(
+        &mut self,
+        surface_nest_id: ModuleId,
+        colony_id: u8,
+        w: usize,
+        h: usize,
+        depth: QueenDepth,
+    ) -> (ModuleId, (usize, usize)) {
+        use crate::world::ChamberType;
+
+        let surface = self.module(surface_nest_id);
+        let origin = Vec2::new(
+            surface.formicarium_origin.x,
+            surface.formicarium_origin.y - h as f32 - 20.0,
+        );
+        let id = self.next_module_id();
+        let label = format!("Underground-deep (colony {colony_id})");
+        let mut module = Module::new(id, ModuleKind::UndergroundNest, w, h, origin, label);
+        module.world.fill_solid();
+
+        let cx = (w / 2).clamp(1, w.saturating_sub(2));
+        // Entrance near the module top (surface-aligned), matching the legacy
+        // `attach_underground` convention so the traversal pairing works.
+        let entrance_y = h.saturating_sub(2);
+        module.world.set_nest_entrance(cx, entrance_y, colony_id);
+
+        // Queen depth: distance (in rows) BELOW the entrance toward the floor.
+        // (entrance_y is near the bottom; "deeper" = smaller y, toward the top
+        // of the module grid — the legacy carve direction.)
+        let span = entrance_y.saturating_sub(2); // keep ≥1 row margin from y=0..1
+        let queen_y = match depth {
+            QueenDepth::Shallow => entrance_y.saturating_sub(1),
+            QueenDepth::Mid => entrance_y.saturating_sub((span as f32 * 0.4) as usize).max(2),
+            QueenDepth::Deep => entrance_y.saturating_sub((span as f32 * 0.8) as usize).max(2),
+        };
+
+        // Carve the queen chamber (1×1 half-extent => 3×3) at (cx, queen_y).
+        module.world.carve_chamber(cx, queen_y, 1, 1, ChamberType::QueenChamber);
+
+        // Carve a continuous corridor entrance → queen. For Mid/Deep, route
+        // through a single mid-point bend so the corridor is a genuine tunnel
+        // (multiple `UndergroundNest` Empty cells -> tunnel cap bites), not a
+        // 1-cell adjacency. carve_tunnel sets path cells to Empty but preserves
+        // the NestEntrance + the QueenChamber it touches.
+        match depth {
+            QueenDepth::Shallow => {
+                module.world.carve_tunnel((cx, entrance_y), (cx, queen_y));
+            }
+            QueenDepth::Mid | QueenDepth::Deep => {
+                let mid_y = (entrance_y + queen_y) / 2;
+                let bend_x = cx.saturating_sub(w / 6).max(1);
+                module.world.carve_tunnel((cx, entrance_y), (cx, mid_y));
+                module.world.carve_tunnel((cx, mid_y), (bend_x, mid_y));
+                module.world.carve_tunnel((bend_x, mid_y), (bend_x, queen_y));
+                module.world.carve_tunnel((bend_x, queen_y), (cx, queen_y));
+            }
+        }
+
+        // A brood nursery adjacent to the queen chamber but offset enough that
+        // `carve_chamber` (half_h=1 → ±1 row) does not overwrite the queen cells.
+        // Place it 2 rows toward the entrance from the queen so the queen chamber's
+        // carved rows aren't in the nursery's y0..=y1 span.
+        let nursery_y = (queen_y + 2).min(entrance_y.saturating_sub(1));
+        if nursery_y > queen_y {
+            module.world.carve_chamber(cx, nursery_y, 1, 1, ChamberType::BroodNursery);
+            module.world.carve_tunnel((cx, queen_y), (cx, nursery_y));
+        }
+
+        tracing::info!(
+            id, surface_nest_id, colony_id, w, h, depth = ?depth,
+            queen_cell = ?(cx, queen_y), entrance_cell = ?(cx, entrance_y),
+            "Topology::attach_underground_deep"
+        );
+        self.modules.push(module);
+        (id, (cx, queen_y))
+    }
+
+    /// Phase-5 arena topology: `two_colony_arena` + a private deep `UndergroundNest`
+    /// per colony. Surface ids stay 0 (black nest) / 1 (outworld) / 2 (red nest);
+    /// underground ids are assigned by `attach_underground_deep` (3 = black UG,
+    /// 4 = red UG with the current id allocator). The deep queen chambers are
+    /// reachable only through each nest's single-file entrance + tunnel.
+    pub fn two_colony_nest_arena(
+        nest_dim: (usize, usize),
+        outworld_dim: (usize, usize),
+        ug_dim: (usize, usize),
+        depth: QueenDepth,
+    ) -> Self {
+        let mut topo = Self::two_colony_arena(nest_dim, outworld_dim);
+        let (uw, uh) = ug_dim;
+        // Black colony 0 surface nest is module 0; red colony 1 surface nest is module 2.
+        let (black_ug, black_q) = topo.attach_underground_deep(0, 0, uw, uh, depth);
+        let (red_ug, red_q) = topo.attach_underground_deep(2, 1, uw, uh, depth);
+        tracing::info!(
+            modules = topo.len(), black_ug, red_ug,
+            black_queen = ?black_q, red_queen = ?red_q, depth = ?depth,
+            "Topology::two_colony_nest_arena built (5 modules)"
+        );
+        topo
+    }
+
     pub fn len(&self) -> usize {
         self.modules.len()
     }
@@ -620,6 +741,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn queen_depth_default_is_deep() {
+        assert_eq!(QueenDepth::default(), QueenDepth::Deep);
+    }
+
+    #[test]
     fn single_is_a_one_module_zero_tube_topology() {
         let t = Topology::single(ModuleKind::Outworld, 32, 32);
         assert_eq!(t.modules.len(), 1);
@@ -693,5 +819,111 @@ mod tests {
         assert!(!t.remove_tube(0), "idempotent: second remove is a no-op");
         assert_eq!(t.tubes.len(), 1);
         assert_eq!(t.tubes[0].id, 1, "tube 1 should survive");
+    }
+
+    #[test]
+    fn attach_underground_deep_places_queen_chamber_far_from_entrance() {
+        use crate::module::ModuleKind;
+        use crate::world::{ChamberType, Terrain};
+        let mut topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let (ug_id, (qx, qy)) = topo.attach_underground_deep(0, 0, 24, 24, QueenDepth::Deep);
+
+        let m = topo.module(ug_id);
+        assert_eq!(m.kind, ModuleKind::UndergroundNest);
+        // Queen chamber cell is a QueenChamber.
+        assert_eq!(m.world.get(qx, qy), Terrain::Chamber(ChamberType::QueenChamber));
+        // There is exactly one nest entrance for colony 0.
+        let entrance = m.world.find_nest_entrance(0).expect("ug entrance");
+        // Deep queen is genuinely far from the entrance (manhattan >= ~half the height).
+        let dist = (entrance.0 as i64 - qx as i64).abs() + (entrance.1 as i64 - qy as i64).abs();
+        assert!(dist >= (24 / 3) as i64, "deep queen should be far from entrance, dist={dist}");
+    }
+
+    #[test]
+    fn attach_underground_deep_shallow_is_near_entrance() {
+        let mut topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let (ug_id, (qx, qy)) = topo.attach_underground_deep(0, 0, 24, 24, QueenDepth::Shallow);
+        let m = topo.module(ug_id);
+        let entrance = m.world.find_nest_entrance(0).expect("ug entrance");
+        let dist = (entrance.0 as i64 - qx as i64).abs() + (entrance.1 as i64 - qy as i64).abs();
+        assert!(dist <= 3, "shallow queen should be adjacent to entrance, dist={dist}");
+    }
+
+    #[test]
+    fn queen_reachable_from_entrance_through_empty_tunnel() {
+        // The entrance→queen path must be a connected run of passable cells
+        // (Empty / Chamber / NestEntrance), never blocked by Solid. We flood-fill
+        // from the entrance over passable cells and require the queen cell reached.
+        use crate::world::{ChamberType, Terrain};
+        let mut topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let (ug_id, (qx, qy)) = topo.attach_underground_deep(0, 0, 24, 24, QueenDepth::Deep);
+        let m = topo.module(ug_id);
+        let (ex, ey) = m.world.find_nest_entrance(0).expect("entrance");
+
+        let passable = |t: Terrain| matches!(
+            t, Terrain::Empty | Terrain::NestEntrance(_) | Terrain::Chamber(_) | Terrain::SoilPile(_) | Terrain::Food(_)
+        );
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![(ex, ey)];
+        while let Some((x, y)) = stack.pop() {
+            if !seen.insert((x, y)) { continue; }
+            for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if !m.world.in_bounds(nx, ny) { continue; }
+                let (nx, ny) = (nx as usize, ny as usize);
+                if passable(m.world.get(nx, ny)) { stack.push((nx, ny)); }
+            }
+        }
+        assert!(seen.contains(&(qx, qy)), "deep queen chamber must be reachable from the entrance");
+        assert_eq!(m.world.get(qx, qy), Terrain::Chamber(ChamberType::QueenChamber));
+    }
+
+    /// Chokepoint invariant: the UndergroundNest module boundary must be
+    /// entirely `Terrain::Solid`. The single-file entrance is carved at
+    /// `entrance_y = h-2` (interior row), so the boundary rows/columns
+    /// (y=0, y=h-1, x=0, x=w-1) must have NO non-Solid cell at all.
+    /// A second gap there would let attackers bypass the entrance chokepoint.
+    #[test]
+    fn boundary_is_solid_except_entrance() {
+        use crate::world::Terrain;
+        let mut topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let (ug_id, _) = topo.attach_underground_deep(0, 0, 24, 24, QueenDepth::Deep);
+        let m = topo.module(ug_id);
+        let w = m.world.width;
+        let h = m.world.height;
+
+        // Top and bottom boundary rows must be fully Solid.
+        for x in 0..w {
+            for &y in &[0usize, h - 1] {
+                assert!(
+                    matches!(m.world.get(x, y), Terrain::Solid),
+                    "boundary violation at x={x} y={y} (top/bottom edge) — expected Solid, got {:?}",
+                    m.world.get(x, y)
+                );
+            }
+        }
+        // Left and right boundary columns must be fully Solid.
+        for y in 0..h {
+            for &x in &[0usize, w - 1] {
+                assert!(
+                    matches!(m.world.get(x, y), Terrain::Solid),
+                    "boundary violation at x={x} y={y} (left/right edge) — expected Solid, got {:?}",
+                    m.world.get(x, y)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn two_colony_nest_arena_has_two_underground_modules() {
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        // 3 surface modules + 2 underground.
+        assert_eq!(topo.len(), 5);
+        let black_ug = topo.underground_for_colony(0).expect("black ug");
+        let red_ug = topo.underground_for_colony(1).expect("red ug");
+        assert_ne!(black_ug, red_ug);
+        use crate::module::ModuleKind;
+        assert_eq!(topo.module(black_ug).kind, ModuleKind::UndergroundNest);
+        assert_eq!(topo.module(red_ug).kind, ModuleKind::UndergroundNest);
     }
 }
