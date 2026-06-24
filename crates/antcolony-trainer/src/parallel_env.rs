@@ -55,6 +55,11 @@ pub struct ParallelEnv {
     /// `left_workers / (left_workers + right_workers)` at rollout end
     /// (0.5 when undefined). Feeds the PFSP EMA; not a perfect win metric.
     pub last_hac_winshare: f32,
+    /// `None` ⇒ legacy same-species `MatchEnv::new` per env (BYTE-IDENTICAL to the
+    /// pre-cross-species path). `Some` ⇒ each env is a cross-species (nest) arena
+    /// with a species pair drawn deterministically from the roster per env seed,
+    /// mirroring the flat trainer's `CrossSpeciesCurriculum`.
+    pub cross_species: Option<crate::ppo::CrossSpeciesCurriculum>,
 }
 
 impl ParallelEnv {
@@ -69,6 +74,7 @@ impl ParallelEnv {
             sizing: A1,
             last_opponent_idx: 0,
             last_hac_winshare: 0.5,
+            cross_species: None,
         }
     }
 }
@@ -196,7 +202,27 @@ impl ParallelEnv {
         let mut opponents: Vec<Box<dyn AiBrain>> = Vec::with_capacity(self.n_envs);
         for i in 0..self.n_envs {
             let seed = base_seed ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15));
-            envs.push(MatchEnv::new(seed));
+            // Cross-species curriculum: each env is a distinct (species_a,
+            // species_b) nest/flat arena drawn deterministically from the roster
+            // by `seed` (mirrors the flat trainer, ppo.rs). `None` ⇒ legacy
+            // `MatchEnv::new(seed)` (byte-identical). Species choice is
+            // seed-derived only, so it never perturbs the training `rng`.
+            match &self.cross_species {
+                Some(cur) if !cur.roster.is_empty() => {
+                    let n = cur.roster.len() as u64;
+                    let a = (seed % n) as usize;
+                    let b = (((seed / n) % (n.saturating_sub(1).max(1))) as usize + a + 1)
+                        % cur.roster.len();
+                    let mut e = if cur.nest {
+                        MatchEnv::new_cross_species_nest_arena(&cur.roster[a], &cur.roster[b], seed)
+                    } else {
+                        MatchEnv::new_cross_species_arena(&cur.roster[a], &cur.roster[b], seed)
+                    };
+                    e.sim.config.combat.venom_cycle_strength = cur.venom_cycle_strength;
+                    envs.push(e);
+                }
+                _ => envs.push(MatchEnv::new(seed)),
+            }
             if snapshot_path {
                 continue;
             }
@@ -604,6 +630,38 @@ mod tests {
             assert_eq!(a.modulator.dims(), &[mt, 5]);
             assert_eq!(a.match_idx.len(), mt);
             assert!(a.log_prob.iter().chain(a.value.iter()).all(|x| x.is_finite()));
+        }
+    }
+
+    /// Cross-species curriculum wiring: with a roster set, collect_rollout builds
+    /// cross-species nest-arena envs and produces a finite rollout (no freeze, no
+    /// NaN). Skips if the species dir is unavailable.
+    #[test]
+    fn collect_rollout_cross_species_produces_finite_rollout() {
+        let dir = std::path::PathBuf::from(
+            std::env::var("ANTCOLONY_SPECIES_DIR").unwrap_or_else(|_| "../../assets/species".to_owned()),
+        );
+        let roster = match antcolony_sim::species::load_species_dir(&dir) {
+            Ok(r) if !r.is_empty() => r,
+            _ => { eprintln!("skip: no species dir"); return; }
+        };
+        let varmap = VarMap::new();
+        let device = Device::Cpu;
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let hac = HierarchicalActorCritic::new(vb, A1).unwrap();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0xa1);
+        let reward = RewardConfig::default();
+
+        let mut pe = ParallelEnv::new(3, 4);
+        pe.cross_species = Some(crate::ppo::CrossSpeciesCurriculum {
+            roster: std::sync::Arc::new(roster),
+            venom_cycle_strength: 3.0,
+            nest: true,
+        });
+        let roll = pe.collect_rollout(&hac, &device, &mut rng, &reward, 0xfeed).unwrap();
+        assert!(!roll.commander.is_empty(), "cross-species rollout produced no commander records");
+        for r in &roll.commander {
+            assert!(r.reward.is_finite() && r.value.is_finite() && r.log_prob.is_finite());
         }
     }
 }

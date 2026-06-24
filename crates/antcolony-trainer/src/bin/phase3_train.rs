@@ -64,6 +64,10 @@ fn main() -> anyhow::Result<()> {
     let mut archetype_mix = 0.5f32;
     let mut warm_start_snapshot: Option<PathBuf> = None;
     let mut warm_start_policy: Option<PathBuf> = None;
+    // Cross-species curriculum (None ⇒ legacy same-species, byte-identical).
+    let mut cross_species_dir: Option<PathBuf> = None;
+    let mut cross_species_nest = false;
+    let mut venom_cycle = 0.0f32;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -92,6 +96,9 @@ fn main() -> anyhow::Result<()> {
             "--archetype-mix" => { archetype_mix = parse_or_exit("--archetype-mix", &next()); i += 2; }
             "--warm-start-snapshot" => { warm_start_snapshot = Some(PathBuf::from(next())); i += 2; }
             "--warm-start-policy" => { warm_start_policy = Some(PathBuf::from(next())); i += 2; }
+            "--cross-species-nest" => { cross_species_dir = Some(PathBuf::from(next())); cross_species_nest = true; i += 2; }
+            "--cross-species-flat" => { cross_species_dir = Some(PathBuf::from(next())); cross_species_nest = false; i += 2; }
+            "--venom-cycle" => { venom_cycle = parse_or_exit("--venom-cycle", &next()); i += 2; }
             other => { tracing::warn!(arg = other, "unknown flag, ignoring"); i += 1; }
         }
     }
@@ -138,6 +145,20 @@ fn main() -> anyhow::Result<()> {
     joint.ant_chunk_size = ant_chunk_size;
     joint.max_grad_norm = max_grad_norm;
 
+    let cross_species = match &cross_species_dir {
+        Some(dir) => {
+            let roster = antcolony_sim::species::load_species_dir(dir)?;
+            anyhow::ensure!(!roster.is_empty(), "cross-species roster at {} is empty", dir.display());
+            tracing::info!(species = roster.len(), nest = cross_species_nest, venom_cycle, "cross-species curriculum ENABLED (HAC)");
+            Some(antcolony_trainer::ppo::CrossSpeciesCurriculum {
+                roster: std::sync::Arc::new(roster),
+                venom_cycle_strength: venom_cycle,
+                nest: cross_species_nest,
+            })
+        }
+        None => None,
+    };
+
     let cfg = Phase3Config {
         iterations: iters,
         n_envs: envs,
@@ -154,6 +175,7 @@ fn main() -> anyhow::Result<()> {
         opponent_sampling,
         warm_start_snapshot,
         warm_start_policy,
+        cross_species,
     };
 
     let report = run_phase3(device, sizing, cfg)?;

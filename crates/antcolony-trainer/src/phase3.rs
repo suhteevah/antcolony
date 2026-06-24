@@ -46,6 +46,10 @@ pub struct Phase3Config {
     /// only adds the checkpoint to the opponent pool without touching the training
     /// weights. When `None` (default), behaviour is byte-identical to pre-warm-start.
     pub warm_start_policy: Option<PathBuf>,
+    /// Cross-species curriculum: when `Some`, each rollout env is a cross-species
+    /// (nest) arena drawn from the roster. `None` (default) ⇒ same-species
+    /// `MatchEnv::new`, byte-identical to the pre-cross-species path.
+    pub cross_species: Option<crate::ppo::CrossSpeciesCurriculum>,
 }
 
 impl Phase3Config {
@@ -68,6 +72,7 @@ impl Phase3Config {
             opponent_sampling: OpponentSampler::Pfsp { archetype_mix: 0.5, power: 1.0 },
             warm_start_snapshot: None,
             warm_start_policy: None,
+            cross_species: None,
         }
     }
 }
@@ -100,6 +105,11 @@ pub fn run_phase3(device: Device, sizing: Sizing, cfg: Phase3Config) -> Result<P
 
     let mut opt = trainer.make_optimizer()?;
     let mut pe = ParallelEnv::new(cfg.n_envs, cfg.rollout_cycles);
+    // Cross-species curriculum (None ⇒ legacy same-species, byte-identical).
+    pe.cross_species = cfg.cross_species.clone();
+    if let Some(cur) = &cfg.cross_species {
+        tracing::info!(species = cur.roster.len(), nest = cur.nest, venom_cycle = cur.venom_cycle_strength, "phase3: cross-species curriculum enabled");
+    }
 
     // SP1: wire self-play pool + sampler before the loop
     if cfg.self_play_enabled {

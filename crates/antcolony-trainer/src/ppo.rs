@@ -77,7 +77,7 @@ impl Default for PpoConfig {
 /// policy faces the whole intransitive matchup cycle (it can't collapse onto a
 /// single dominant counter-strategy). `venom_cycle_strength` arms the cyclic
 /// clade type-chart; `nest` selects the 5-module underground-nest arena.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CrossSpeciesCurriculum {
     pub roster: std::sync::Arc<Vec<antcolony_sim::species::Species>>,
     pub venom_cycle_strength: f32,
