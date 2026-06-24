@@ -400,6 +400,17 @@ pub struct CombatConfig {
     /// rest of the colony forages/defends normally.
     #[serde(default)]
     pub raid_party_size: u32,
+    /// Body-size reference (mm) for the species-differentiated tunnel/entrance
+    /// chokepoint. `0.0` (default) ⇒ DISABLED: the tunnel/entrance attacker caps
+    /// are used as-is (byte-identical). `> 0` ⇒ the tunnel and entrance caps are
+    /// scaled by `defender_body_mm / ref`, floored at 1 — so a small-bodied
+    /// defender in a confined tunnel admits FEWER simultaneous attackers (a
+    /// crevice-dweller's nest is a fortress) while a large species gets little or
+    /// no tunnel bonus (its nest is crackable). This anti-correlates nest defense
+    /// with open-ground strength — the lever for an intransitive win-matrix.
+    /// Biology: small Temnothorax are tight-crevice specialists (Dornhaus).
+    #[serde(default)]
+    pub tunnel_cap_body_size_ref_mm: f32,
     /// Descent throughput at an enemy nest entrance (the chokepoint).
     /// `0` (default) ⇒ legacy descent: only an enemy in `Fighting`/`Usurping`
     /// (or a designated raider) standing EXACTLY on the entrance cell descends,
@@ -541,6 +552,7 @@ impl Default for CombatConfig {
             raid_seeking_enabled: false,
             raid_party_size: 0,
             raid_descent_per_tick: 0,
+            tunnel_cap_body_size_ref_mm: 0.0,
         }
     }
 }
@@ -608,6 +620,7 @@ mod tests {
         assert!(!sc.combat.raid_seeking_enabled);
         assert_eq!(sc.combat.raid_party_size, 0);
         assert_eq!(sc.combat.raid_descent_per_tick, 0);
+        assert_eq!(sc.combat.tunnel_cap_body_size_ref_mm, 0.0);
         // Idle-wake threshold defaults to an effectively-unreachable value so the
         // underground idle-wake arm never fires for existing configs.
         assert!(sc.ant.underground_idle_alarm_threshold >= 1.0e8);
@@ -624,6 +637,7 @@ mod tests {
         assert!(!cfg.combat.raid_seeking_enabled);
         assert_eq!(cfg.combat.raid_party_size, 0);
         assert_eq!(cfg.combat.raid_descent_per_tick, 0);
+        assert_eq!(cfg.combat.tunnel_cap_body_size_ref_mm, 0.0);
         assert_eq!(cfg.ant.speed_worker, 3.0);
         assert!(cfg.ant.underground_idle_alarm_threshold >= 1.0e8);
     }

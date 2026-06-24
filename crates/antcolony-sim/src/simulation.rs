@@ -2331,7 +2331,13 @@ impl Simulation {
                 let m = self.topology.module(defender_module);
                 m.world.world_to_grid(self.ants[j].position)
             };
-            let cap = self.terrain_attacker_cap(defender_module, gx, gy, &acfg.combat);
+            // Defender body size gates the tunnel/entrance chokepoint (a small
+            // crevice-dweller admits fewer attackers in a confined tunnel).
+            let dsize = {
+                let dant = &self.ants[j];
+                dant.body_size_mm(&cfg_for(dant.colony_id).ant)
+            };
+            let cap = self.terrain_attacker_cap(defender_module, gx, gy, &acfg.combat, dsize);
             let take = (cap as usize).min(cand.len());
             let total: f32 = cand.iter().take(take).map(|(_, d)| *d).sum();
             damage[j] = total;
@@ -2678,17 +2684,28 @@ impl Simulation {
         gx: i64,
         gy: i64,
         combat: &crate::config::CombatConfig,
+        defender_size_mm: f32,
     ) -> u32 {
+        // Species-differentiated chokepoint: in a tunnel/entrance, scale the base
+        // cap by the DEFENDER's body size relative to the reference, floored at 1.
+        // ref == 0 disables this (returns the base cap unchanged → byte-identical).
+        let scale = |base: u32| -> u32 {
+            let r = combat.tunnel_cap_body_size_ref_mm;
+            if r <= 0.0 {
+                return base;
+            }
+            ((base as f32 * (defender_size_mm / r)).round() as i64).max(1) as u32
+        };
         let Some(m) = self.topology.modules.iter().find(|m| m.id == module) else {
-            return combat.max_simultaneous_attackers_open;
+            return combat.max_simultaneous_attackers_open; // open terrain: no body-size gating
         };
         if m.world.in_bounds(gx, gy) {
             if let Terrain::NestEntrance(_) = m.world.get(gx as usize, gy as usize) {
-                return combat.max_simultaneous_attackers_entrance;
+                return scale(combat.max_simultaneous_attackers_entrance);
             }
         }
         if m.kind == crate::module::ModuleKind::UndergroundNest {
-            return combat.max_simultaneous_attackers_tunnel;
+            return scale(combat.max_simultaneous_attackers_tunnel);
         }
         combat.max_simultaneous_attackers_open
     }
@@ -8568,6 +8585,38 @@ mod tests {
         // With default threshold (1e9) the B7 arm never fires; the ant stays Idle
         // (normal FSM also keeps it Idle since forage and nurse weights are both 0).
         assert_eq!(sim.ants[idx].state, AntState::Idle, "default threshold must keep the worker Idle");
+    }
+
+    // ── Species-differentiated tunnel chokepoint (body-size-modulated cap) ──
+
+    #[test]
+    fn tunnel_cap_scales_with_defender_body_size() {
+        use crate::config::ColonySimConfig;
+        use crate::topology::QueenDepth;
+        let global = SimConfig::default();
+        let slice = ColonySimConfig::from(&global);
+        let topo = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
+        let (bug, rug) = (
+            topo.underground_for_colony(0).unwrap(),
+            topo.underground_for_colony(1).unwrap(),
+        );
+        let sim = Simulation::new_two_colony_nest_arena(global, slice.clone(), slice, topo, 7, 0, 2, bug, rug);
+        // A tunnel cell two steps off the entrance (UndergroundNest, not the entrance cell).
+        let (ex, ey) = sim.topology.module(bug).world.find_nest_entrance(0).unwrap();
+        let (tx, ty) = (ex as i64, ey.saturating_sub(2) as i64);
+        let mut combat = sim.config.combat.clone();
+        combat.max_simultaneous_attackers_tunnel = 4;
+
+        // Disabled (ref = 0): base tunnel cap regardless of defender size.
+        combat.tunnel_cap_body_size_ref_mm = 0.0;
+        assert_eq!(sim.terrain_attacker_cap(bug, tx, ty, &combat, 2.0), 4);
+        assert_eq!(sim.terrain_attacker_cap(bug, tx, ty, &combat, 13.0), 4);
+
+        // Enabled (ref = 4): small defender admits FEWER, large admits MORE.
+        combat.tunnel_cap_body_size_ref_mm = 4.0;
+        assert_eq!(sim.terrain_attacker_cap(bug, tx, ty, &combat, 2.0), 2); // 4 * 2/4 = 2
+        assert_eq!(sim.terrain_attacker_cap(bug, tx, ty, &combat, 13.0), 13); // 4 * 13/4 = 13
+        assert_eq!(sim.terrain_attacker_cap(bug, tx, ty, &combat, 0.5), 1); // floors at 1
     }
 
     // ── Brood-spawn fix: newborns in UG module ────────────────────────────

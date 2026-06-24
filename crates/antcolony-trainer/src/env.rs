@@ -236,6 +236,13 @@ impl MatchEnv {
             c.combat.max_simultaneous_attackers_tunnel = 3;
             c.combat.max_simultaneous_attackers_entrance = 1;
             c.ant.nest_garrison_count = 12;
+            // Species-differentiated chokepoint: scale the tunnel/entrance cap by
+            // defender body size (ref 4mm). Small-bodied species (Temnothorax ~2.5mm)
+            // hold a tighter fortress; large species (Camponotus ~13mm) get a
+            // crackable nest. This is the lever meant to break the transitive
+            // dominance hierarchy into intransitivity. (The harness re-injects the
+            // base caps but leaves this ref untouched.)
+            c.combat.tunnel_cap_body_size_ref_mm = 4.0;
         }
 
         let topology = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
