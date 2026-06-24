@@ -379,6 +379,16 @@ pub struct CombatConfig {
     /// so all existing sims are byte-identical.
     #[serde(default)]
     pub raid_underground_enabled: bool,
+    /// When true, `raid_seek_tick` designates up to `raid_party_size` raiders
+    /// per colony and steers them toward the enemy nest via the enemy
+    /// `ColonyScent` gradient. Default false ⇒ inert (byte-identical).
+    #[serde(default)]
+    pub raid_seeking_enabled: bool,
+    /// Number of ants per colony designated as raiders when seeking is on.
+    /// 0 ⇒ no raiders. The raid party advances on the enemy nest while the
+    /// rest of the colony forages/defends normally.
+    #[serde(default)]
+    pub raid_party_size: u32,
 }
 
 fn default_attackers_uncapped() -> u32 {
@@ -506,6 +516,8 @@ impl Default for CombatConfig {
             usurp_channel_ticks: 0,
             usurp_corpse_to_killer_frac: 0.0,
             raid_underground_enabled: false,
+            raid_seeking_enabled: false,
+            raid_party_size: 0,
         }
     }
 }
@@ -569,6 +581,9 @@ mod tests {
         let sc = SimConfig::default();
         // Raid descent is OFF by default => existing sims byte-identical.
         assert!(!sc.combat.raid_underground_enabled);
+        // Raid seeking is OFF by default => existing sims byte-identical.
+        assert!(!sc.combat.raid_seeking_enabled);
+        assert_eq!(sc.combat.raid_party_size, 0);
         // Idle-wake threshold defaults to an effectively-unreachable value so the
         // underground idle-wake arm never fires for existing configs.
         assert!(sc.ant.underground_idle_alarm_threshold >= 1.0e8);
@@ -581,6 +596,8 @@ mod tests {
         let cfg = SimConfig::load_from_str(toml).expect("parse");
         assert_eq!(cfg.combat.worker_attack, 2.0);
         assert!(!cfg.combat.raid_underground_enabled);
+        assert!(!cfg.combat.raid_seeking_enabled);
+        assert_eq!(cfg.combat.raid_party_size, 0);
         assert_eq!(cfg.ant.speed_worker, 3.0);
         assert!(cfg.ant.underground_idle_alarm_threshold >= 1.0e8);
     }

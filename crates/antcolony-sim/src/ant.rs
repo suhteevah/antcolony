@@ -70,6 +70,11 @@ pub struct Ant {
     /// surviving non-queen sibling.
     #[serde(default)]
     pub is_avenger: bool,
+    /// Designated raider: steered toward the enemy nest by `raid_seek_tick`
+    /// and permitted to descend the enemy entrance. Default false; only set
+    /// when `combat.raid_seeking_enabled`. Mirrors `is_avenger`.
+    #[serde(default)]
+    pub is_raider: bool,
     /// P7: the yellow-ant avatar. Exactly one ant may carry this flag
     /// at a time. Its heading is set directly by WASD input; the FSM
     /// does NOT override it while possessed.
@@ -136,6 +141,7 @@ impl Ant {
             module_id: 0,
             transit: None,
             is_avenger: false,
+            is_raider: false,
             is_player: false,
             follow_leader: None,
             dig_progress: 0,

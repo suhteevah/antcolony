@@ -1578,6 +1578,7 @@ impl Simulation {
         self.temperature_tick();
         self.sense_and_decide();
         self.avenger_tick();
+        self.raid_seek_tick();
         self.follower_steering();
         self.beacon_tick();
         self.movement();
@@ -3368,7 +3369,7 @@ impl Simulation {
                 if matches!(ant.caste, AntCaste::Queen) {
                     continue;
                 }
-                if !matches!(ant.state, AntState::Fighting | AntState::Usurping) {
+                if !matches!(ant.state, AntState::Fighting | AntState::Usurping) && !ant.is_raider {
                     continue;
                 }
                 // Is this ant standing on the SURFACE entrance of an ENEMY colony
@@ -3762,6 +3763,140 @@ impl Simulation {
                 if delta.length_squared() > 1e-6 {
                     self.ants[avenger_idx].heading = delta.y.atan2(delta.x);
                 }
+            }
+        }
+    }
+
+    /// Local enemy-territory gradient for a raider. Reads the signed
+    /// `ColonyScent` layer at the ant's 8 neighbour cells and returns a heading
+    /// toward the neighbour that maximises ENEMY scent — most-negative scent for
+    /// colony 0, most-positive for any other colony. Returns `None` when no
+    /// neighbour improves on the current cell (no usable signal), so the caller
+    /// leaves the ant's ACO heading intact and it keeps wandering until it picks
+    /// up the enemy gradient. Local information only (CLAUDE.md rule 4).
+    fn enemy_scent_heading(
+        module: &crate::module::Module,
+        position: Vec2,
+        colony_id: u8,
+    ) -> Option<f32> {
+        let enemy_sign = if colony_id == 0 { -1.0_f32 } else { 1.0_f32 };
+        let (cx, cy) = module.world.world_to_grid(position);
+        let score = |gx: i64, gy: i64| -> Option<f32> {
+            if !module.world.in_bounds(gx, gy) {
+                return None;
+            }
+            Some(
+                enemy_sign
+                    * module.pheromones.read(
+                        gx as usize,
+                        gy as usize,
+                        crate::pheromone::PheromoneLayer::ColonyScent,
+                    ),
+            )
+        };
+        let here = score(cx, cy)?;
+        let mut best: Option<(f32, i64, i64)> = None;
+        for (dx, dy) in [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ] {
+            let (gx, gy) = (cx + dx, cy + dy);
+            if let Some(s) = score(gx, gy) {
+                if best.map(|(bs, _, _)| s > bs).unwrap_or(true) {
+                    best = Some((s, gx, gy));
+                }
+            }
+        }
+        let (bs, bgx, bgy) = best?;
+        // Strict ascent: only steer if a neighbour beats the current cell.
+        if bs <= here + 1e-6 {
+            return None;
+        }
+        let target = module.world.grid_to_world(bgx as usize, bgy as usize);
+        let delta = target - position;
+        if delta.length_squared() <= 1e-9 {
+            return None;
+        }
+        Some(delta.y.atan2(delta.x))
+    }
+
+    /// Raid-seeking (gated). Designates up to `raid_party_size` raiders per
+    /// colony and overrides each raider's heading toward the enemy nest via the
+    /// enemy `ColonyScent` gradient (`enemy_scent_heading`). Runs after
+    /// `avenger_tick` and before `movement`, so the override is what `movement`
+    /// consumes. Once a raider reaches an enemy surface entrance,
+    /// `surface_underground_traversal`'s raid-descent arm carries it under; the
+    /// same gradient then steers it toward the deep queen (she deposits scent
+    /// every tick, so her chamber is the underground enemy-scent maximum).
+    ///
+    /// Biology: raids orient to target-colony nest odor (see
+    /// docs/biology/interspecific/05-raiding-usurpation-and-who-wins.md).
+    ///
+    /// Default OFF: early-returns before touching any ant or `self.rng`, so the
+    /// default sim path is byte-identical.
+    pub fn raid_seek_tick(&mut self) {
+        if !self.config.combat.raid_seeking_enabled || self.config.combat.raid_party_size == 0 {
+            return;
+        }
+        let party = self.config.combat.raid_party_size as usize;
+        for cid in 0..self.colonies.len() {
+            let colony_id = self.colonies[cid].id;
+            // Deterministic top-up of the raid party by ascending ant index
+            // (no RNG — keeps determinism decoupled from this system).
+            let current = self
+                .ants
+                .iter()
+                .filter(|a| a.colony_id == colony_id && a.is_raider)
+                .count();
+            if current < party {
+                let mut to_promote = party - current;
+                for a in self.ants.iter_mut() {
+                    if to_promote == 0 {
+                        break;
+                    }
+                    if a.colony_id == colony_id
+                        && !a.is_raider
+                        && !matches!(a.caste, AntCaste::Queen)
+                        && !a.is_in_transit()
+                    {
+                        a.is_raider = true;
+                        tracing::debug!(
+                            colony = colony_id,
+                            ant = a.id,
+                            "raid_seek_tick: ant promoted to raider"
+                        );
+                        to_promote -= 1;
+                    }
+                }
+            }
+        }
+        // Steer every raider by its local enemy-scent gradient.
+        for i in 0..self.ants.len() {
+            if !self.ants[i].is_raider || self.ants[i].is_in_transit() {
+                continue;
+            }
+            let (pos, mid, colony_id) = (
+                self.ants[i].position,
+                self.ants[i].module_id,
+                self.ants[i].colony_id,
+            );
+            let Some(module) = self.topology.try_module(mid) else {
+                continue;
+            };
+            if let Some(h) = Self::enemy_scent_heading(module, pos, colony_id) {
+                self.ants[i].heading = h;
+                tracing::trace!(
+                    ant = self.ants[i].id,
+                    colony = colony_id,
+                    heading = h,
+                    "raid_seek_tick: raider steered toward enemy scent"
+                );
             }
         }
     }
@@ -4951,6 +5086,7 @@ pub fn spawn_initial_ants(
         module_id: 0,
         transit: None,
         is_avenger: false,
+        is_raider: false,
         is_player: false,
         follow_leader: None,
         dig_progress: 0,
@@ -8527,5 +8663,71 @@ mod tests {
                 ant.id
             );
         }
+    }
+
+    // ── Task 1: Raid-seeking behavior ─────────────────────────────────────
+
+    #[test]
+    fn raid_seek_is_inert_when_disabled() {
+        // Default config: no ant is ever marked a raider, headings are unchanged
+        // by raid_seek_tick (it early-returns). Guards the byte-identical default.
+        let topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_two_colony_with_topology(SimConfig::default(), topo, 7, 0, 2);
+        sim.run(50);
+        assert!(
+            sim.ants.iter().all(|a| !a.is_raider),
+            "no raiders may be designated when raid_seeking_enabled is false"
+        );
+    }
+
+    #[test]
+    fn raid_seek_designates_party_and_steers_toward_enemy_scent() {
+        use crate::pheromone::PheromoneLayer;
+        let mut g = SimConfig::default();
+        g.combat.raid_seeking_enabled = true;
+        g.combat.raid_party_size = 3;
+        let topo = Topology::two_colony_arena((24, 24), (32, 32));
+        let mut sim = Simulation::new_two_colony_with_topology(g, topo, 7, 0, 2);
+
+        // (a) Designate the party.
+        sim.raid_seek_tick();
+        let raider_idx = sim
+            .ants
+            .iter()
+            .position(|a| a.colony_id == 0 && a.is_raider)
+            .expect("a colony-0 raider must be designated");
+        assert_eq!(
+            sim.ants.iter().filter(|a| a.colony_id == 0 && a.is_raider).count(),
+            3,
+            "exactly raid_party_size raiders designated"
+        );
+
+        // (b) Steering: place that raider on a known interior cell and lay a stronger
+        // ENEMY (colony 1 = negative-sign) scent one cell to its EAST so the local
+        // gradient is unambiguous, then re-run and assert it steers east (cos>0).
+        let m0 = sim.ants[raider_idx].module_id;
+        // An interior cell with room for an east neighbour (arenas are >= 24x24).
+        let (cx, cy) = (10i64, 10i64);
+        let here = sim
+            .topology
+            .module(m0)
+            .world
+            .grid_to_world(cx as usize, cy as usize);
+        sim.ants[raider_idx].position = here;
+        {
+            let module = sim.topology.module_mut(m0);
+            // weak enemy scent here, strong to the east => gradient points east.
+            module.pheromones.deposit_territory(cx as usize, cy as usize, 1, 1.0, 10.0);
+            module
+                .pheromones
+                .deposit_territory((cx + 1) as usize, cy as usize, 1, 8.0, 10.0);
+        }
+        sim.raid_seek_tick();
+        assert!(
+            sim.ants[raider_idx].heading.cos() > 0.3,
+            "raider should be steered east toward the stronger enemy scent (heading={})",
+            sim.ants[raider_idx].heading
+        );
+        let _ = PheromoneLayer::ColonyScent;
     }
 }
