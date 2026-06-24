@@ -8682,7 +8682,6 @@ mod tests {
 
     #[test]
     fn raid_seek_designates_party_and_steers_toward_enemy_scent() {
-        use crate::pheromone::PheromoneLayer;
         let mut g = SimConfig::default();
         g.combat.raid_seeking_enabled = true;
         g.combat.raid_party_size = 3;
@@ -8728,6 +8727,5 @@ mod tests {
             "raider should be steered east toward the stronger enemy scent (heading={})",
             sim.ants[raider_idx].heading
         );
-        let _ = PheromoneLayer::ColonyScent;
     }
 }

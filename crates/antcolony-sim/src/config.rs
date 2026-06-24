@@ -382,6 +382,10 @@ pub struct CombatConfig {
     /// When true, `raid_seek_tick` designates up to `raid_party_size` raiders
     /// per colony and steers them toward the enemy nest via the enemy
     /// `ColonyScent` gradient. Default false ⇒ inert (byte-identical).
+    /// Pairs with `raid_underground_enabled`: seeking walks raiders ONTO the
+    /// enemy surface entrance, and `raid_underground_enabled` is what then lets
+    /// them descend it. Enable both for a full surface→underground assault; the
+    /// nest arena sets both.
     #[serde(default)]
     pub raid_seeking_enabled: bool,
     /// Number of ants per colony designated as raiders when seeking is on.
