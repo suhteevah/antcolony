@@ -53,6 +53,10 @@ fn main() -> anyhow::Result<()> {
     // break the 47% Nash plateau. Cold-start required when bumped — old
     // 64-dim weight files can't warm-start a 128-dim net.
     let mut hidden_dim: usize = antcolony_trainer::HIDDEN_DIM;
+    // Cross-species curriculum (the intransitive-meta training arena).
+    let mut cross_species_dir: Option<PathBuf> = None;
+    let mut cross_species_nest = false;
+    let mut venom_cycle = 0.0f32;
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < raw.len() {
@@ -74,6 +78,11 @@ fn main() -> anyhow::Result<()> {
             }
             "--value-clip" => { value_clip = raw[i+1].parse()?; i += 2; }
             "--hidden-dim" => { hidden_dim = raw[i+1].parse()?; i += 2; }
+            // Cross-species curriculum: train in the intransitive cross-species
+            // arena (learner + opponent draw species from <dir> per rollout).
+            "--cross-species-nest" => { cross_species_dir = Some(PathBuf::from(&raw[i+1])); cross_species_nest = true; i += 2; }
+            "--cross-species-flat" => { cross_species_dir = Some(PathBuf::from(&raw[i+1])); cross_species_nest = false; i += 2; }
+            "--venom-cycle" => { venom_cycle = raw[i+1].parse()?; i += 2; }
             "--noisy-pool" => {
                 let arg = &raw[i+1];
                 let mut parts = arg.rsplitn(2, ':');
@@ -106,6 +115,19 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut trainer = PpoTrainer::new(backend.device().clone(), config.clone())?;
+    if let Some(dir) = &cross_species_dir {
+        let roster = antcolony_sim::species::load_species_dir(dir)?;
+        anyhow::ensure!(!roster.is_empty(), "cross-species roster at {} is empty", dir.display());
+        tracing::info!(
+            species = roster.len(), nest = cross_species_nest, venom_cycle,
+            "cross-species curriculum ENABLED — training in the intransitive meta"
+        );
+        trainer.cross_species = Some(antcolony_trainer::ppo::CrossSpeciesCurriculum {
+            roster: std::sync::Arc::new(roster),
+            venom_cycle_strength: venom_cycle,
+            nest: cross_species_nest,
+        });
+    }
     if let Some(ws_path) = &warm_start {
         trainer.warm_start_actor(ws_path)?;
         tracing::info!(path = %ws_path.display(), "warm-started actor from MlpBrain weights");

@@ -70,6 +70,20 @@ impl Default for PpoConfig {
     }
 }
 
+/// Cross-species curriculum: when set on a `PpoTrainer`, each rollout is played
+/// in the cross-species arena instead of the default same-species `MatchEnv::new`.
+/// The learner (colony 0) and opponent (colony 1) are assigned species drawn
+/// deterministically from `roster` per rollout seed, so over an iteration the
+/// policy faces the whole intransitive matchup cycle (it can't collapse onto a
+/// single dominant counter-strategy). `venom_cycle_strength` arms the cyclic
+/// clade type-chart; `nest` selects the 5-module underground-nest arena.
+#[derive(Clone)]
+pub struct CrossSpeciesCurriculum {
+    pub roster: std::sync::Arc<Vec<antcolony_sim::species::Species>>,
+    pub venom_cycle_strength: f32,
+    pub nest: bool,
+}
+
 pub struct PpoTrainer {
     pub policy: ActorCritic,
     pub varmap: VarMap,
@@ -77,6 +91,9 @@ pub struct PpoTrainer {
     pub league: League,
     pub config: PpoConfig,
     pub rng: rand_chacha::ChaCha8Rng,
+    /// `None` ⇒ legacy same-species training (byte-identical). `Some` ⇒ each
+    /// rollout is a cross-species match drawn from the curriculum roster.
+    pub cross_species: Option<CrossSpeciesCurriculum>,
 }
 
 impl PpoTrainer {
@@ -92,6 +109,7 @@ impl PpoTrainer {
             league: League::default_pool(),
             config,
             rng: rand_chacha::ChaCha8Rng::seed_from_u64(0xa17c01),
+            cross_species: None,
         })
     }
 
@@ -119,7 +137,28 @@ impl PpoTrainer {
     /// Run one match against `opp_spec`, collect rollouts.
     /// Returns (states, actions, log_probs, rewards, values, dones).
     pub fn rollout(&mut self, opp_spec: &str, seed: u64) -> anyhow::Result<RolloutBatch> {
-        let mut env = MatchEnv::new(seed);
+        // Cross-species curriculum: assign the learner (colony 0) and opponent
+        // (colony 1) species deterministically from the roster per seed, so the
+        // policy faces the whole intransitive cycle across an iteration. Default
+        // (None) is the legacy same-species env — byte-identical.
+        let mut env = match &self.cross_species {
+            Some(cur) if !cur.roster.is_empty() => {
+                let n = cur.roster.len() as u64;
+                let a = (seed % n) as usize;
+                // Offset so a != b whenever n > 1 (avoid mirror matches dominating).
+                let b = (((seed / n) % (n.saturating_sub(1).max(1))) as usize + a + 1) % cur.roster.len();
+                let sp_a = &cur.roster[a];
+                let sp_b = &cur.roster[b];
+                let mut e = if cur.nest {
+                    MatchEnv::new_cross_species_nest_arena(sp_a, sp_b, seed)
+                } else {
+                    MatchEnv::new_cross_species_arena(sp_a, sp_b, seed)
+                };
+                e.sim.config.combat.venom_cycle_strength = cur.venom_cycle_strength;
+                e
+            }
+            _ => MatchEnv::new(seed),
+        };
         let mut opp = League::make_brain(opp_spec, seed.wrapping_add(1))?;
         let mut batch = RolloutBatch::default();
 
