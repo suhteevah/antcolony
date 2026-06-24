@@ -57,6 +57,7 @@ fn main() -> Result<()> {
     let mut max_ticks = 4000u64;
     let mut nest = false;
     let mut venom_cycle = 0.0f32;
+    let mut introspect = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut next = || args.next().expect("flag needs a value");
@@ -67,12 +68,24 @@ fn main() -> Result<()> {
             "--max-ticks" => max_ticks = next().parse()?,
             "--nest" => nest = true,
             "--venom-cycle" => venom_cycle = next().parse()?,
+            "--introspect" => introspect = true,
             other => tracing::warn!(arg = other, "unknown flag, ignoring"),
         }
     }
 
     let species = antcolony_sim::species::load_species_dir(&species_dir)?;
     let n = species.len();
+
+    if introspect {
+        // Dump what the trained brain COMMANDS + how matches end, to tell
+        // degeneracy vs out-grow-but-not-kill (reward mismatch) vs sane-but-even
+        // (capacity). Same-species (pure brain skill) + a cross matchup.
+        let pick = |id: &str| species.iter().find(|s| s.id == id).unwrap_or(&species[0]);
+        for (a, b) in [("formica_rufa", "formica_rufa"), ("formica_rufa", "lasius_niger")] {
+            introspect_match(pick(a), pick(b), &weights, max_ticks, nest, venom_cycle)?;
+        }
+        return Ok(());
+    }
     tracing::info!(
         n, mpe, max_ticks, nest, venom_cycle,
         weights = %weights.display(),
@@ -176,6 +189,70 @@ fn apply_arena_knobs(env: &mut MatchEnv, venom_cycle: f32) {
             env.sim.colony_configs[i].combat.usurp_corpse_to_killer_frac = 0.5;
         }
     }
+}
+
+/// Dump what the trained MLP COMMANDS over one match (caste/behavior decisions,
+/// worker counts, queen HP) + how it ends. Diagnoses: degenerate action head
+/// (constant/extreme caste) vs out-grows-but-doesn't-kill (timeout with w0>w1 —
+/// reward mismatch) vs sane-but-even (capacity ceiling).
+fn introspect_match(
+    sp_a: &Species,
+    sp_b: &Species,
+    weights: &Path,
+    max_ticks: u64,
+    nest: bool,
+    venom_cycle: f32,
+) -> Result<()> {
+    let seed = 0xA5A5u64;
+    let mut env = if nest {
+        MatchEnv::new_cross_species_nest_arena(sp_a, sp_b, seed)
+    } else {
+        MatchEnv::new_cross_species_arena(sp_a, sp_b, seed)
+    };
+    env.max_ticks = max_ticks;
+    apply_arena_knobs(&mut env, venom_cycle);
+
+    let mut mlp = MlpBrain::load(weights, "introspect".to_string())?; // colony 0
+    let mut heur = HeuristicBrain::new(5.0); // colony 1
+
+    println!("\n# INTROSPECT  {} (MLP) vs {} (heuristic)  nest={nest} venom={venom_cycle}", sp_a.id, sp_b.id);
+    println!("{:>6}  {:>6}/{:<6} {:>7}  | caste w/s/b   behav f/d/n", "tick", "w0", "w1", "q0hp");
+    let mut d = 0usize;
+    loop {
+        let (Some(sl), Some(sr)) = (env.observe(0), env.observe(1)) else { break };
+        let al = mlp.decide(&sl);
+        let ar = heur.decide(&sr);
+        if d % 20 == 0 {
+            let c0 = env.sim.colonies.first();
+            let c1 = env.sim.colonies.get(1);
+            let w0 = c0.map(|c| c.population.workers).unwrap_or(0);
+            let w1 = c1.map(|c| c.population.workers).unwrap_or(0);
+            let q0 = c0.map(|c| c.queen_health).unwrap_or(0.0);
+            let cs = (al.caste_ratio_worker + al.caste_ratio_soldier + al.caste_ratio_breeder).max(1e-6);
+            let bs = (al.forage_weight + al.dig_weight + al.nurse_weight).max(1e-6);
+            println!(
+                "{:>6}  {:>6}/{:<6} {:>7.1}  | {:.2}/{:.2}/{:.2}   {:.2}/{:.2}/{:.2}",
+                env.sim.tick, w0, w1, q0,
+                al.caste_ratio_worker / cs, al.caste_ratio_soldier / cs, al.caste_ratio_breeder / cs,
+                al.forage_weight / bs, al.dig_weight / bs, al.nurse_weight / bs,
+            );
+        }
+        let step = env.step(&al, &ar);
+        d += 1;
+        if step.done || env.sim.tick >= env.max_ticks { break; }
+    }
+    let c0 = env.sim.colonies.first();
+    let c1 = env.sim.colonies.get(1);
+    let w0 = c0.map(|c| c.population.workers).unwrap_or(0);
+    let w1 = c1.map(|c| c.population.workers).unwrap_or(0);
+    let q0 = c0.map(|c| c.queen_health).unwrap_or(0.0);
+    let q1 = c1.map(|c| c.queen_health).unwrap_or(0.0);
+    let timeout = env.sim.tick >= env.max_ticks;
+    println!(
+        "END  tick={} timeout={} status={:?}  workers {}/{}  queenHP {:.1}/{:.1}",
+        env.sim.tick, timeout, env.sim.match_status(), w0, w1, q0, q1
+    );
+    Ok(())
 }
 
 /// MLP winrate for one grid cell: the MLP pilots `species[ai]`, the heuristic
