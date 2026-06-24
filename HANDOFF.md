@@ -33,6 +33,28 @@ This document contains everything needed to implement the ant colony simulation 
 - **Introspection (`eval_mlp_vs_heuristic --introspect`)**: NOT a bug — decisions are sane and varied. The brain learned a **breeder-heavy strategy (0.56–0.91 breeder), under-builds workers, colonies SHRINK**; wins/losses come from relative colony survival (often by attrition, not queen-kills). This is the flat 17→64→64→6 net's genuine ceiling (the historical ~47% MlpBrain-v1 plateau), now confirmed in the cross-species meta.
 - **HAC route scoped + a prerequisite found:** the HAC (`joint_ppo`) is the capacity lever, BUT its observation path (`hierarchical/obs_to_tensors.rs`) is **unnormalized** — it will hit the SAME ~1e6-feature saturation wall. So "route via HAC" is a real SDD build: (a) add obs normalization to the HAC, (b) verify its sample-vs-`log_prob_of_*` ratio holds in the saturated cross-species regime (it shares the atanh-clamp pattern, protected only by small-init), (c) wire cross-species+nest+venom into `ParallelEnv` (the handoff's long-noted "next build"), (d) joint_ppo cross-species driver + tests. Cheaper alt to try first: small-init the flat `ActorCritic` mean head (the proven HAC fix) — lower-probability given outputs are already varied, not collapsed.
 
+**◆ UPDATE 2 (later 2026-06-24) — HAC cross-species BUILT + de-risked + running:**
+- Wired the cross-species nest+venom arena into the HAC training path (`430e2b4`):
+  `ParallelEnv.cross_species` / `Phase3Config.cross_species` (default None =
+  byte-identical legacy), CLI `phase3_train --cross-species-nest <dir> --venom-cycle <f>`.
+  Additive; phase3 + parallel_env suites green.
+- **KEY de-risking result:** an 8-iter cross-species HAC smoke TRAINS cleanly —
+  same-species bench win-rate climbed **0.452 → 0.476 → 0.738**. The actor does
+  NOT freeze. The HAC's small-init mean heads keep means small enough that the
+  latent saturation bug (it shares the flat path's no-norm + clamped-atanh
+  log-prob issues — see plan doc) **never fires**. ⇒ **the planned obs-norm +
+  log-prob surgery on the SOTA code is NOT needed** (zero regression risk to 0.871).
+- **▶ RUNNING NOW:** `bench/hac-xspecies-venom3/` (PID 1854 at handoff; 100 iters,
+  8 envs, 16 cycles, cross-species nest venom 3.0; ~2-3h CPU on kokonoe). Read
+  `train.log` — does the bench curve keep climbing?
+- **▶ REMAINING for the cross-species VERDICT:** the phase3 eval is the SAME-species
+  7-archetype bench (proxy). Need a **cross-species HAC eval** (HAC saves
+  safetensors; `eval_mlp_vs_heuristic` loads MlpBrain JSON) — adapt the
+  cross_species_matrix/eval to drive colony 0 with a loaded HAC (`load_frozen_hac`)
+  vs HeuristicBrain across the species roster. Buildable while the run trains.
+- Plan: `docs/superpowers/plans/2026-06-24-hac-cross-species.md` (tasks 1-2
+  obviated by the de-risking; task 3 done; tasks 5-7 = eval + run remain).
+
 **▶ NEXT ACTIONS:** (1) **Re-launch the cross-species curriculum run** now that the trainer actually trains (`ppo-train --cross-species-nest assets/species --venom-cycle 3.0 --snapshot-every 50 --iterations ~2000`, CPU on kokonoe, no fleet needed). (2) Score it with `eval_mlp_vs_heuristic` — does it beat HeuristicBrain in the intransitive meta? (3) **Caveat:** the flat 17→64→64→6 MlpBrain is the architecture that plateaued at ~47% (v1); if it's too weak to learn the cyclic meta, graduate cross-species curriculum to the HAC/`joint_ppo` path (needs the batched `ParallelEnv` cross-species wiring built first). (4) **Audit the HAC** (`log_prob_of_commander_action`/`log_prob_of_ant_modulator`) for the analogous sample-vs-recompute mismatch (the `tanh_squash…` memory says its mean heads got the small-init fix, but the log-prob-consistency angle is separate — worth a check).
 
 ---
