@@ -64,6 +64,53 @@ pub fn venom_multiplier(weapon: Weapon, attacker_sting_potency: f32, defender: C
     }
 }
 
+/// The clade this clade is chemically STRONG against, in the cyclic type-chart
+/// `Ponerinae ▸ Formicinae ▸ Dolichoderinae ▸ Myrmicinae ▸ Ponerinae`.
+/// `Unknown` beats nothing. This is the (game-design) rock-paper-scissors closure
+/// over the 4 subfamilies — grounded loosely in the fact that ant chemical
+/// ecology is genuinely non-transitive (no single venom/defense dominates all):
+/// ponerine protein sting overwhelms soft formicine cuticle; formic acid swamps
+/// dolichoderine iridoid glands; dolichoderine repellent iridoids rout myrmicine
+/// raiders; myrmicine alkaloid stings are resistant to / counter ponerine venom.
+/// `[cite: 02 §3 chemical weapons; design idealization — see docs/biology.md]`
+fn clade_beats(a: Clade) -> Clade {
+    match a {
+        Clade::Ponerinae => Clade::Formicinae,
+        Clade::Formicinae => Clade::Dolichoderinae,
+        Clade::Dolichoderinae => Clade::Myrmicinae,
+        Clade::Myrmicinae => Clade::Ponerinae,
+        Clade::Unknown => Clade::Unknown,
+    }
+}
+
+/// Cyclic clade type-chart damage multiplier for an `attacker` clade striking a
+/// `defender` clade. `strength` is the amplify factor (e.g. `1.8`): the attacker
+/// deals `strength`× against the clade it beats, `1/strength`× against the clade
+/// that beats it, and `1.0` against itself or the remaining (opposite) clade.
+/// `strength <= 0` (default) ⇒ DISABLED, returns `1.0` everywhere so the matrix
+/// reduces to the legacy `venom_multiplier` path (byte-identical for same-clade /
+/// single-colony sims, which are always `1.0` here too). `Unknown` ⇒ neutral.
+///
+/// Unlike `venom_multiplier` (strict "armed beats naive" dominance ⇒ transitive),
+/// this produces intransitive cycles: A>B, B>C, C>D, D>A across the 4 subfamilies.
+pub fn clade_cycle_multiplier(attacker: Clade, defender: Clade, strength: f32) -> f32 {
+    if strength <= 0.0
+        || attacker == defender
+        || matches!(attacker, Clade::Unknown)
+        || matches!(defender, Clade::Unknown)
+    {
+        return 1.0;
+    }
+    let s = strength.max(1.0);
+    if clade_beats(attacker) == defender {
+        s // attacker is strong against this defender
+    } else if clade_beats(defender) == attacker {
+        1.0 / s // the defender's clade beats the attacker's ⇒ attenuated
+    } else {
+        1.0 // opposite clade in the 4-cycle ⇒ neutral
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +157,43 @@ mod tests {
     fn formic_spray_elevated_vs_myrmicine() {
         let m = venom_multiplier(Weapon::FormicSpray, 0.0, Clade::Myrmicinae);
         assert!(m > 1.0 && m <= 2.0, "formic spray vs myrmicine in (1.0, 2.0], got {m}");
+    }
+
+    #[test]
+    fn clade_cycle_disabled_is_neutral() {
+        // strength 0 ⇒ 1.0 everywhere (byte-identical legacy path).
+        for a in [Clade::Ponerinae, Clade::Formicinae, Clade::Dolichoderinae, Clade::Myrmicinae] {
+            for d in [Clade::Ponerinae, Clade::Formicinae, Clade::Dolichoderinae, Clade::Myrmicinae] {
+                assert_eq!(clade_cycle_multiplier(a, d, 0.0), 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn clade_cycle_is_intransitive_rock_paper_scissors() {
+        let s = 1.8_f32;
+        // The 4-cycle Pon ▸ Form ▸ Dol ▸ Myr ▸ Pon: each amplified vs the next.
+        assert_eq!(clade_cycle_multiplier(Clade::Ponerinae, Clade::Formicinae, s), s);
+        assert_eq!(clade_cycle_multiplier(Clade::Formicinae, Clade::Dolichoderinae, s), s);
+        assert_eq!(clade_cycle_multiplier(Clade::Dolichoderinae, Clade::Myrmicinae, s), s);
+        assert_eq!(clade_cycle_multiplier(Clade::Myrmicinae, Clade::Ponerinae, s), s);
+        // Reverse direction is attenuated (the loser of each pairing).
+        assert!((clade_cycle_multiplier(Clade::Formicinae, Clade::Ponerinae, s) - 1.0 / s).abs() < 1e-6);
+        assert!((clade_cycle_multiplier(Clade::Ponerinae, Clade::Myrmicinae, s) - 1.0 / s).abs() < 1e-6);
+        // Opposite clade in the cycle ⇒ neutral (Pon vs Dol, Form vs Myr).
+        assert_eq!(clade_cycle_multiplier(Clade::Ponerinae, Clade::Dolichoderinae, s), 1.0);
+        assert_eq!(clade_cycle_multiplier(Clade::Formicinae, Clade::Myrmicinae, s), 1.0);
+        // Same clade + Unknown ⇒ neutral.
+        assert_eq!(clade_cycle_multiplier(Clade::Ponerinae, Clade::Ponerinae, s), 1.0);
+        assert_eq!(clade_cycle_multiplier(Clade::Unknown, Clade::Myrmicinae, s), 1.0);
+        // No clade dominates all: each beats exactly one, loses to exactly one.
+        for a in [Clade::Ponerinae, Clade::Formicinae, Clade::Dolichoderinae, Clade::Myrmicinae] {
+            let wins = [Clade::Ponerinae, Clade::Formicinae, Clade::Dolichoderinae, Clade::Myrmicinae]
+                .iter().filter(|&&d| clade_cycle_multiplier(a, d, s) > 1.0).count();
+            let losses = [Clade::Ponerinae, Clade::Formicinae, Clade::Dolichoderinae, Clade::Myrmicinae]
+                .iter().filter(|&&d| clade_cycle_multiplier(a, d, s) < 1.0).count();
+            assert_eq!(wins, 1, "each clade beats exactly one");
+            assert_eq!(losses, 1, "each clade loses to exactly one");
+        }
     }
 }

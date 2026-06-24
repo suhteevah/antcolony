@@ -46,6 +46,7 @@ fn main() -> Result<()> {
     let mut mpe = 50usize;
     let mut max_ticks = 8000u64;
     let mut nest = false;
+    let mut venom_cycle = 0.0f32; // 0 = legacy venom matrix; >0 = cyclic clade type-chart
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut next = || args.next().expect("flag needs a value");
@@ -54,6 +55,7 @@ fn main() -> Result<()> {
             "--mpe" => mpe = next().parse()?,
             "--max-ticks" => max_ticks = next().parse()?,
             "--nest" => nest = true,
+            "--venom-cycle" => venom_cycle = next().parse()?,
             other => tracing::warn!(arg = other, "unknown flag, ignoring"),
         }
     }
@@ -98,7 +100,10 @@ fn main() -> Result<()> {
                     MatchEnv::new_cross_species_arena(sp_left, sp_right, seed)
                 };
                 env.max_ticks = max_ticks;
-                tracing::debug!(nest, "arena selected for match");
+                // Cyclic clade type-chart (intransitivity lever): read from the
+                // GLOBAL combat config in combat_tick, so set it on env.sim.config.
+                env.sim.config.combat.venom_cycle_strength = venom_cycle;
+                tracing::debug!(nest, venom_cycle, "arena selected for match");
 
                 // Inject chokepoint attacker-cap + predation identically on
                 // every match so results remain thread-count-independent.
@@ -217,6 +222,7 @@ fn main() -> Result<()> {
         .collect();
 
     println!("# arena: {}", if nest { "underground-nest (5-module)" } else { "flat chokepoint (3-module)" });
+    println!("# venom_cycle_strength: {venom_cycle} ({})", if venom_cycle > 0.0 { "cyclic clade type-chart" } else { "legacy venom matrix" });
     println!("# intransitive 3-cycles: {}", cycles);
     if !all_win_rows.is_empty() {
         println!(

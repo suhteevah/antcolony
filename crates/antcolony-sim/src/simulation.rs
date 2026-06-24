@@ -2304,9 +2304,18 @@ impl Simulation {
                 }
                 // B4 venom matrix: attacker weapon × defender clade susceptibility,
                 // minus defender's venom resistance. Default slice = 1.0 × (1-0) = unchanged.
+                // When `venom_cycle_strength > 0`, use the intransitive cyclic clade
+                // type-chart instead of the legacy "armed beats naive" matrix.
                 let dcfg = cfg_for(other.colony_id);
-                let vmult =
-                    crate::clade::venom_multiplier(attacker_weapon, attacker_sting, dcfg.clade);
+                let vmult = if cfg.venom_cycle_strength > 0.0 {
+                    crate::clade::clade_cycle_multiplier(
+                        acfg.clade,
+                        dcfg.clade,
+                        cfg.venom_cycle_strength,
+                    )
+                } else {
+                    crate::clade::venom_multiplier(attacker_weapon, attacker_sting, dcfg.clade)
+                };
                 let resist = dcfg.combat.venom_resistance.clamp(0.0, 0.9);
                 dmg *= vmult * (1.0 - resist);
                 candidates[j].push((i, dmg));

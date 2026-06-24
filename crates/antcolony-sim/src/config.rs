@@ -400,6 +400,15 @@ pub struct CombatConfig {
     /// rest of the colony forages/defends normally.
     #[serde(default)]
     pub raid_party_size: u32,
+    /// Cyclic clade type-chart strength (rock-paper-scissors over the 4 ant
+    /// subfamilies; see `clade::clade_cycle_multiplier`). `0.0` (default) ⇒
+    /// DISABLED: cross-species combat uses the legacy `venom_multiplier` (strict
+    /// "armed clade beats naive clade" ⇒ transitive). `> 0` ⇒ the attacker's
+    /// damage is ×`strength` against the clade it beats and ×`1/strength` against
+    /// the clade that beats it (intransitive cycles). Same-clade / single-colony
+    /// combat is unaffected (always 1.0) so the default path stays byte-identical.
+    #[serde(default)]
+    pub venom_cycle_strength: f32,
     /// Body-size reference (mm) for the species-differentiated tunnel/entrance
     /// chokepoint. `0.0` (default) ⇒ DISABLED: the tunnel/entrance attacker caps
     /// are used as-is (byte-identical). `> 0` ⇒ the tunnel and entrance caps are
@@ -553,6 +562,7 @@ impl Default for CombatConfig {
             raid_party_size: 0,
             raid_descent_per_tick: 0,
             tunnel_cap_body_size_ref_mm: 0.0,
+            venom_cycle_strength: 0.0,
         }
     }
 }
@@ -621,6 +631,7 @@ mod tests {
         assert_eq!(sc.combat.raid_party_size, 0);
         assert_eq!(sc.combat.raid_descent_per_tick, 0);
         assert_eq!(sc.combat.tunnel_cap_body_size_ref_mm, 0.0);
+        assert_eq!(sc.combat.venom_cycle_strength, 0.0);
         // Idle-wake threshold defaults to an effectively-unreachable value so the
         // underground idle-wake arm never fires for existing configs.
         assert!(sc.ant.underground_idle_alarm_threshold >= 1.0e8);
