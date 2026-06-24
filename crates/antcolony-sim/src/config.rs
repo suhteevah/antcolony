@@ -211,6 +211,13 @@ pub struct AntConfig {
     /// alarm response by design (reserve "lazy worker" defenders).
     #[serde(default = "default_underground_idle_alarm")]
     pub underground_idle_alarm_threshold: f32,
+    /// Arena nest layer: how many of this colony's INITIAL workers are stationed
+    /// in its `UndergroundNest` at construction (relocated off the surface) to
+    /// garrison the chokepoint. `0` (default) ⇒ all initial workers surface-spawn
+    /// (legacy), so non-nest sims are unaffected. The nest arena sets it so the
+    /// deep queen has defenders holding the tunnels against descending raiders.
+    #[serde(default)]
+    pub nest_garrison_count: u32,
 }
 
 fn default_species_dig_multiplier() -> f32 {
@@ -393,6 +400,16 @@ pub struct CombatConfig {
     /// rest of the colony forages/defends normally.
     #[serde(default)]
     pub raid_party_size: u32,
+    /// Descent throughput at an enemy nest entrance (the chokepoint).
+    /// `0` (default) ⇒ legacy descent: only an enemy in `Fighting`/`Usurping`
+    /// (or a designated raider) standing EXACTLY on the entrance cell descends,
+    /// unbounded per tick — preserves the original A3/B6 behavior and tests.
+    /// `> 0` ⇒ chokepoint descent: ANY non-queen enemy within Chebyshev radius 1
+    /// of the entrance descends, but at most this many per entrance per tick, so
+    /// a swarm queues and trickles underground one wave at a time. Only active
+    /// when `raid_underground_enabled`, so the default path stays byte-identical.
+    #[serde(default)]
+    pub raid_descent_per_tick: u32,
 }
 
 fn default_attackers_uncapped() -> u32 {
@@ -465,6 +482,7 @@ impl Default for AntConfig {
             sting_potency: 0.0,
             species_dig_multiplier: 1.0,
             underground_idle_alarm_threshold: default_underground_idle_alarm(),
+            nest_garrison_count: 0,
         }
     }
 }
@@ -522,6 +540,7 @@ impl Default for CombatConfig {
             raid_underground_enabled: false,
             raid_seeking_enabled: false,
             raid_party_size: 0,
+            raid_descent_per_tick: 0,
         }
     }
 }
@@ -588,9 +607,11 @@ mod tests {
         // Raid seeking is OFF by default => existing sims byte-identical.
         assert!(!sc.combat.raid_seeking_enabled);
         assert_eq!(sc.combat.raid_party_size, 0);
+        assert_eq!(sc.combat.raid_descent_per_tick, 0);
         // Idle-wake threshold defaults to an effectively-unreachable value so the
         // underground idle-wake arm never fires for existing configs.
         assert!(sc.ant.underground_idle_alarm_threshold >= 1.0e8);
+        assert_eq!(sc.ant.nest_garrison_count, 0);
     }
 
     #[test]
@@ -602,6 +623,7 @@ mod tests {
         assert!(!cfg.combat.raid_underground_enabled);
         assert!(!cfg.combat.raid_seeking_enabled);
         assert_eq!(cfg.combat.raid_party_size, 0);
+        assert_eq!(cfg.combat.raid_descent_per_tick, 0);
         assert_eq!(cfg.ant.speed_worker, 3.0);
         assert!(cfg.ant.underground_idle_alarm_threshold >= 1.0e8);
     }

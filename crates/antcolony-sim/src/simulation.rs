@@ -435,6 +435,40 @@ impl Simulation {
             }
         }
 
+        // Garrison: station each colony's configured number of initial workers
+        // in its UG (relocated off the surface) so the deep queen has defenders
+        // holding the tunnels. Default `nest_garrison_count = 0` ⇒ none (legacy).
+        // Symmetric: each colony defends its own nest. Place them on the UG
+        // entrance landing cell — where descending raiders arrive — so the B7
+        // wake + tunnel cap let a few hold many.
+        for (cid, ug) in [(0u8, black_underground), (1u8, red_underground)] {
+            let garrison = sim
+                .colony_configs
+                .get(cid as usize)
+                .map(|c| c.ant.nest_garrison_count)
+                .unwrap_or(0);
+            if garrison == 0 {
+                continue;
+            }
+            let Some((ex, ey)) = sim.topology.module(ug).world.find_nest_entrance(cid) else {
+                tracing::warn!(colony = cid, ug, "nest arena: no UG entrance; garrison skipped");
+                continue;
+            };
+            let landing = sim.topology.module(ug).world.grid_to_world(ex, ey);
+            let mut placed = 0u32;
+            for a in sim.ants.iter_mut() {
+                if placed >= garrison {
+                    break;
+                }
+                if a.colony_id == cid && !matches!(a.caste, AntCaste::Queen) {
+                    a.module_id = ug;
+                    a.position = landing;
+                    placed += 1;
+                }
+            }
+            tracing::info!(colony = cid, ug, garrison = placed, "nest arena: UG garrison stationed");
+        }
+
         tracing::info!(
             modules = sim.topology.modules.len(),
             tubes = sim.topology.tubes.len(),
@@ -3365,15 +3399,25 @@ impl Simulation {
         // the alarm gradient toward the deep queen. Gated; default OFF so all
         // existing sims are byte-identical. Iterate ants in index order.
         if self.config.combat.raid_underground_enabled {
+            // Chokepoint throughput. 0 ⇒ legacy descent (exact cell, combat
+            // state / raider gate, unbounded). >0 ⇒ any non-queen enemy within
+            // Chebyshev radius 1 of the entrance descends, capped per entrance
+            // per tick so the swarm queues and trickles underground. The cap
+            // keys on the DEFENDING colony (`ecid`) so each entrance has its own
+            // budget.
+            let per_tick = self.config.combat.raid_descent_per_tick;
+            let mut descents: std::collections::HashMap<u8, u32> = std::collections::HashMap::new();
             for ant in self.ants.iter_mut() {
                 if matches!(ant.caste, AntCaste::Queen) {
                     continue;
                 }
-                if !matches!(ant.state, AntState::Fighting | AntState::Usurping) && !ant.is_raider {
+                let legacy_eligible = matches!(ant.state, AntState::Fighting | AntState::Usurping)
+                    || ant.is_raider;
+                if per_tick == 0 && !legacy_eligible {
                     continue;
                 }
-                // Is this ant standing on the SURFACE entrance of an ENEMY colony
-                // that has an underground module? If so, descend into it.
+                // Is this ant on (legacy) / within radius 1 (chokepoint) of the
+                // SURFACE entrance of an ENEMY colony with an underground module?
                 for &(ecid, surf_mod, surf_pos, ug_mod, ug_pos) in entrance_pairs.iter() {
                     if ecid == ant.colony_id {
                         continue; // own nest is handled by the existing arms
@@ -3386,20 +3430,33 @@ impl Simulation {
                         .module(surf_mod)
                         .world
                         .world_to_grid(ant.position);
-                    if (gx, gy) == (surf_pos.x as i64, surf_pos.y as i64) {
-                        tracing::debug!(
-                            tick = self.tick,
-                            ant = ant.id,
-                            raider_colony = ant.colony_id,
-                            target_colony = ecid,
-                            from_module = surf_mod,
-                            to_module = ug_mod,
-                            "raid: enemy entrance descent"
-                        );
-                        ant.module_id = ug_mod;
-                        ant.position = ug_pos;
-                        break;
+                    let on_entrance = if per_tick == 0 {
+                        (gx, gy) == (surf_pos.x as i64, surf_pos.y as i64)
+                    } else {
+                        (gx - surf_pos.x as i64).abs() <= 1 && (gy - surf_pos.y as i64).abs() <= 1
+                    };
+                    if !on_entrance {
+                        continue;
                     }
+                    if per_tick > 0 {
+                        let n = descents.entry(ecid).or_insert(0);
+                        if *n >= per_tick {
+                            break; // entrance is saturated this tick — queue
+                        }
+                        *n += 1;
+                    }
+                    tracing::debug!(
+                        tick = self.tick,
+                        ant = ant.id,
+                        raider_colony = ant.colony_id,
+                        target_colony = ecid,
+                        from_module = surf_mod,
+                        to_module = ug_mod,
+                        "raid: enemy entrance descent"
+                    );
+                    ant.module_id = ug_mod;
+                    ant.position = ug_pos;
+                    break;
                 }
             }
         }

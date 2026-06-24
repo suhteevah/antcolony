@@ -79,11 +79,17 @@ fn run_match(
     let mut sim = if nest {
         let mut g = global;
         g.combat.raid_underground_enabled = true;
+        // RS3 chokepoint: the swarm trickles down the entrance at 1/tick, so a
+        // small UG garrison can hold it (vs an instant floodgate). RS4 garrison:
+        // station defenders underground (initial workers otherwise surface-spawn,
+        // leaving the choke empty).
+        g.combat.raid_descent_per_tick = 1;
         let mut atk = attacker;
         let mut def = defender;
         atk.combat.raid_underground_enabled = true;
         def.combat.raid_underground_enabled = true;
         def.ant.underground_idle_alarm_threshold = 0.3;
+        def.ant.nest_garrison_count = 12;
         // Caps that make the choke bite (mirror the harness injection).
         for c in [&mut atk, &mut def] {
             c.combat.max_simultaneous_attackers_open = 255;
@@ -186,22 +192,17 @@ fn defender_holds_in_nest_arena_longer_than_on_flat_arena() {
          (flat_alive={flat_alive} @ {flat_ticks}, nest_alive={nest_alive} @ {nest_ticks})"
     );
 
-    // CHARACTERIZATION / KNOWN GAP (raid-seeking). The inversion above is real
-    // but currently rides on UNREACHABILITY, not a contested siege: peak enemy
-    // presence inside the defender's UG is 0 because the raid-descent arm
-    // (simulation.rs combat raid block) only fires for an attacker already
-    // standing on the enemy SURFACE entrance cell while Fighting — and nothing
-    // drives attackers there once they've wiped the defender's surface workers.
-    // Until a raid-seeking behavior marches enemy fighters to the enemy nest
-    // entrance, the deep queen is an impregnable bunker, not a sieged one.
-    // This assert is a TRIPWIRE: when raid-seeking lands it will FAIL, forcing a
-    // re-evaluation of this test as a real-siege demonstration AND of Task 8
-    // (the nest-arena win-matrix would otherwise be a degenerate defender-always-
-    // wins result). Do NOT "fix" this by deleting it — fix raid-seeking.
-    assert_eq!(
-        nest_enemy_ug, 0,
-        "raid-seeking appears to have landed (peak enemy in defender UG = {nest_enemy_ug} > 0): \
-         re-evaluate the nest inversion as a contested siege and re-scope Task 8"
+    // CONTESTED SIEGE (RS3 chokepoint + RS4 garrison). The descent chokepoint
+    // (raid_descent_per_tick=1) trickles raiders down the entrance, and the UG
+    // garrison + B7 wake hold them at the tunnel cap. So the defender's survival
+    // is now a genuinely SIEGED hold — raiders DO descend (peak > 0) — not an
+    // unreached bunker. This asserts the engagement is real; if it ever drops to
+    // 0 again the descent/seek path has regressed and the inversion above would
+    // be an artifact.
+    assert!(
+        nest_enemy_ug > 0,
+        "raiders must descend into the defender's UG for the nest survival to be \
+         a contested siege rather than an unreached bunker (peak={nest_enemy_ug})"
     );
 }
 
