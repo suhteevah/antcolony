@@ -214,13 +214,28 @@ impl MatchEnv {
         let mut cfg_a: ColonySimConfig = species_a.apply_colony(&env);
         let mut cfg_b: ColonySimConfig = species_b.apply_colony(&env);
 
-        // Arm raid + reserve-wake on both colonies (the cap injection still happens
-        // in the harness; here we only enable the descent + low idle threshold so
-        // the nest mechanics engage). Surface combat is unchanged because surface
-        // cells use the open cap.
+        // Arm the nest mechanics. CRITICAL: `raid_underground_enabled`,
+        // `raid_descent_per_tick`, and the B7 `underground_idle_alarm_threshold`
+        // are all read from the GLOBAL config (`sense_and_decide`/the descent arm
+        // use `self.config`), so they MUST be set on `global`, not only per-colony.
+        // (Setting them only per-colony — the original T6 wiring — left them inert.)
+        global.combat.raid_underground_enabled = true;
+        global.combat.raid_descent_per_tick = 1; // entrance chokepoint: 1 raider/tick
+        global.ant.underground_idle_alarm_threshold = 0.3; // B7 reserve wake
+        // Per-colony knobs read at construction / in combat:
+        //  - the terrain attacker caps (`terrain_attacker_cap` reads the attacker's
+        //    per-colony config): surface open=255, tunnel=3, entrance=1 chokepoint.
+        //  - `nest_garrison_count` (read by the nest ctor): station defenders in
+        //    each colony's UG so the choke has bodies (symmetric — each defends
+        //    its own nest). Without it the deep queen sits alone and the siege is
+        //    decided purely by who reaches the chamber first.
         for c in [&mut cfg_a, &mut cfg_b] {
             c.combat.raid_underground_enabled = true;
-            c.ant.underground_idle_alarm_threshold = 0.3; // B7 reserve threshold
+            c.ant.underground_idle_alarm_threshold = 0.3;
+            c.combat.max_simultaneous_attackers_open = 255;
+            c.combat.max_simultaneous_attackers_tunnel = 3;
+            c.combat.max_simultaneous_attackers_entrance = 1;
+            c.ant.nest_garrison_count = 12;
         }
 
         let topology = Topology::two_colony_nest_arena((24, 24), (32, 32), (24, 24), QueenDepth::Deep);
@@ -645,13 +660,20 @@ mod env_tests {
         // Both colonies recorded an underground module.
         assert!(env.sim.colonies[0].underground_module.is_some());
         assert!(env.sim.colonies[1].underground_module.is_some());
-        // Raid mechanics armed on both colony configs.
+        // Raid mechanics armed on the GLOBAL config — this is what actually
+        // gates descent + the chokepoint + B7 wake (sense_and_decide and the
+        // descent arm read self.config). Asserting per-colony only (the original
+        // T6 wiring) silently passed while the mechanics stayed inert.
+        assert!(env.sim.config.combat.raid_underground_enabled);
+        assert!(env.sim.config.combat.raid_descent_per_tick > 0);
+        assert!(env.sim.config.ant.underground_idle_alarm_threshold < 1.0);
+        // Still armed per-colony too (harmless redundancy / per-colony readers).
         assert!(env.sim.colony_configs[0].combat.raid_underground_enabled);
         assert!(env.sim.colony_configs[1].combat.raid_underground_enabled);
-        // B7 reserve-wake armed: the idle alarm threshold must be lowered off its
-        // 1e9 neutral default, or underground defenders never wake (guards a revert).
-        assert!(env.sim.colony_configs[0].ant.underground_idle_alarm_threshold < 1.0);
-        assert!(env.sim.colony_configs[1].ant.underground_idle_alarm_threshold < 1.0);
+        // UG garrison stationed (read per-colony by the nest ctor): defenders hold
+        // the choke instead of the deep queen sitting alone.
+        assert!(env.sim.colony_configs[0].ant.nest_garrison_count > 0);
+        assert!(env.sim.colony_configs[1].ant.nest_garrison_count > 0);
         // Each queen is in her UG module at construction.
         for cid in [0u8, 1u8] {
             let ug = env.sim.colonies[cid as usize].underground_module.unwrap();
