@@ -169,7 +169,7 @@ impl PpoTrainer {
             };
             let s_tensor = state_to_tensor(&s_left, &self.device)?;
             // Sample stochastic action
-            let (action_t, log_prob_t) = self.policy.sample(&s_tensor, &mut self.rng)?;
+            let (action_t, u_t) = self.policy.sample(&s_tensor, &mut self.rng)?;
             let value_t = self.policy.value(&s_tensor)?;
             let action_dec = Self::tensor_to_decision(&action_t)?;
             let s_right = env.observe(1);
@@ -180,7 +180,7 @@ impl PpoTrainer {
             let step = env.step(&action_dec, &action_right);
             batch.states.push(s_tensor.detach());
             batch.actions.push(action_t.detach());
-            batch.log_probs.push(log_prob_t.detach().to_scalar::<f32>()?);
+            batch.raw_actions.push(u_t.detach());
             // value_t may be rank 1 ([1]) or rank 0 depending on squeeze path; coerce.
             let v_flat = value_t.detach();
             let v_scalar = if v_flat.dims().len() == 0 { v_flat.to_scalar::<f32>()? }
@@ -209,6 +209,14 @@ impl PpoTrainer {
                 }
                 break;
             }
+        }
+        // Old log-probs for PPO: computed through the SAME batched path the update
+        // uses (from the stored pre-squash u), so the first-epoch importance ratio
+        // is bit-stable (≡1). Captured now (pre-update) → detached constants.
+        if !batch.states.is_empty() {
+            let s = Tensor::cat(&batch.states, 0)?;
+            let u = Tensor::cat(&batch.raw_actions, 0)?;
+            batch.log_probs = self.batched_log_prob(&s, &u)?.detach().to_vec1::<f32>()?;
         }
         Ok(batch)
     }
@@ -262,6 +270,40 @@ impl PpoTrainer {
         // VarMap.set_one mutates the underlying Var in place, so subsequent
         // forward passes through the same Linear pick up the new weights
         // automatically (Linear holds the Var, not a snapshot).
+        Ok(())
+    }
+
+    /// Fit `input_mean`/`input_std` from `warmup` rollouts so the actor & critic
+    /// see ~unit-scale inputs. Raw observations contain features up to ~1e6
+    /// (e.g. a population/food field), which otherwise saturate the policy
+    /// (huge means → squashed actions pinned at {0,1}) and wreck training. Std is
+    /// floored at 1e-2 so near-constant features aren't amplified into noise.
+    /// Run BEFORE the training loop (and before the first weight export) so the
+    /// exported MlpBrain carries the same normalization the sim will load.
+    pub fn fit_observation_normalization(
+        &mut self,
+        warmup: usize,
+        opp_spec: &str,
+        base_seed: u64,
+    ) -> anyhow::Result<()> {
+        let mut states: Vec<Tensor> = Vec::new();
+        for m in 0..warmup.max(1) {
+            let b = self.rollout(opp_spec, base_seed.wrapping_add(m as u64))?;
+            states.extend(b.states);
+        }
+        anyhow::ensure!(!states.is_empty(), "normalization warm-up produced no states");
+        let s = Tensor::cat(&states, 0)?; // [N, INPUT_DIM]
+        let mean = s.mean(0)?; // [INPUT_DIM]
+        let var = s.broadcast_sub(&mean)?.sqr()?.mean(0)?;
+        let std = (var + 1e-6)?.sqrt()?;
+        let floor = Tensor::full(1e-2_f32, std.dims(), &self.device)?;
+        let std = std.maximum(&floor)?;
+        tracing::info!(
+            mean = ?mean.to_vec1::<f32>()?, std = ?std.to_vec1::<f32>()?,
+            warmup, "fitted observation normalization"
+        );
+        self.policy.input_mean = mean;
+        self.policy.input_std = std;
         Ok(())
     }
 
@@ -365,18 +407,18 @@ impl PpoTrainer {
         Ok(loss_sum / steps.max(1) as f32)
     }
 
-    /// Recompute log_prob over a BATCH of states + actions.
-    fn batched_log_prob(&self, states: &Tensor, actions: &Tensor) -> anyhow::Result<Tensor> {
+    /// Recompute log_prob over a BATCH of (states, pre-squash `u`).
+    ///
+    /// `u` is the TRUE pre-squash sample recorded by `ActorCritic::sample` and
+    /// stored in `RolloutBatch::raw_actions` — NOT the squashed action. Computing
+    /// it from the squashed action via `atanh(2a−1)` (the old code) clamps at
+    /// saturation and disagrees with the recorded log_prob, collapsing the
+    /// importance ratio to 0 and freezing the actor. Using `u` directly makes
+    /// the recompute identical to `sample()` (ratio ≡ 1 on the first epoch).
+    fn batched_log_prob(&self, states: &Tensor, u: &Tensor) -> anyhow::Result<Tensor> {
         let mean = self.policy.actor_mean(states)?;     // [N, 6]
         let std = self.policy.log_std.exp()?;            // [6]
-        // Invert squash: u = atanh(2a - 1)
-        let two_a = actions.affine(2.0, -1.0)?;
-        let clamped = two_a.clamp(-0.999999_f32, 0.999999_f32)?;
-        let one = Tensor::ones_like(&clamped)?;
-        let plus = (&one + &clamped)?;
-        let minus = (&one - &clamped)?;
-        let u = (plus / minus)?.log()?.affine(0.5, 0.0)?;
-        let diff = (&u - &mean)?;
+        let diff = (u - &mean)?;
         let std_sq = std.broadcast_mul(&std)?;
         let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
         let two_pi_log = 0.9189385332_f64;
@@ -484,10 +526,142 @@ impl PpoTrainer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Extract actor_l1 weights as a flat Vec, mirroring `export_mlp_weights`.
+    fn actor_l1_flat(t: &PpoTrainer) -> Vec<f32> {
+        t.policy.actor_l1.weight().to_vec2::<f32>().unwrap().into_iter().flatten().collect()
+    }
+
+    fn cross_species_trainer() -> Option<PpoTrainer> {
+        let dir = std::path::PathBuf::from(
+            std::env::var("ANTCOLONY_SPECIES_DIR").unwrap_or_else(|_| "../../assets/species".to_owned()),
+        );
+        let roster = match antcolony_sim::species::load_species_dir(&dir) {
+            Ok(r) if !r.is_empty() => r,
+            _ => return None,
+        };
+        let mut cfg = PpoConfig::default();
+        cfg.matches_per_iter = 2;
+        let mut t = PpoTrainer::new(Device::Cpu, cfg).unwrap();
+        t.cross_species = Some(CrossSpeciesCurriculum {
+            roster: std::sync::Arc::new(roster),
+            venom_cycle_strength: 3.0,
+            nest: true,
+        });
+        t.fit_observation_normalization(1, "heuristic", 999).unwrap();
+        Some(t)
+    }
+
+    /// One real training iteration (rollout -> GAE -> ppo_update), exactly like
+    /// the ppo-train driver. Returns the max |actor_l1| weight change.
+    fn train_one_iter_actor_delta(t: &mut PpoTrainer, base_seed: u64) -> f32 {
+        let mut states = Vec::new();
+        let mut act = Vec::new();
+        let mut returns: Vec<f32> = Vec::new();
+        let mut advs: Vec<f32> = Vec::new();
+        let mut lps: Vec<f32> = Vec::new();
+        let mut ovs: Vec<f32> = Vec::new();
+        for m in 0..t.config.matches_per_iter as u64 {
+            let b = t.rollout("heuristic", base_seed + m).unwrap();
+            let (a, r) = PpoTrainer::compute_gae_bootstrap(
+                &b.rewards, &b.values, &b.dones, t.config.gamma, t.config.gae_lambda, b.last_value,
+            );
+            states.extend(b.states);
+            act.extend(b.raw_actions);
+            lps.extend(b.log_probs);
+            ovs.extend(b.values);
+            advs.extend(a);
+            returns.extend(r);
+        }
+        let before = actor_l1_flat(t);
+        let mut opt = t.make_optimizer().unwrap();
+        t.ppo_update(&mut opt, &states, &act, &returns, &advs, &lps, &ovs).unwrap();
+        let after = actor_l1_flat(t);
+        before.iter().zip(&after).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max)
+    }
+
+    /// REGRESSION (export-freeze bug): a cold cross-species training iteration
+    /// MUST change the actor weights. The bug: sample() recorded log-prob from
+    /// the true pre-squash u, but the PPO recompute used a CLAMPED atanh(2a-1);
+    /// at action saturation the two diverged so the importance ratio collapsed
+    /// to 0 for every sample, the clipped surrogate's policy gradient went to
+    /// exactly 0, and the exported MlpBrain never changed across a whole run.
+    #[test]
+    fn cold_cross_species_training_moves_actor() {
+        let Some(mut t) = cross_species_trainer() else {
+            eprintln!("skip: no species dir");
+            return;
+        };
+        let delta = train_one_iter_actor_delta(&mut t, 10_000);
+        assert!(
+            delta > 1e-6,
+            "cold cross-species ppo_update did not move the actor (max_diff={delta})              — frozen-actor regression"
+        );
+    }
+
+    /// On a fresh rollout the first-epoch importance ratio exp(new_lp - old_lp)
+    /// must be ~1.0 for every sample (the policy is unchanged), because the
+    /// recorded and recomputed log-probs use the SAME representation (pre-squash
+    /// u). Before the fix this was 0 for all samples (atanh-clamp mismatch).
+    #[test]
+    fn fresh_rollout_importance_ratio_is_near_one() {
+        let Some(mut t) = cross_species_trainer() else {
+            eprintln!("skip: no species dir");
+            return;
+        };
+        let b = t.rollout("heuristic", 12_345).unwrap();
+        let s = Tensor::cat(&b.states, 0).unwrap();
+        let u = Tensor::cat(&b.raw_actions, 0).unwrap();
+        let new_lp: Vec<f32> = t.batched_log_prob(&s, &u).unwrap().to_vec1().unwrap();
+        for (i, (o, n)) in b.log_probs.iter().zip(&new_lp).enumerate() {
+            let ratio = (n - o).exp();
+            assert!(
+                (0.9..=1.1).contains(&ratio),
+                "sample {i}: ratio {ratio} far from 1 (old_lp={o}, new_lp={n})                  — sample()/recompute log-prob inconsistency"
+            );
+        }
+    }
+
+    /// Optimizer-wiring unit test: with varied advantages (ratio != 1), one
+    /// ppo_update moves the actor. Guards that the candle Var/Linear/optimizer
+    /// path and export all reflect the gradient step.
+    #[test]
+    fn ppo_update_moves_actor_weights_with_varied_advantages() {
+        let mut trainer = PpoTrainer::new(Device::Cpu, PpoConfig::default()).unwrap();
+        let dev = trainer.device.clone();
+        let n = 8usize;
+        let mut states = Vec::new();
+        let mut actions = Vec::new();
+        for i in 0..n {
+            let s: Vec<f32> = (0..INPUT_DIM).map(|j| ((i * 7 + j) % 13) as f32 * 0.1 - 0.6).collect();
+            states.push(Tensor::from_vec(s, (1, INPUT_DIM), &dev).unwrap());
+            let a: Vec<f32> = (0..OUTPUT_DIM).map(|j| 0.2 + 0.1 * ((i + j) % 5) as f32).collect();
+            actions.push(Tensor::from_vec(a, (1, OUTPUT_DIM), &dev).unwrap());
+        }
+        let returns: Vec<f32> = (0..n).map(|i| i as f32 - 3.5).collect();
+        let advantages: Vec<f32> = (0..n).map(|i| (i as f32 - 3.5) * 0.5).collect();
+        let old_log_probs = vec![0.0f32; n];
+        let old_values = vec![0.0f32; n];
+        let before = actor_l1_flat(&trainer);
+        let mut opt = trainer.make_optimizer().unwrap();
+        trainer.ppo_update(&mut opt, &states, &actions, &returns, &advantages, &old_log_probs, &old_values).unwrap();
+        let after = actor_l1_flat(&trainer);
+        let max_diff = before.iter().zip(&after).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(max_diff > 1e-9, "actor_l1 weights did not change after ppo_update (max_diff={max_diff})");
+    }
+}
+
 #[derive(Default)]
 pub struct RolloutBatch {
     pub states: Vec<Tensor>,
+    /// Squashed actions in [0,1] (what the sim/`tensor_to_decision` consumes).
     pub actions: Vec<Tensor>,
+    /// TRUE pre-squash samples `u` (= mean + noise·std), detached. PPO recomputes
+    /// the importance ratio from THESE, not `actions` — see `batched_log_prob`.
+    pub raw_actions: Vec<Tensor>,
     pub log_probs: Vec<f32>,
     pub values: Vec<f32>,
     pub rewards: Vec<f32>,
@@ -497,3 +671,4 @@ pub struct RolloutBatch {
     /// terminal — GAE then bootstraps the tail from 0.
     pub last_value: Option<f32>,
 }
+

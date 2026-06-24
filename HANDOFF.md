@@ -14,6 +14,24 @@ This document contains everything needed to implement the ant colony simulation 
 
 ---
 
+## ⮕ SESSION HANDOFF — 2026-06-24
+
+**Project Status:** 🔴→🟢 **The 2026-06-23 "cross-species curriculum training" run was a NO-OP — the policy never trained. Root-caused and FIXED.** A PC crash killed that run at iter 570/~2000; on inspection, `current.json` and all 11 snapshots were **byte-identical to the pre-training initial export** (md5 `6945049d…`, `max |w1 diff|=0.0`). The flat `ppo-train` trainer (`ppo.rs`) cannot cold-start train — confirmed it freezes on the legacy same-species cold path too. The SOTA (HAC, `joint_ppo.rs`, 0.871/0.874) is a DIFFERENT path and is unaffected.
+
+**Root cause (two compounding bugs, full evidence in `scratch/FINDINGS_ppo_actor_freeze.md`):**
+1. **`sample()` ↔ recompute log-prob inconsistency.** `sample()` recorded log-prob from the TRUE pre-squash `u`; PPO's `batched_log_prob` recovered `u = atanh(2a−1)` **clamped to ±0.999999**. Observations contain a ~1e6-magnitude feature (idx 10) → huge actor means → actions saturate to {0,1} → the clamp can't recover `u` → `old_lp≈+80` vs `new_lp≈−2e11` → importance ratio = 0 for **every** sample → clipped-surrogate policy gradient is **exactly 0** → optimizer skips the actor → frozen exports. The critic (unexported) chased huge unnormalized returns, so loss dropped 3.7e8→0.6 and **faked the look of training**.
+2. **No observation normalization** on the cold-start path (`input_mean/std` left at 0/1; only `warm_start_actor` set them).
+
+**The fix (TDD, on `main` working tree — NOT yet committed at time of writing):**
+- PPO now computes BOTH old and new log-probs through the single `batched_log_prob` path from the stored pre-squash `u` (`RolloutBatch::raw_actions`); `sample()` returns `(action, u)` only. Ratio is bit-stable (≡1 on epoch 1) — no atanh round-trip.
+- `PpoTrainer::fit_observation_normalization()` fits `input_mean/std` from warm-up rollouts; the `ppo-train` driver calls it on cold start (skipped on warm-start).
+- **Verified:** regression tests `cold_cross_species_training_moves_actor`, `fresh_rollout_importance_ratio_is_near_one`, `ppo_update_moves_actor_weights_with_varied_advantages` all green. Real 3-iter cold run now: snapshots have DISTINCT hashes, `w1` changes, loss sane (0.1/0.02/0.07), avg_reward trends UP (0.019→0.039→0.062).
+- **New tool:** `eval_mlp_vs_heuristic` bin (the missing measurement) — scores a trained MlpBrain vs HeuristicBrain across the cross-species arena (`--nest --venom-cycle`), reports overall + diagonal (pure brain-skill) winrate. `cross_species_matrix` is heuristic-vs-heuristic only and CANNOT do this.
+
+**▶ NEXT ACTIONS:** (1) **Re-launch the cross-species curriculum run** now that the trainer actually trains (`ppo-train --cross-species-nest assets/species --venom-cycle 3.0 --snapshot-every 50 --iterations ~2000`, CPU on kokonoe, no fleet needed). (2) Score it with `eval_mlp_vs_heuristic` — does it beat HeuristicBrain in the intransitive meta? (3) **Caveat:** the flat 17→64→64→6 MlpBrain is the architecture that plateaued at ~47% (v1); if it's too weak to learn the cyclic meta, graduate cross-species curriculum to the HAC/`joint_ppo` path (needs the batched `ParallelEnv` cross-species wiring built first). (4) **Audit the HAC** (`log_prob_of_commander_action`/`log_prob_of_ant_modulator`) for the analogous sample-vs-recompute mismatch (the `tanh_squash…` memory says its mean heads got the small-init fix, but the log-prob-consistency angle is separate — worth a check).
+
+---
+
 ## ⮕ SESSION HANDOFF — 2026-06-23
 
 **Project Status:** 🟢 **INTRANSITIVITY SOLVED → now TRAINING in the new meta (run live on kokonoe).** ⏱ **A cross-species curriculum PPO run is RUNNING on kokonoe** (PID 422891, `bench/xspecies-nest-venom3/`, ~2–3h, checkpoints every 50 iters): fresh policy, nest arena + venom-cycle 3, learner+opponent draw species per rollout so the policy faces the whole intransitive cycle (anti-collapse). **▶ MORNING: read `bench/xspecies-nest-venom3/train.log` + `current.json`** — did a brain learn the intransitive meta (avg_reward trend; does it beat HeuristicBrain in `cross_species_matrix`)? It's the first test of "do new competitive AIs emerge when no single strategy can run the table." **Ran on kokonoe, NOT cnc:** the wired path (single-env `ppo-train`) is CPU-bound (sim step dominates, GPU loafs), so kokonoe's 8-core beats cnc's 4-core AND needs no fleet-kick (the P100s were memory-resident at 0% util — a kick would've been required to free VRAM). openclaw `main` GO'd the cnc window but agreed to stand down; **the proper cnc GPU run is gated on wiring the batched `ParallelEnv` path for cross-species** (the single-env path can't feed a P100) — that's the next build, then re-request a window.

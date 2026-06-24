@@ -89,6 +89,13 @@ impl ActorCritic {
     /// All internal tensors are batched [1, OUTPUT_DIM] to match the
     /// linear-layer output. log_std is [OUTPUT_DIM] so we use
     /// broadcast_* ops where shapes differ.
+    /// Returns `(action_squashed, u)` where `u` is the TRUE pre-squash sample.
+    /// The log-prob is intentionally NOT returned here: PPO computes BOTH the
+    /// old and new log-probs through the single `batched_log_prob` path from the
+    /// stored `u`, so the importance ratio is bit-stable (≡1 on the first epoch).
+    /// Recording a per-step log-prob here and recomputing it batched later
+    /// diverges in f32 when the actor mean is large — that divergence collapsed
+    /// the ratio and froze the actor (frozen-export bug, fixed 2026-06-24).
     pub fn sample(&self, x: &Tensor, rng: &mut rand_chacha::ChaCha8Rng) -> Result<(Tensor, Tensor)> {
         use rand::Rng;
         let mean = self.actor_mean(x)?;          // [1, 6]
@@ -104,20 +111,7 @@ impl ActorCritic {
         let scaled_noise = noise_t.broadcast_mul(&std)?;
         let u = (&mean + &scaled_noise)?;
         let action = Self::squash(&u)?;
-        // log_prob under Normal(mean, std)
-        let diff = (&u - &mean)?;
-        let std_sq = std.broadcast_mul(&std)?;     // [6]
-        let neg_log_pdf = ((&diff * &diff)?.broadcast_div(&std_sq)? * 0.5_f64)?;
-        let two_pi_log = 0.9189385332_f64;
-        let log_pdf_part1 = neg_log_pdf.affine(-1.0, -two_pi_log)?;
-        let log_pdf = log_pdf_part1.broadcast_sub(&self.log_std)?;
-        // Squash Jacobian: log(0.5) + log(1 - tanh^2(u))
-        let tanh_u = u.tanh()?;
-        let one = Tensor::ones_like(&tanh_u)?;
-        let one_minus_tanh_sq = (&one - &(&tanh_u * &tanh_u)?)?;
-        let log_jac = (one_minus_tanh_sq + 1e-6_f64)?.log()?.affine(1.0, -0.6931472_f64)?;
-        let log_prob = (log_pdf - log_jac)?.sum_all()?;
-        Ok((action, log_prob))
+        Ok((action, u))
     }
 
     /// Recompute log_prob of a given (potentially squashed) action under

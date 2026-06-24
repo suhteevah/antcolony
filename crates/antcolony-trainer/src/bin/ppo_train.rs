@@ -131,6 +131,13 @@ fn main() -> anyhow::Result<()> {
     if let Some(ws_path) = &warm_start {
         trainer.warm_start_actor(ws_path)?;
         tracing::info!(path = %ws_path.display(), "warm-started actor from MlpBrain weights");
+    } else {
+        // Cold start: fit observation normalization from warm-up rollouts.
+        // Raw observations contain ~1e6-magnitude features that otherwise
+        // saturate the policy and (pre-2026-06-24) froze the actor. Skipped on
+        // warm-start, which carries its own input_mean/std from the weights file.
+        trainer.fit_observation_normalization(4, "heuristic", 0x90c0_ffee)?;
+        tracing::info!("cold start: fitted observation normalization from warm-up rollouts");
     }
 
     // Inject baselines as tier-2 league members. These are typically previous
@@ -199,7 +206,10 @@ fn main() -> anyhow::Result<()> {
                 batch.last_value,
             );
             all_states.extend(batch.states);
-            all_actions.extend(batch.actions);
+            // PPO ratio is recomputed from the pre-squash u (raw_actions), NOT
+            // the squashed actions — recovering u via atanh clamps at saturation
+            // and freezes the actor (frozen-export bug, fixed 2026-06-24).
+            all_actions.extend(batch.raw_actions);
             all_log_probs.extend(batch.log_probs);
             all_old_values.extend(batch.values);
             all_advantages.extend(adv);
