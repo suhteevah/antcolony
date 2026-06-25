@@ -75,11 +75,25 @@ This document contains everything needed to implement the ant colony simulation 
   the key lever — cross-species nest venom 3.0; ~4-5h CPU). Tests the CHEAP
   hypothesis (short/weak) first. Read `train.log` curve; score `hac_best` with
   `eval_hac_vs_heuristic --nest --venom-cycle 3.0 --mpe 12`.
-- **Obs-normalization DEFERRED on purpose** — it's a delicate build (the HAC has
-  NO norm; adding input_mean/std buffers risks breaking 0.871-SOTA checkpoint
-  loading → needs a sidecar `.norm` file, fit step in phase3 save + load_frozen_hac,
-  applied in commander.forward AND mean_commander_action). Only build it if the
-  longer run still plateaus (cheap-experiment-before-risky-build). Plan task A.
+- **✅ RESULT (longer run, iter140 best, mpe=8): PARTIAL POSITIVE.** Cross-species
+  eval = **OVERALL 0.521 / DIAGONAL 0.6125**. The diagonal (pure brain skill,
+  species cancelled) climbed flat 0.51 → HAC-100it 0.55 → HAC-200it/32cyc **0.61**
+  — the HAC clearly out-pilots the heuristic at equal-species play, and budget
+  helped. **NOT a hard ceiling.** OVERALL stays ~parity only because the mixed
+  average is dominated by species imbalance (the venom-cycle type-chart:
+  temnothorax row ≈0.11 all-lose, formica_rufa ≈0.86 all-win, regardless of
+  driver) — a structural artifact, not a brain failure. Same-species BENCH curve
+  was flat/noisy (best 0.66@iter140 ≈ the 100-iter 0.68) — i.e. the bench proxy
+  did NOT track the real cross-species brain-skill gain; trust the cross-species
+  eval, not the bench, for cross-species runs.
+- **▶ NEXT (now justified by a climbing signal, not a flat line):** (a) confirm the
+  0.55→0.61 climb is real (re-score the 100-iter `hac_best` at mpe=8 for
+  apples-to-apples; the 0.55 was noisy mpe=4). (b) push further — MORE iters
+  (diagonal still climbing) and/or build the obs-normalization (delicate: HAC has
+  NO norm; needs a sidecar `.norm` file + fit in phase3 save + load_frozen_hac +
+  apply in commander.forward AND mean_commander_action, all gated so 0.871-SOTA
+  checkpoint loading is unaffected). Plan task A.
+  Long-run artifacts: `bench/hac-xspecies-venom3-long/` (hac_best=iter140).
 
 **▶ NEXT ACTIONS:** (1) **Re-launch the cross-species curriculum run** now that the trainer actually trains (`ppo-train --cross-species-nest assets/species --venom-cycle 3.0 --snapshot-every 50 --iterations ~2000`, CPU on kokonoe, no fleet needed). (2) Score it with `eval_mlp_vs_heuristic` — does it beat HeuristicBrain in the intransitive meta? (3) **Caveat:** the flat 17→64→64→6 MlpBrain is the architecture that plateaued at ~47% (v1); if it's too weak to learn the cyclic meta, graduate cross-species curriculum to the HAC/`joint_ppo` path (needs the batched `ParallelEnv` cross-species wiring built first). (4) **Audit the HAC** (`log_prob_of_commander_action`/`log_prob_of_ant_modulator`) for the analogous sample-vs-recompute mismatch (the `tanh_squash…` memory says its mean heads got the small-init fix, but the log-prob-consistency angle is separate — worth a check).
 
