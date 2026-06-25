@@ -67,6 +67,20 @@ This document contains everything needed to implement the ant colony simulation 
 - Plan: `docs/superpowers/plans/2026-06-24-hac-cross-species.md` (tasks 1-2
   obviated by the de-risking; task 3 done; tasks 5-7 = eval + run remain).
 
+**◆ UPDATE 3 (2026-06-25) — longer HAC run live (full-throttle kokonoe); normalization deferred:**
+- The 100-iter run underperformed (0.68 same-species peak; 0.50/0.55 cross-species).
+  Two hypotheses: short/weak run, OR unnormalized 1e6 inputs degrade quality.
+- **▶ RUNNING:** `bench/hac-xspecies-venom3-long/` (PID 7066 at handoff; **200 iters,
+  8 envs, 32 rollout-cycles** — 2× the horizon so matches reach decisive outcomes,
+  the key lever — cross-species nest venom 3.0; ~4-5h CPU). Tests the CHEAP
+  hypothesis (short/weak) first. Read `train.log` curve; score `hac_best` with
+  `eval_hac_vs_heuristic --nest --venom-cycle 3.0 --mpe 12`.
+- **Obs-normalization DEFERRED on purpose** — it's a delicate build (the HAC has
+  NO norm; adding input_mean/std buffers risks breaking 0.871-SOTA checkpoint
+  loading → needs a sidecar `.norm` file, fit step in phase3 save + load_frozen_hac,
+  applied in commander.forward AND mean_commander_action). Only build it if the
+  longer run still plateaus (cheap-experiment-before-risky-build). Plan task A.
+
 **▶ NEXT ACTIONS:** (1) **Re-launch the cross-species curriculum run** now that the trainer actually trains (`ppo-train --cross-species-nest assets/species --venom-cycle 3.0 --snapshot-every 50 --iterations ~2000`, CPU on kokonoe, no fleet needed). (2) Score it with `eval_mlp_vs_heuristic` — does it beat HeuristicBrain in the intransitive meta? (3) **Caveat:** the flat 17→64→64→6 MlpBrain is the architecture that plateaued at ~47% (v1); if it's too weak to learn the cyclic meta, graduate cross-species curriculum to the HAC/`joint_ppo` path (needs the batched `ParallelEnv` cross-species wiring built first). (4) **Audit the HAC** (`log_prob_of_commander_action`/`log_prob_of_ant_modulator`) for the analogous sample-vs-recompute mismatch (the `tanh_squash…` memory says its mean heads got the small-init fix, but the log-prob-consistency angle is separate — worth a check).
 
 ---
