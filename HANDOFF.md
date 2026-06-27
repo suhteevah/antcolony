@@ -76,20 +76,21 @@ This document contains everything needed to implement the ant colony simulation 
   hypothesis (short/weak) first. Read `train.log` curve; score `hac_best` with
   `eval_hac_vs_heuristic --nest --venom-cycle 3.0 --mpe 12`.
 - **✅ RESULT (longer run, iter140 best, mpe=8): PARTIAL POSITIVE.** Cross-species
-  eval = **OVERALL 0.521 / DIAGONAL 0.6125**. The diagonal (pure brain skill,
-  species cancelled) climbed flat 0.51 → HAC-100it 0.55 → HAC-200it/32cyc **0.61**
-  — the HAC clearly out-pilots the heuristic at equal-species play, and budget
-  helped. **NOT a hard ceiling.** OVERALL stays ~parity only because the mixed
+  eval = **OVERALL 0.521 / DIAGONAL 0.6125**. CONFIRMED apples-to-apples (both
+  mpe=8): the diagonal (pure brain skill, species cancelled) jumped **HAC-100it
+  0.50 (= heuristic parity; the earlier 0.55 was mpe=4 noise) → HAC-200it/32cyc
+  0.61** — a clean +0.11 from doubling budget+horizon, parity → clearly
+  out-piloting the heuristic. The short/weak-vs-ceiling question is SETTLED: it was
+  short/weak. **NOT a hard ceiling; no plateau in sight.** OVERALL stays ~parity only because the mixed
   average is dominated by species imbalance (the venom-cycle type-chart:
   temnothorax row ≈0.11 all-lose, formica_rufa ≈0.86 all-win, regardless of
   driver) — a structural artifact, not a brain failure. Same-species BENCH curve
   was flat/noisy (best 0.66@iter140 ≈ the 100-iter 0.68) — i.e. the bench proxy
   did NOT track the real cross-species brain-skill gain; trust the cross-species
   eval, not the bench, for cross-species runs.
-- **▶ NEXT (now justified by a climbing signal, not a flat line):** (a) confirm the
-  0.55→0.61 climb is real (re-score the 100-iter `hac_best` at mpe=8 for
-  apples-to-apples; the 0.55 was noisy mpe=4). (b) push further — MORE iters
-  (diagonal still climbing) and/or build the obs-normalization (delicate: HAC has
+- **▶ NEXT (climb confirmed 0.50→0.61, steep, no plateau):** push further — MORE
+  iters is the cheap PROVEN lever (400+ iters; diagonal still climbing) and/or
+  build the obs-normalization as the structural lever (delicate: HAC has
   NO norm; needs a sidecar `.norm` file + fit in phase3 save + load_frozen_hac +
   apply in commander.forward AND mean_commander_action, all gated so 0.871-SOTA
   checkpoint loading is unaffected). Plan task A.
