@@ -88,7 +88,20 @@ This document contains everything needed to implement the ant colony simulation 
   was flat/noisy (best 0.66@iter140 ≈ the 100-iter 0.68) — i.e. the bench proxy
   did NOT track the real cross-species brain-skill gain; trust the cross-species
   eval, not the bench, for cross-species runs.
-- **▶ RUNNING (2026-06-27 overnight): 400×32 cross-species HAC** —
+- **◆ 400×32 RESULT (2026-06-27) — peaks 0.70 @ iter100 then COLLAPSES; bottleneck is now STABILITY, not budget.**
+  Cross-species diagonal (mpe=6) by iter: 25→0.55, **100→0.70 (peak)**, 150→0.65,
+  200→0.60, 250→0.52, 300→0.55, 350→0.55, 375→0.52. So the HAC clearly cracks the
+  meta at its peak (0.70 ≫ heuristic 0.50, ≫ flat 0.51, > 200-run 0.61) but
+  late-training collapses back to parity. The same-species BENCH was wildly
+  unstable (0.92→0.16→0.63) and its keep-best (iter25=0.55) MISSED the real peak.
+  **Best cross-species checkpoint = `bench/hac-xspecies-venom3-400/hac_iter0100.safetensors` (0.70).**
+  Levers now = STABILITY (not more iters): (1) obs-normalization (1e6 inputs →
+  large grads → late collapse — fixes quality AND stability), (2) a CROSS-SPECIES
+  -driven keep-best (bench keep-best is useless here — it lost the iter100 peak),
+  (3) lower LR / stronger grad-clip. ALL FUTURE COMPUTE ON CNC (kokonoe off without
+  per-run permission — see [[no-kokonoe-compute-without-explicit-permission]]);
+  investigate "pixie" for CPU testing.
+- (defunct) **400×32 cross-species HAC** —
   `bench/hac-xspecies-venom3-400/` (PID 39506 at handoff; 400 iters, 8 envs, 32
   cycles, snapshot-every 25, cross-species nest venom 3.0; full-throttle kokonoe,
   ~8-10h). Tests whether the 0.50→0.61 climb keeps going with 2× more budget.
