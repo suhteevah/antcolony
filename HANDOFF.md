@@ -88,8 +88,16 @@ This document contains everything needed to implement the ant colony simulation 
   was flat/noisy (best 0.66@iter140 ≈ the 100-iter 0.68) — i.e. the bench proxy
   did NOT track the real cross-species brain-skill gain; trust the cross-species
   eval, not the bench, for cross-species runs.
-- **▶ NEXT (climb confirmed 0.50→0.61, steep, no plateau):** push further — MORE
-  iters is the cheap PROVEN lever (400+ iters; diagonal still climbing) and/or
+- **▶ RUNNING (2026-06-27 overnight): 400×32 cross-species HAC** —
+  `bench/hac-xspecies-venom3-400/` (PID 39506 at handoff; 400 iters, 8 envs, 32
+  cycles, snapshot-every 25, cross-species nest venom 3.0; full-throttle kokonoe,
+  ~8-10h). Tests whether the 0.50→0.61 climb keeps going with 2× more budget.
+  **▶ MORNING CHECK:** the same-species BENCH keep-best is a MISLEADING proxy for
+  cross-species skill (it stayed ~0.66 while cross-species climbed) — so DON'T just
+  trust `hac_best`; sweep several SNAPSHOTS cross-species and pick the real peak:
+  `for CK in hac_iter0200 hac_iter0300 hac_best hac_iter0400; do ./target/release/eval_hac_vs_heuristic.exe --weights bench/hac-xspecies-venom3-400/$CK.safetensors --nest --venom-cycle 3.0 --mpe 8; done`
+  (each ~14min). Compare DIAGONAL to the 0.61 baseline — still climbing or plateaued?
+- **▶ THEN:** if still climbing → even more iters; if plateaued <~0.7 →
   build the obs-normalization as the structural lever (delicate: HAC has
   NO norm; needs a sidecar `.norm` file + fit in phase3 save + load_frozen_hac +
   apply in commander.forward AND mean_commander_action, all gated so 0.871-SOTA
